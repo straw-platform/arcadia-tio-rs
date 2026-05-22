@@ -722,6 +722,29 @@ impl ReadExecutionMode {
     }
 }
 
+/// Current read options with execution mode only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadWithOptions {
+    /// Requested execution mode.
+    pub mode: ReadExecutionMode,
+}
+
+impl ReadWithOptions {
+    /// Serial read execution.
+    pub fn serial() -> Self {
+        Self {
+            mode: ReadExecutionMode::Serial,
+        }
+    }
+
+    /// Parallel read execution with the provided maximum thread count.
+    pub fn parallel_threads(max_threads: usize) -> Self {
+        Self {
+            mode: ReadExecutionMode::ParallelThreads { max_threads },
+        }
+    }
+}
+
 /// Current read options with execution mode and shape policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadWithShapePolicyOptions {
@@ -745,6 +768,29 @@ impl ReadWithShapePolicyOptions {
         Self {
             mode: ReadExecutionMode::ParallelThreads { max_threads },
             shape_policy,
+        }
+    }
+}
+
+/// Historical read options with execution mode only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoricalReadWithOptions {
+    /// Requested execution mode.
+    pub mode: ReadExecutionMode,
+}
+
+impl HistoricalReadWithOptions {
+    /// Serial historical read execution.
+    pub fn serial() -> Self {
+        Self {
+            mode: ReadExecutionMode::Serial,
+        }
+    }
+
+    /// Parallel historical read execution with the provided maximum thread count.
+    pub fn parallel_threads(max_threads: usize) -> Self {
+        Self {
+            mode: ReadExecutionMode::ParallelThreads { max_threads },
         }
     }
 }
@@ -864,6 +910,158 @@ pub enum CreateLayout {
     Streaming,
     /// Random-access V4 create path.
     RandomAccess,
+}
+
+/// Storage profile selector for RegularChunked policy create helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageProfile {
+    /// Balanced default profile.
+    Balanced,
+    /// NVMe-oriented profile.
+    Nvme,
+    /// HDD-oriented profile.
+    Hdd,
+}
+
+impl StorageProfile {
+    fn to_raw(self) -> sys::ArcadiaTioStorageProfile {
+        match self {
+            Self::Balanced => sys::ARCADIA_TIO_STORAGE_BALANCED,
+            Self::Nvme => sys::ARCADIA_TIO_STORAGE_NVME,
+            Self::Hdd => sys::ARCADIA_TIO_STORAGE_HDD,
+        }
+    }
+}
+
+/// Storage access hint for inferred create helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageAccessKind {
+    /// Seekable mounted storage.
+    SeekableMounted,
+    /// Remote storage with range-read capability.
+    RemoteRangeRead,
+    /// Forward-only storage.
+    ForwardOnly,
+}
+
+impl StorageAccessKind {
+    fn to_raw(self) -> sys::ArcadiaTioStorageAccessKind {
+        match self {
+            Self::SeekableMounted => sys::ARCADIA_TIO_STORAGE_ACCESS_SEEKABLE_MOUNTED,
+            Self::RemoteRangeRead => sys::ARCADIA_TIO_STORAGE_ACCESS_REMOTE_RANGE_READ,
+            Self::ForwardOnly => sys::ARCADIA_TIO_STORAGE_ACCESS_FORWARD_ONLY,
+        }
+    }
+}
+
+/// Expected open/query pattern hint for inferred create helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenPattern {
+    /// Metadata-hot open pattern.
+    MetadataHot,
+    /// Data-hot open pattern.
+    DataHot,
+    /// Mixed metadata/data open pattern.
+    Mixed,
+}
+
+impl OpenPattern {
+    fn to_raw(self) -> sys::ArcadiaTioOpenPattern {
+        match self {
+            Self::MetadataHot => sys::ARCADIA_TIO_OPEN_PATTERN_METADATA_HOT,
+            Self::DataHot => sys::ARCADIA_TIO_OPEN_PATTERN_DATA_HOT,
+            Self::Mixed => sys::ARCADIA_TIO_OPEN_PATTERN_MIXED,
+        }
+    }
+}
+
+/// File population hint for inferred create helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilePopulation {
+    /// Few long-lived files.
+    FewLongLived,
+    /// Many shard files.
+    ManyShards,
+}
+
+impl FilePopulation {
+    fn to_raw(self) -> sys::ArcadiaTioFilePopulation {
+        match self {
+            Self::FewLongLived => sys::ARCADIA_TIO_FILE_POPULATION_FEW_LONG_LIVED,
+            Self::ManyShards => sys::ARCADIA_TIO_FILE_POPULATION_MANY_SHARDS,
+        }
+    }
+}
+
+/// Metadata stability hint for inferred create helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataStability {
+    /// Metadata is expected to remain stable.
+    Stable,
+    /// Metadata is expected to grow.
+    Growing,
+}
+
+impl MetadataStability {
+    fn to_raw(self) -> sys::ArcadiaTioMetadataStability {
+        match self {
+            Self::Stable => sys::ARCADIA_TIO_METADATA_STABILITY_STABLE,
+            Self::Growing => sys::ARCADIA_TIO_METADATA_STABILITY_GROWING,
+        }
+    }
+}
+
+/// Policy options for RegularChunked create helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePolicyOptions {
+    /// Non-append axes that should be chunked.
+    pub chunk_axes: Vec<usize>,
+    /// Storage profile used by the native policy planner.
+    pub storage_profile: StorageProfile,
+    /// Typical query sizes, one per rank axis. Use 0 for unspecified axes.
+    pub typical_query_sizes: Vec<u32>,
+}
+
+impl CreatePolicyOptions {
+    /// Creates RegularChunked policy options with a balanced storage profile.
+    pub fn new(chunk_axes: Vec<usize>, typical_query_sizes: Vec<u32>) -> Self {
+        Self {
+            chunk_axes,
+            storage_profile: StorageProfile::Balanced,
+            typical_query_sizes,
+        }
+    }
+}
+
+/// Inferred layout-family create hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateInferredOptions {
+    /// Storage access kind.
+    pub storage_access: StorageAccessKind,
+    /// Expected open pattern.
+    pub open_pattern: OpenPattern,
+    /// File population hint.
+    pub file_population: FilePopulation,
+    /// Metadata stability hint.
+    pub metadata_stability: MetadataStability,
+}
+
+impl CreateInferredOptions {
+    /// Conservative default inferred-create hints.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for CreateInferredOptions {
+    fn default() -> Self {
+        Self {
+            storage_access: StorageAccessKind::SeekableMounted,
+            open_pattern: OpenPattern::MetadataHot,
+            file_population: FilePopulation::FewLongLived,
+            metadata_stability: MetadataStability::Stable,
+        }
+    }
 }
 
 /// Owned create options for the first wrapper slice.
@@ -1558,6 +1756,165 @@ impl TensorFile {
         Ok(file)
     }
 
+    /// Creates a TensorFile using native inferred layout-family selection.
+    ///
+    /// Coordinate descriptors cannot be combined with inferred create in this wrapper slice
+    /// because the current C ABI exposes no inferred+coordinate create family.
+    pub fn create_inferred(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        inferred_options: CreateInferredOptions,
+    ) -> Result<Self> {
+        if !options.coordinates.is_empty() {
+            return Err(TioError::invalid_argument(
+                "coordinate descriptors cannot be combined with inferred create options yet",
+            ));
+        }
+        let prepared = PreparedCreate::new(path, &options)?;
+        let compression = options
+            .compression
+            .map(CompressionConfig::validate)
+            .transpose()?;
+        // SAFETY: PreparedCreate owns all borrowed C strings/vectors for the duration of this call.
+        let raw = unsafe {
+            sys::arcadia_tio_create_inferred_ex(
+                prepared.path.as_ptr(),
+                options.dtype.to_raw(),
+                prepared.dim_kinds.as_ptr(),
+                prepared.dim_lens.as_ptr(),
+                prepared.dim_lens.len(),
+                options.append_dim,
+                prepared.dim_name_ptr(),
+                prepared.dim_name_len(),
+                prepared.symbol_ptr(),
+                prepared.symbol_len(),
+                prepared.channel_ptr(),
+                prepared.channel_len(),
+                prepared.user_key_ptr(),
+                prepared.user_value_ptr(),
+                prepared.user_kv_len(),
+                inferred_options.storage_access.to_raw(),
+                inferred_options.open_pattern.to_raw(),
+                inferred_options.file_population.to_raw(),
+                inferred_options.metadata_stability.to_raw(),
+            )
+        };
+        let file = Self::from_raw_handle(raw, "failed to create inferred TensorFile")?;
+        if let Some(compression) = compression {
+            file.set_compression(compression)?;
+        }
+        Ok(file)
+    }
+
+    /// Creates a RegularChunked TensorFile using native policy-based chunking.
+    ///
+    /// Coordinate descriptors cannot be combined with policy create in this wrapper slice
+    /// because the current C ABI exposes no policy+coordinate create family.
+    pub fn create_with_policy(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        policy_options: CreatePolicyOptions,
+    ) -> Result<Self> {
+        if !options.coordinates.is_empty() {
+            return Err(TioError::invalid_argument(
+                "coordinate descriptors cannot be combined with policy create options yet",
+            ));
+        }
+        validate_create_policy(&options, &policy_options)?;
+        let prepared = PreparedCreate::new(path, &options)?;
+        let compression = options
+            .compression
+            .map(CompressionConfig::validate)
+            .transpose()?;
+        // SAFETY: PreparedCreate owns all borrowed C strings/vectors for the duration of this call.
+        let raw = unsafe {
+            sys::arcadia_tio_create_with_policy_ex(
+                prepared.path.as_ptr(),
+                options.dtype.to_raw(),
+                prepared.dim_kinds.as_ptr(),
+                prepared.dim_lens.as_ptr(),
+                prepared.dim_lens.len(),
+                options.append_dim,
+                prepared.dim_name_ptr(),
+                prepared.dim_name_len(),
+                prepared.symbol_ptr(),
+                prepared.symbol_len(),
+                prepared.channel_ptr(),
+                prepared.channel_len(),
+                prepared.user_key_ptr(),
+                prepared.user_value_ptr(),
+                prepared.user_kv_len(),
+                policy_options.chunk_axes.as_ptr(),
+                policy_options.chunk_axes.len(),
+                policy_options.storage_profile.to_raw(),
+                policy_options.typical_query_sizes.as_ptr(),
+                policy_options.typical_query_sizes.len(),
+            )
+        };
+        let file = Self::from_raw_handle(raw, "failed to create policy TensorFile")?;
+        if let Some(compression) = compression {
+            file.set_compression(compression)?;
+        }
+        Ok(file)
+    }
+
+    /// Creates a RegularChunked TensorFile with native policy chunking and universe-aware axes.
+    ///
+    /// Coordinate descriptors cannot be combined with policy+universe create in this wrapper slice
+    /// because the current C ABI exposes no policy+universe+coordinate create family.
+    pub fn create_with_policy_and_universe(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        policy_options: CreatePolicyOptions,
+        universe_options: CreateUniverseOptions,
+    ) -> Result<Self> {
+        if !options.coordinates.is_empty() {
+            return Err(TioError::invalid_argument(
+                "coordinate descriptors cannot be combined with policy universe create options yet",
+            ));
+        }
+        validate_create_policy(&options, &policy_options)?;
+        let prepared = PreparedCreate::new(path, &options)?;
+        let prepared_universe = PreparedCreateUniverseOptions::new(&universe_options);
+        let compression = options
+            .compression
+            .map(CompressionConfig::validate)
+            .transpose()?;
+        let raw_universe_options = prepared_universe.raw_options();
+        // SAFETY: PreparedCreate and PreparedCreateUniverseOptions own all borrowed C data for the
+        // duration of this call. Pointers and lengths match the owned Rust slices.
+        let raw = unsafe {
+            sys::arcadia_tio_create_with_policy_with_universe(
+                prepared.path.as_ptr(),
+                options.dtype.to_raw(),
+                prepared.dim_kinds.as_ptr(),
+                prepared.dim_lens.as_ptr(),
+                prepared.dim_lens.len(),
+                options.append_dim,
+                prepared.dim_name_ptr(),
+                prepared.dim_name_len(),
+                prepared.symbol_ptr(),
+                prepared.symbol_len(),
+                prepared.channel_ptr(),
+                prepared.channel_len(),
+                prepared.user_key_ptr(),
+                prepared.user_value_ptr(),
+                prepared.user_kv_len(),
+                policy_options.chunk_axes.as_ptr(),
+                policy_options.chunk_axes.len(),
+                policy_options.storage_profile.to_raw(),
+                policy_options.typical_query_sizes.as_ptr(),
+                policy_options.typical_query_sizes.len(),
+                &raw_universe_options,
+            )
+        };
+        let file = Self::from_raw_handle(raw, "failed to create policy universe TensorFile")?;
+        if let Some(compression) = compression {
+            file.set_compression(compression)?;
+        }
+        Ok(file)
+    }
+
     /// Set write-time compression for future appends on this handle.
     pub fn set_compression(&self, compression: CompressionConfig) -> Result<()> {
         let raw = compression.validate()?.to_raw();
@@ -1908,6 +2265,104 @@ impl TensorFile {
         })
     }
 
+    /// Reads current selector data with execution options and metadata.
+    pub fn read_with_options(
+        &self,
+        selectors: &[EntrySelector],
+        options: ReadWithOptions,
+    ) -> Result<ReadResult<Tensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut report = new_read_execution_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared selector and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_with_options(
+                self.raw.as_ptr(),
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                &mut raw_tensor,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_read_execution_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error("failed to read with options"));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let execution = copy_read_execution_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_read_execution_report_free(&mut report);
+        }
+        Ok(ReadResult {
+            value: tensor?,
+            execution: execution?,
+        })
+    }
+
+    /// Reads current selector data densely with execution options and metadata.
+    pub fn read_with_options_dense(
+        &self,
+        selectors: &[EntrySelector],
+        options: ReadWithOptions,
+        fill_value: f64,
+    ) -> Result<ReadResult<DenseTensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut report = new_read_execution_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared selector and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_with_options_dense(
+                self.raw.as_ptr(),
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_read_execution_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor with options",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let execution = copy_read_execution_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_read_execution_report_free(&mut report);
+        }
+        Ok(ReadResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            execution: execution?,
+        })
+    }
+
     /// Reads current selector data with a shape policy and execution metadata.
     pub fn read_with_shape_policy(
         &self,
@@ -2055,6 +2510,110 @@ impl TensorFile {
         Ok(DenseTensor {
             tensor: tensor?,
             mask,
+        })
+    }
+
+    /// Reads selector data at a retained commit with execution options and metadata.
+    pub fn read_at_commit_with_options(
+        &self,
+        commit_seq: u64,
+        selectors: &[EntrySelector],
+        options: HistoricalReadWithOptions,
+    ) -> Result<HistoricalReadResult<Tensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedHistoricalReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut report = new_historical_read_execution_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared selector and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_at_commit_with_options(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                &mut raw_tensor,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_historical_read_execution_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read at commit with options",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let execution = copy_historical_read_execution_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_historical_read_execution_report_free(&mut report);
+        }
+        Ok(HistoricalReadResult {
+            value: tensor?,
+            execution: execution?,
+        })
+    }
+
+    /// Reads selector data at a retained commit densely with execution options and metadata.
+    pub fn read_at_commit_with_options_dense(
+        &self,
+        commit_seq: u64,
+        selectors: &[EntrySelector],
+        options: HistoricalReadWithOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalReadResult<DenseTensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedHistoricalReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut report = new_historical_read_execution_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared selector and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_at_commit_with_options_dense(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_historical_read_execution_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor at commit with options",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let execution = copy_historical_read_execution_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_historical_read_execution_report_free(&mut report);
+        }
+        Ok(HistoricalReadResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            execution: execution?,
         })
     }
 
@@ -2257,6 +2816,71 @@ fn shape_element_len(shape: &[u64]) -> Result<usize> {
             .ok_or_else(|| TioError::invalid_argument("shape element count overflows usize"))?;
     }
     Ok(product)
+}
+
+fn validate_create_policy(options: &CreateOptions, policy: &CreatePolicyOptions) -> Result<()> {
+    let rank = options.dims.len();
+    if options.append_dim >= rank {
+        return Err(TioError::invalid_argument("append_dim out of range"));
+    }
+    if policy.chunk_axes.is_empty() {
+        return Err(TioError::invalid_argument(
+            "policy create requires at least one chunk axis",
+        ));
+    }
+    if policy.typical_query_sizes.len() != rank {
+        return Err(TioError::invalid_argument(format!(
+            "typical_query_sizes length {} does not match rank {rank}",
+            policy.typical_query_sizes.len()
+        )));
+    }
+    if options.append_dim != 0 {
+        return Err(TioError::invalid_argument(
+            "RegularChunked policy create currently requires append_dim == 0",
+        ));
+    }
+    if policy.storage_profile != StorageProfile::Balanced {
+        return Err(TioError::invalid_argument(
+            "RegularChunked policy create currently supports only balanced storage_profile",
+        ));
+    }
+    if !matches!(policy.typical_query_sizes[options.append_dim], 0 | 1) {
+        return Err(TioError::invalid_argument(
+            "append-axis typical_query_size must be 0 or 1",
+        ));
+    }
+    let mut seen = Vec::with_capacity(policy.chunk_axes.len());
+    for &axis in &policy.chunk_axes {
+        if axis >= rank {
+            return Err(TioError::invalid_argument(format!(
+                "chunk axis {axis} out of range for rank {rank}"
+            )));
+        }
+        if axis == options.append_dim {
+            return Err(TioError::invalid_argument(
+                "chunk axes must exclude the append axis",
+            ));
+        }
+        if seen.contains(&axis) {
+            return Err(TioError::invalid_argument(
+                "chunk axes must be unique for policy create",
+            ));
+        }
+        if policy.typical_query_sizes[axis] == 0 {
+            return Err(TioError::invalid_argument(
+                "chunk-axis typical_query_size must be > 0",
+            ));
+        }
+        seen.push(axis);
+    }
+    for axis in 0..rank {
+        if axis != options.append_dim && !seen.contains(&axis) {
+            return Err(TioError::invalid_argument(
+                "chunk_axes must include every non-append axis for policy create",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn copy_shape(raw: &sys::ArcadiaTioTensor) -> Result<Vec<u64>> {
@@ -2955,6 +3579,48 @@ impl PreparedSelectors {
 
     fn len(&self) -> usize {
         self.selectors.len()
+    }
+}
+
+struct PreparedReadWithOptions {
+    mode: sys::ArcadiaTioReadExecutionMode,
+    max_threads: usize,
+}
+
+impl PreparedReadWithOptions {
+    fn new(options: &ReadWithOptions) -> Result<Self> {
+        let (mode, max_threads) = options.mode.to_raw()?;
+        Ok(Self { mode, max_threads })
+    }
+
+    fn raw_options(&self) -> sys::ArcadiaTioReadWithOptionsOptions {
+        sys::ArcadiaTioReadWithOptionsOptions {
+            version: 1,
+            struct_size: mem::size_of::<sys::ArcadiaTioReadWithOptionsOptions>(),
+            mode: self.mode,
+            max_threads: self.max_threads,
+        }
+    }
+}
+
+struct PreparedHistoricalReadWithOptions {
+    mode: sys::ArcadiaTioReadExecutionMode,
+    max_threads: usize,
+}
+
+impl PreparedHistoricalReadWithOptions {
+    fn new(options: &HistoricalReadWithOptions) -> Result<Self> {
+        let (mode, max_threads) = options.mode.to_raw()?;
+        Ok(Self { mode, max_threads })
+    }
+
+    fn raw_options(&self) -> sys::ArcadiaTioHistoricalReadWithOptionsOptions {
+        sys::ArcadiaTioHistoricalReadWithOptionsOptions {
+            version: 1,
+            struct_size: mem::size_of::<sys::ArcadiaTioHistoricalReadWithOptionsOptions>(),
+            mode: self.mode,
+            max_threads: self.max_threads,
+        }
     }
 }
 

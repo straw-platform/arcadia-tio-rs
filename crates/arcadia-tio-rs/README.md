@@ -7,11 +7,12 @@ This crate is source-visible wrapper code only. It depends on
 depend on the private `arcadia-tio` Rust implementation crate in its normal
 consumer build path.
 
-The API slice is intentionally bounded but includes the beta read-shape policy
-surface: safe lifecycle ownership, owned error strings, create/open metadata
-types, write-forward compression selection, bulk tensor I/O helpers,
-universe-aware create/append authoring, current read shape policies, historical
-`read_at_commit` shape policies, and dense mask materialization. Append helpers
+The API slice is intentionally bounded but includes the beta read-shape and
+layout-create surface: safe lifecycle ownership, owned error strings,
+create/open metadata types, policy/inferred create helpers, write-forward
+compression selection, bulk tensor I/O helpers, universe-aware create/append
+authoring, current read options and shape policies, historical `read_at_commit`
+options and shape policies, and dense mask materialization. Append helpers
 borrow Rust slices only for the duration of one bulk FFI call, validate
 dtype/rank/shape/data length before crossing the ABI, and return the assigned
 append-entry range. Read helpers copy native-owned tensor/mask/report outputs
@@ -54,9 +55,10 @@ assert_eq!(tensor.data, TensorData::F64(vec![1.0, 2.0, 3.0]));
 ## Parity caveats
 
 This is not broad parity with the private Rust crate. It currently covers bulk
-create/open/append/read, universe-aware authoring, current and historical
-read-shape policies, write-forward uncompressed/zstd compression controls, and
-metadata helpers. It does not expose rewrite, reform, compaction,
+create/open/append/read, RegularChunked policy create, inferred create,
+universe-aware authoring, current and historical read options, current and
+historical read-shape policies, write-forward uncompressed/zstd compression
+controls, and metadata helpers. It does not expose rewrite, reform, compaction,
 retained-history compaction workflows, query-attribution, zero-copy native views,
 native exact/range coordinate lookup helpers, or compressed storage-accounting
 eligibility claims.

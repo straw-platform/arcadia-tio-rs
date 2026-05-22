@@ -396,6 +396,20 @@ pub struct ArcadiaTioReadShapePolicyOptions {
     pub explicit_extent_axes_len: usize,
 }
 
+/// Current read options with execution mode only.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadWithOptionsOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
+}
+
 /// Current read options with execution mode and shape policy.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -410,6 +424,20 @@ pub struct ArcadiaTioReadWithShapePolicyOptions {
     pub max_threads: usize,
     /// Shape policy options.
     pub shape_policy: ArcadiaTioReadShapePolicyOptions,
+}
+
+/// Historical read options with execution mode only.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadWithOptionsOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
 }
 
 /// Historical read options with execution mode and shape policy.
@@ -744,6 +772,102 @@ unsafe extern "C" {
         user_kv_len: usize,
         options: *const ArcadiaTioCreateWithUniverseOptions,
     ) -> *mut ArcadiaTioHandle;
+    /// Creates a V4 TensorFile using inferred layout-family selection.
+    pub fn arcadia_tio_create_inferred(
+        path: *const c_char,
+        dtype: ArcadiaTioDType,
+        dim_kinds: *const ArcadiaTioAxisKind,
+        dim_lens: *const u32,
+        rank: usize,
+        append_dim: usize,
+        storage_access: ArcadiaTioStorageAccessKind,
+        open_pattern: ArcadiaTioOpenPattern,
+        file_population: ArcadiaTioFilePopulation,
+        metadata_stability: ArcadiaTioMetadataStability,
+    ) -> *mut ArcadiaTioHandle;
+    /// Creates a V4 TensorFile using inferred layout-family selection and metadata overrides.
+    pub fn arcadia_tio_create_inferred_ex(
+        path: *const c_char,
+        dtype: ArcadiaTioDType,
+        dim_kinds: *const ArcadiaTioAxisKind,
+        dim_lens: *const u32,
+        rank: usize,
+        append_dim: usize,
+        dim_names: *const *const c_char,
+        dim_names_len: usize,
+        symbols: *const *const c_char,
+        symbols_len: usize,
+        channels: *const *const c_char,
+        channels_len: usize,
+        user_kv_keys: *const *const c_char,
+        user_kv_values: *const *const c_char,
+        user_kv_len: usize,
+        storage_access: ArcadiaTioStorageAccessKind,
+        open_pattern: ArcadiaTioOpenPattern,
+        file_population: ArcadiaTioFilePopulation,
+        metadata_stability: ArcadiaTioMetadataStability,
+    ) -> *mut ArcadiaTioHandle;
+    /// Creates a RegularChunked V4 TensorFile with policy-based chunking.
+    pub fn arcadia_tio_create_with_policy(
+        path: *const c_char,
+        dtype: ArcadiaTioDType,
+        dim_kinds: *const ArcadiaTioAxisKind,
+        dim_lens: *const u32,
+        rank: usize,
+        append_dim: usize,
+        chunk_axes: *const usize,
+        chunk_axes_len: usize,
+        storage_profile: ArcadiaTioStorageProfile,
+        typical_query_sizes: *const u32,
+        typical_query_len: usize,
+    ) -> *mut ArcadiaTioHandle;
+    /// Creates a RegularChunked V4 TensorFile with policy-based chunking and metadata overrides.
+    pub fn arcadia_tio_create_with_policy_ex(
+        path: *const c_char,
+        dtype: ArcadiaTioDType,
+        dim_kinds: *const ArcadiaTioAxisKind,
+        dim_lens: *const u32,
+        rank: usize,
+        append_dim: usize,
+        dim_names: *const *const c_char,
+        dim_names_len: usize,
+        symbols: *const *const c_char,
+        symbols_len: usize,
+        channels: *const *const c_char,
+        channels_len: usize,
+        user_kv_keys: *const *const c_char,
+        user_kv_values: *const *const c_char,
+        user_kv_len: usize,
+        chunk_axes: *const usize,
+        chunk_axes_len: usize,
+        storage_profile: ArcadiaTioStorageProfile,
+        typical_query_sizes: *const u32,
+        typical_query_len: usize,
+    ) -> *mut ArcadiaTioHandle;
+    /// Creates a RegularChunked V4 TensorFile with policy-based chunking and universe options.
+    pub fn arcadia_tio_create_with_policy_with_universe(
+        path: *const c_char,
+        dtype: ArcadiaTioDType,
+        dim_kinds: *const ArcadiaTioAxisKind,
+        dim_lens: *const u32,
+        rank: usize,
+        append_dim: usize,
+        dim_names: *const *const c_char,
+        dim_names_len: usize,
+        symbols: *const *const c_char,
+        symbols_len: usize,
+        channels: *const *const c_char,
+        channels_len: usize,
+        user_kv_keys: *const *const c_char,
+        user_kv_values: *const *const c_char,
+        user_kv_len: usize,
+        chunk_axes: *const usize,
+        chunk_axes_len: usize,
+        storage_profile: ArcadiaTioStorageProfile,
+        typical_query_sizes: *const u32,
+        typical_query_len: usize,
+        options: *const ArcadiaTioCreateWithUniverseOptions,
+    ) -> *mut ArcadiaTioHandle;
     /// Creates a random-access V4 TensorFile with coordinate descriptors.
     pub fn arcadia_tio_create_random_access_with_coordinates(
         path: *const c_char,
@@ -1030,6 +1154,48 @@ unsafe extern "C" {
     pub fn arcadia_tio_historical_read_execution_report_free(
         report: *mut ArcadiaTioHistoricalReadExecutionReport,
     );
+    /// Reads current selector data with execution options into an owned tensor.
+    pub fn arcadia_tio_read_with_options(
+        handle: *mut ArcadiaTioHandle,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioReadWithOptionsOptions,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioReadExecutionReport,
+    ) -> c_int;
+    /// Reads current selector data with execution options into a dense tensor and optional mask.
+    pub fn arcadia_tio_read_with_options_dense(
+        handle: *mut ArcadiaTioHandle,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioReadWithOptionsOptions,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioReadExecutionReport,
+    ) -> c_int;
+    /// Reads historical selector data with execution options into an owned tensor.
+    pub fn arcadia_tio_read_at_commit_with_options(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioHistoricalReadExecutionReport,
+    ) -> c_int;
+    /// Reads historical selector data with execution options into a dense tensor and optional mask.
+    pub fn arcadia_tio_read_at_commit_with_options_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioHistoricalReadExecutionReport,
+    ) -> c_int;
     /// Reads current selector data with a shape policy into an owned tensor.
     pub fn arcadia_tio_read_with_shape_policy(
         handle: *mut ArcadiaTioHandle,

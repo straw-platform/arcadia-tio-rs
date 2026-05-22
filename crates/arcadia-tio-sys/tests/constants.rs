@@ -26,6 +26,11 @@ const _: () = {
     assert!(ARCADIA_TIO_AXIS_IDENTITY_EXTENT_ONLY == 0);
     assert!(ARCADIA_TIO_AXIS_IDENTITY_UNIVERSE_AWARE == 1);
     assert!(ARCADIA_TIO_HISTORICAL_QUERY_SOURCE_RETAINED_VISIBLE_COMMIT == 0);
+    assert!(ARCADIA_TIO_STORAGE_BALANCED == 0);
+    assert!(ARCADIA_TIO_STORAGE_ACCESS_REMOTE_RANGE_READ == 1);
+    assert!(ARCADIA_TIO_OPEN_PATTERN_METADATA_HOT == 0);
+    assert!(ARCADIA_TIO_FILE_POPULATION_FEW_LONG_LIVED == 0);
+    assert!(ARCADIA_TIO_METADATA_STABILITY_STABLE == 0);
 };
 
 #[test]
@@ -40,6 +45,8 @@ fn representative_raw_layouts_are_pointer_compatible() {
     {
         assert_eq!(size_of::<ArcadiaTioAxisCoordinateInput>(), 120);
         assert_eq!(size_of::<ArcadiaTioReadShapePolicyOptions>(), 72);
+        assert_eq!(size_of::<ArcadiaTioReadWithOptionsOptions>(), 32);
+        assert_eq!(size_of::<ArcadiaTioHistoricalReadWithOptionsOptions>(), 32);
         assert_eq!(size_of::<ArcadiaTioReadWithShapePolicyOptions>(), 104);
         assert_eq!(
             size_of::<ArcadiaTioHistoricalReadWithShapePolicyOptions>(),

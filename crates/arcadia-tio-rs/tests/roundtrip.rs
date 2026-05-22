@@ -6,10 +6,12 @@ use arcadia_tio_rs::{
     AppendWithUniverseOptions, AxisIdentityInput, AxisKind, CompressionConfig, CoordinateDType,
     CoordinateEncoding, CoordinateKind, CoordinateMonotonicity, CoordinateOrdering, CoordinateSpec,
     CoordinateStorage, CoordinateStorageKind, CoordinateUniqueness, CoordinateValidationStatus,
-    CoordinateValues, CreateOptions, CreateUniverseOptions, DType, DimSpec, EntrySelector,
-    ExplicitExtentAxisTarget, ExplicitUniverseAxisTarget, HistoricalQuerySourceKind,
-    HistoricalReadWithShapePolicyOptions, ReadShapePolicy, ReadWithShapePolicyOptions,
-    SlotUniverseBindings, TensorData, TensorFile, UniverseBinding,
+    CoordinateValues, CreateInferredOptions, CreateOptions, CreatePolicyOptions,
+    CreateUniverseOptions, DType, DimSpec, EntrySelector, ExplicitExtentAxisTarget,
+    ExplicitUniverseAxisTarget, HistoricalQuerySourceKind, HistoricalReadWithOptions,
+    HistoricalReadWithShapePolicyOptions, ReadShapePolicy, ReadWithOptions,
+    ReadWithShapePolicyOptions, SlotUniverseBindings, StorageAccessKind, TensorData, TensorFile,
+    UniverseBinding,
 };
 
 #[test]
@@ -133,6 +135,126 @@ fn safe_wrapper_roundtrips_all_first_slice_numeric_dtypes() {
         |file| file.append_i64(&[10, 20, 30], &[3]),
         TensorData::I64(vec![10, 20, 30]),
     );
+}
+
+#[test]
+fn safe_wrapper_read_options_policy_and_inferred_create_roundtrip() {
+    let path = unique_path("safe-wrapper-policy-create.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0).with_name("time"),
+        DimSpec::new(AxisKind::Symbol, 2).with_name("symbol"),
+        DimSpec::new(AxisKind::Channel, 2).with_name("channel"),
+    ];
+    let mut options = CreateOptions::streaming(DType::F32, dims, 0);
+    options.symbols = vec!["AAPL".to_string(), "MSFT".to_string()];
+    options.channels = vec!["open".to_string(), "close".to_string()];
+    let policy = CreatePolicyOptions::new(vec![1, 2], vec![0, 2, 2]);
+    {
+        let mut file = TensorFile::create_with_policy(&path, options, policy)
+            .expect("create RegularChunked policy wrapper file");
+        file.append_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2])
+            .expect("append policy-created values");
+    }
+
+    let file = TensorFile::open(&path).expect("open policy-created wrapper file");
+    let full = file
+        .read_with_options(&[], ReadWithOptions::parallel_threads(2))
+        .expect("read with execution options");
+    assert_eq!(full.value.shape, vec![2, 2, 2]);
+    assert_eq!(
+        full.value.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    );
+    assert_eq!(full.execution.query_max_threads, 2);
+
+    let dense = file
+        .read_with_options_dense(
+            &[
+                EntrySelector::Range { start: 1, end: 2 },
+                EntrySelector::All,
+                EntrySelector::All,
+            ],
+            ReadWithOptions::serial(),
+            -1.0,
+        )
+        .expect("dense read with execution options");
+    assert_eq!(dense.value.tensor.shape, vec![1, 2, 2]);
+    assert_eq!(
+        dense.value.tensor.data,
+        TensorData::F32(vec![5.0, 6.0, 7.0, 8.0])
+    );
+
+    let historical = file
+        .read_at_commit_with_options(1, &[], HistoricalReadWithOptions::serial())
+        .expect("historical read with execution options");
+    assert_eq!(historical.value.shape, vec![2, 2, 2]);
+    assert_eq!(historical.execution.query_commit_seq, 1);
+    drop(file);
+    let _ = fs::remove_file(path);
+
+    let inferred_path = unique_path("safe-wrapper-inferred-create.tio");
+    let inferred_options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Symbol, 2),
+        ],
+        0,
+    );
+    let mut hints = CreateInferredOptions::new();
+    hints.storage_access = StorageAccessKind::RemoteRangeRead;
+    {
+        let mut file = TensorFile::create_inferred(&inferred_path, inferred_options, hints)
+            .expect("create inferred wrapper file");
+        file.append_f32(&[9.0, 10.0], &[1, 2])
+            .expect("append inferred values");
+    }
+    let file = TensorFile::open(&inferred_path).expect("open inferred wrapper file");
+    let tensor = file.read_all().expect("read inferred wrapper file");
+    assert_eq!(tensor.shape, vec![1, 2]);
+    assert_eq!(tensor.data, TensorData::F32(vec![9.0, 10.0]));
+    drop(file);
+    let _ = fs::remove_file(inferred_path);
+}
+
+#[test]
+fn safe_wrapper_policy_universe_create_roundtrip() {
+    let path = unique_path("safe-wrapper-policy-universe-create.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0).with_name("time"),
+        DimSpec::new(AxisKind::Symbol, 2).with_name("symbol"),
+        DimSpec::new(AxisKind::Channel, 2).with_name("channel"),
+    ];
+    let options = CreateOptions::streaming(DType::F32, dims, 0);
+    let policy = CreatePolicyOptions::new(vec![1, 2], vec![0, 2, 2]);
+    let universe_options = CreateUniverseOptions::new(vec![AxisIdentityInput::universe_aware(1)]);
+    let family = [24_u8; 16];
+    {
+        let mut file =
+            TensorFile::create_with_policy_and_universe(&path, options, policy, universe_options)
+                .expect("create policy universe wrapper file");
+        let append_options = AppendWithUniverseOptions::new(vec![SlotUniverseBindings::new(vec![
+            UniverseBinding::new(1, family, [3_u8; 16], 2),
+        ])]);
+        file.append_f32_with_universe(&[3.0, 3.0, 4.0, 4.0], &[1, 2, 2], &append_options)
+            .expect("append policy universe values");
+    }
+    let file = TensorFile::open(&path).expect("open policy universe wrapper file");
+    let target = ExplicitUniverseAxisTarget::new(1, family, [3_u8; 16], 2);
+    let read = file
+        .read_with_shape_policy_dense(
+            &[],
+            ReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitUniverse(vec![target])),
+            -1.0,
+        )
+        .expect("read policy universe with explicit universe target");
+    assert_eq!(read.value.tensor.shape, vec![1, 2, 2]);
+    assert_eq!(
+        read.value.tensor.data,
+        TensorData::F32(vec![3.0, 3.0, 4.0, 4.0])
+    );
+    drop(file);
+    let _ = fs::remove_file(path);
 }
 
 #[test]
