@@ -144,6 +144,45 @@ fn safe_wrapper_roundtrips_f64_with_metadata_and_coordinates() {
 }
 
 #[test]
+fn safe_wrapper_reads_empty_inline_coordinate_values() {
+    let path = unique_path("safe-wrapper-empty-coordinate.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0),
+        DimSpec::new(AxisKind::Symbol, 2),
+    ];
+    let mut options = CreateOptions::random_access(DType::F32, dims, 0);
+    options.coordinates.push(CoordinateSpec {
+        axis: 0,
+        name: Some("empty_time_id".to_string()),
+        kind: CoordinateKind::LabelId,
+        encoding: CoordinateEncoding::Plain,
+        storage: CoordinateStorage::Inline(CoordinateValues::I32(Vec::new())),
+        ordering: CoordinateOrdering {
+            sorted: arcadia_tio_rs::CoordinateSortedness::Unknown,
+            monotonicity: CoordinateMonotonicity::Unknown,
+            uniqueness: CoordinateUniqueness::Unknown,
+        },
+        required: false,
+    });
+
+    let file = TensorFile::create(&path, options).expect("create empty coordinate file");
+    let coordinates = file.coordinate_meta().expect("coordinate metadata");
+    assert_eq!(coordinates.len(), 1);
+    assert_eq!(coordinates[0].axis, 0);
+    assert_eq!(coordinates[0].length, 0);
+
+    let coordinate_values = file
+        .read_axis_coordinates(0)
+        .expect("empty inline coordinate values");
+    assert_eq!(coordinate_values.dtype, DType::I32);
+    assert_eq!(coordinate_values.shape, vec![0]);
+    assert_eq!(coordinate_values.data, TensorData::I32(Vec::new()));
+
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn safe_wrapper_looks_up_i64_coordinate_ranges() {
     let path = unique_path("safe-wrapper-i64-coordinate-lookup.tio");
     let dims = vec![

@@ -5737,7 +5737,16 @@ fn copy_tensor(raw: &sys::ArcadiaTioTensor) -> Result<Tensor> {
             raw.len_bytes
         )));
     }
-    if raw.len_bytes > 0 && raw.data.is_null() {
+    if element_count == 0 {
+        let data = match dtype {
+            DType::F32 => TensorData::F32(Vec::new()),
+            DType::F64 => TensorData::F64(Vec::new()),
+            DType::I32 => TensorData::I32(Vec::new()),
+            DType::I64 => TensorData::I64(Vec::new()),
+        };
+        return Ok(Tensor { dtype, shape, data });
+    }
+    if raw.data.is_null() {
         return Err(TioError::conversion("native tensor data pointer is null"));
     }
     let data = match dtype {
