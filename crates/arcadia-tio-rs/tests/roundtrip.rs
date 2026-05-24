@@ -11,10 +11,11 @@ use arcadia_tio_rs::{
     CreateInferredOptions, CreateOptions, CreatePolicyOptions, CreateUniverseOptions, DType,
     DimSpec, EntrySelector, ErrorCode, ExplicitExtentAxisTarget, ExplicitUniverseAxisTarget,
     HistoricalQuerySourceKind, HistoricalReadWithOptions, HistoricalReadWithShapePolicyOptions,
-    ReadShapePolicy, ReadWithOptions, ReadWithShapePolicyOptions, ReformOptions,
-    SlotUniverseBindings, StorageAccessKind, TensorData, TensorFile, UniverseBinding,
-    V4CompactionAnalysisPolicy, V4PreciseAccountingField, V4PreciseAccountingOptions,
-    V4ReportStatus, V4RetainedHistoryCompactionOptions,
+    QueryTraceContext, ReadIndexItem, ReadIndexLoweringKind, ReadShapePolicy, ReadWithOptions,
+    ReadWithShapePolicyOptions, ReformOptions, SlotUniverseBindings, SparseAppendOutcome,
+    SparseAppendReason, SparseRule, SparseValuePredicate, StorageAccessKind, TensorData,
+    TensorFile, UniverseBinding, V4CompactionAnalysisPolicy, V4PreciseAccountingField,
+    V4PreciseAccountingOptions, V4ReportStatus, V4RetainedHistoryCompactionOptions,
 };
 
 #[test]
@@ -81,6 +82,423 @@ fn safe_wrapper_roundtrips_f64_with_metadata_and_coordinates() {
     assert_eq!(coordinate_values.dtype, DType::I32);
     assert_eq!(coordinate_values.shape, vec![2]);
     assert_eq!(coordinate_values.data, TensorData::I32(vec![10, 20]));
+    assert_eq!(file.coordinate_index_i32(1, 10).expect("exact i32 10"), 0);
+    assert_eq!(file.coordinate_index_i32(1, 20).expect("exact i32 20"), 1);
+    assert_eq!(
+        file.coordinate_range_i32(1, 10, 20)
+            .expect("inclusive i32 range"),
+        0..2
+    );
+    assert_eq!(
+        file.coordinate_range_i32(1, 11, 20)
+            .expect("partial i32 range"),
+        1..2
+    );
+    let missing = file
+        .coordinate_index_i32(1, 30)
+        .expect_err("missing i32 coordinate should fail");
+    assert_eq!(missing.code(), ErrorCode::InvalidArgument);
+    assert!(missing.message().contains("coordinate value not found"));
+    let dtype_mismatch = file
+        .coordinate_index_i64(1, 10)
+        .expect_err("i64 lookup on i32 coordinates should fail");
+    assert_eq!(dtype_mismatch.code(), ErrorCode::InvalidArgument);
+    assert!(
+        dtype_mismatch
+            .message()
+            .contains("coordinate dtype is i32; expected i64 lookup value")
+    );
+
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_looks_up_i64_coordinate_ranges() {
+    let path = unique_path("safe-wrapper-i64-coordinate-lookup.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0),
+        DimSpec::new(AxisKind::Symbol, 3).with_name("symbol"),
+    ];
+    let mut options = CreateOptions::streaming(DType::F32, dims, 0);
+    options.coordinates.push(CoordinateSpec {
+        axis: 1,
+        name: Some("symbol_id".to_string()),
+        kind: CoordinateKind::LabelId,
+        encoding: CoordinateEncoding::Plain,
+        storage: CoordinateStorage::Inline(CoordinateValues::I64(vec![1000, 2000, 3000])),
+        ordering: CoordinateOrdering {
+            sorted: arcadia_tio_rs::CoordinateSortedness::Ascending,
+            monotonicity: CoordinateMonotonicity::StrictlyIncreasing,
+            uniqueness: CoordinateUniqueness::Unique,
+        },
+        required: true,
+    });
+
+    let file = TensorFile::create(&path, options).expect("create i64 coordinate file");
+    assert_eq!(file.coordinate_index_i64(1, 1000).expect("exact i64"), 0);
+    assert_eq!(file.coordinate_index_i64(1, 3000).expect("exact i64"), 2);
+    assert_eq!(
+        file.coordinate_range_i64(1, 1500, 3000)
+            .expect("overlapping i64 range"),
+        1..3
+    );
+
+    let no_overlap = file
+        .coordinate_range_i64(1, 4000, 5000)
+        .expect_err("non-overlapping i64 range should fail");
+    assert_eq!(no_overlap.code(), ErrorCode::InvalidArgument);
+    assert!(
+        no_overlap
+            .message()
+            .contains("coordinate range does not overlap coordinate values")
+    );
+    let invalid_interval = file
+        .coordinate_range_i64(1, 3000, 1000)
+        .expect_err("start>end i64 range should fail");
+    assert_eq!(invalid_interval.code(), ErrorCode::InvalidArgument);
+    assert!(
+        invalid_interval
+            .message()
+            .contains("coordinate range start must be <= end")
+    );
+    let dtype_mismatch = file
+        .coordinate_index_i32(1, 1000)
+        .expect_err("i32 lookup on i64 coordinates should fail");
+    assert_eq!(dtype_mismatch.code(), ErrorCode::InvalidArgument);
+    assert!(
+        dtype_mismatch
+            .message()
+            .contains("coordinate dtype is i64; expected i32 lookup value")
+    );
+
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_analyzes_sparse_append_diagnostics_for_f32_and_f64() {
+    let f32_path = unique_path("safe-wrapper-sparse-analyze-f32.tio");
+    let f32_options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let file = TensorFile::create(&f32_path, f32_options).expect("create f32 analyzer file");
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
+        let analysis = file
+            .analyze_sparse_append_f32(&[0.0, 0.0, 1.0, 2.0], &[2, 2], &rule)
+            .expect("analyze f32 sparse append");
+        assert_eq!(analysis.outcome, SparseAppendOutcome::DenseFallback);
+        assert!(analysis.absent_subtensor_count > 0);
+        assert!(analysis.absent_subtensor_count <= analysis.total_subtensor_count);
+        assert!(
+            analysis
+                .reasons
+                .contains(&SparseAppendReason::WholeAppendUnitHasNoSparseProducerPath)
+        );
+        assert!(
+            analysis
+                .reasons
+                .contains(&SparseAppendReason::DenseFallbackPreservesExactValues)
+        );
+    }
+    let _ = fs::remove_file(f32_path);
+
+    let f64_path = unique_path("safe-wrapper-sparse-analyze-f64.tio");
+    let f64_options = CreateOptions::streaming(
+        DType::F64,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let file = TensorFile::create(&f64_path, f64_options).expect("create f64 analyzer file");
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::EqualF64(-1.0));
+        let analysis = file
+            .analyze_sparse_append_f64(&[-1.0, -1.0, 1.0, 2.0], &[2, 2], &rule)
+            .expect("analyze f64 sparse append");
+        assert_eq!(analysis.outcome, SparseAppendOutcome::DenseFallback);
+        assert!(analysis.absent_subtensor_count > 0);
+        assert!(analysis.absent_subtensor_count <= analysis.total_subtensor_count);
+        assert!(
+            analysis
+                .reasons
+                .contains(&SparseAppendReason::WholeAppendUnitHasNoSparseProducerPath)
+        );
+    }
+    let _ = fs::remove_file(f64_path);
+}
+
+#[test]
+fn safe_wrapper_sparse_append_fallback_and_reject_behaviors() {
+    let fallback_path = unique_path("safe-wrapper-sparse-append-fallback.tio");
+    let fallback_options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let mut file =
+            TensorFile::create(&fallback_path, fallback_options).expect("create fallback file");
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
+        let range = file
+            .append_sparse_f32_returning_range(&[0.0, 0.0, 1.0, 2.0], &[2, 2], &rule)
+            .expect("append f32 sparse-intent fallback via readability alias");
+        assert_eq!((range.start, range.end), (0, 2));
+        let tensor = file.read_all().expect("read sparse fallback values");
+        assert_eq!(tensor.shape, vec![2, 2]);
+        assert_eq!(tensor.data, TensorData::F32(vec![0.0, 0.0, 1.0, 2.0]));
+    }
+    let _ = fs::remove_file(fallback_path);
+
+    let no_range_path = unique_path("safe-wrapper-sparse-append-f64-no-range.tio");
+    let no_range_options = CreateOptions::streaming(
+        DType::F64,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let mut file =
+            TensorFile::create(&no_range_path, no_range_options).expect("create f64 no-range file");
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::EqualF64(-1.0));
+        file.append_sparse_f64(&[-1.0, -1.0, 5.0, 6.0], &[2, 2], &rule)
+            .expect("append f64 sparse-intent without range");
+        let tensor = file.read_all().expect("read sparse no-range values");
+        assert_eq!(tensor.shape, vec![2, 2]);
+        assert_eq!(tensor.data, TensorData::F64(vec![-1.0, -1.0, 5.0, 6.0]));
+        let range = file
+            .append_sparse_f64_returning_range(&[-1.0, -1.0, 7.0, 8.0], &[2, 2], &rule)
+            .expect("append f64 sparse-intent with readability alias");
+        assert_eq!((range.start, range.end), (2, 4));
+    }
+    let _ = fs::remove_file(no_range_path);
+
+    let reject_path = unique_path("safe-wrapper-sparse-append-reject.tio");
+    let reject_options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Symbol, 4),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    let policy = CreatePolicyOptions::new(vec![1, 2], vec![0, 2, 2]);
+    {
+        let mut file = TensorFile::create_with_policy(&reject_path, reject_options, policy)
+            .expect("create RegularChunked reject file");
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
+        let values = [21.0, 22.0, 23.0, 24.0, 0.0, 0.0, 0.0, 0.0];
+        let analysis = file
+            .analyze_sparse_append_f32(&values, &[1, 4, 2], &rule)
+            .expect("analyze sparse reject path");
+        assert_eq!(analysis.outcome, SparseAppendOutcome::Reject);
+        assert!(!analysis.reasons.is_empty());
+        let err = file
+            .append_sparse_f32_with_range(&values, &[1, 4, 2], &rule)
+            .expect_err("native sparse reject should surface as wrapper error");
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    }
+    let _ = fs::remove_file(reject_path);
+}
+
+#[test]
+fn safe_wrapper_sparse_append_i32_i64_roundtrip_and_rejects() {
+    for (path, dtype) in [
+        (unique_path("safe-wrapper-sparse-i32.tio"), DType::I32),
+        (unique_path("safe-wrapper-sparse-i64.tio"), DType::I64),
+    ] {
+        let options = CreateOptions::random_access(
+            dtype,
+            vec![
+                DimSpec::new(AxisKind::Time, 0),
+                DimSpec::new(AxisKind::Symbol, 4),
+            ],
+            0,
+        );
+        let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
+        match dtype {
+            DType::I32 => {
+                let values = [11, 0, 13, 0];
+                let mut file = TensorFile::create(&path, options).expect("create i32 sparse file");
+                let analysis = file
+                    .analyze_sparse_append_i32(&values, &[1, 4], &rule)
+                    .expect("analyze i32 sparse append");
+                assert_eq!(analysis.outcome, SparseAppendOutcome::SparseChunkTree);
+                assert_eq!(analysis.absent_subtensor_count, 2);
+                let range = file
+                    .append_sparse_i32(&values, &[1, 4], &rule)
+                    .expect("append i32 sparse values");
+                assert_eq!((range.start, range.end), (0, 1));
+                let dense = file.read_all_dense(0.0).expect("read i32 sparse values");
+                assert_eq!(dense.tensor.dtype, DType::I32);
+                assert_eq!(dense.tensor.shape, vec![1, 4]);
+                assert_eq!(dense.tensor.data, TensorData::I32(vec![11, 0, 13, 0]));
+                assert_eq!(dense.mask.as_deref(), Some(&[1, 0, 1, 0][..]));
+
+                let null_rule = SparseRule::null_subtensor(vec![1]);
+                let null_analysis = file
+                    .analyze_sparse_append_i32(&[21, 22, 23, 24], &[1, 4], &null_rule)
+                    .expect("analyze dense i32 null-subtensor rule");
+                assert_eq!(null_analysis.absent_subtensor_count, 0);
+
+                let unsupported =
+                    SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Nan);
+                let err = file
+                    .analyze_sparse_append_i32(&values, &[1, 4], &unsupported)
+                    .expect_err("integer NaN sparse predicate should reject");
+                assert_eq!(err.code(), ErrorCode::InvalidArgument);
+                assert!(
+                    err.message()
+                        .contains("integer sparse append supports only NullSubtensor or Zero")
+                );
+            }
+            DType::I64 => {
+                let values = [101_i64, 0, 103, 0];
+                let mut file = TensorFile::create(&path, options).expect("create i64 sparse file");
+                let analysis = file
+                    .analyze_sparse_append_i64(&values, &[1, 4], &rule)
+                    .expect("analyze i64 sparse append");
+                assert_eq!(analysis.outcome, SparseAppendOutcome::SparseChunkTree);
+                assert_eq!(analysis.absent_subtensor_count, 2);
+                let range = file
+                    .append_sparse_i64(&values, &[1, 4], &rule)
+                    .expect("append i64 sparse values");
+                assert_eq!((range.start, range.end), (0, 1));
+                let dense = file.read_all_dense(0.0).expect("read i64 sparse values");
+                assert_eq!(dense.tensor.dtype, DType::I64);
+                assert_eq!(dense.tensor.shape, vec![1, 4]);
+                assert_eq!(dense.tensor.data, TensorData::I64(vec![101, 0, 103, 0]));
+                assert_eq!(dense.mask.as_deref(), Some(&[1, 0, 1, 0][..]));
+
+                let unsupported =
+                    SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::EqualF64(0.0));
+                let err = file
+                    .append_sparse_i64(&values, &[1, 4], &unsupported)
+                    .expect_err("integer exact-float sparse predicate should reject");
+                assert_eq!(err.code(), ErrorCode::InvalidArgument);
+                assert!(
+                    err.message()
+                        .contains("integer sparse append supports only NullSubtensor or Zero")
+                );
+            }
+            _ => unreachable!("test matrix only includes integer dtypes"),
+        }
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn safe_wrapper_read_index_matches_basic_native_semantics() {
+    let path = unique_path("safe-wrapper-read-index.tio");
+    let options = CreateOptions::streaming(
+        DType::F64,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let mut file = TensorFile::create(&path, options).expect("create read_index file");
+        file.append_f64(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2])
+            .expect("append read_index values");
+    }
+
+    let file = TensorFile::open(&path).expect("open read_index file");
+    let sliced = file
+        .read_index(&[
+            ReadIndexItem::slice(Some(0), Some(3), 2).expect("valid slice"),
+            ReadIndexItem::all(),
+        ])
+        .expect("slice read_index");
+    assert_eq!(
+        sliced.report.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(!sliced.report.used_full_tensor_fallback);
+    assert_eq!(sliced.value.shape, vec![2, 2]);
+    assert_eq!(sliced.value.data, TensorData::F64(vec![1.0, 2.0, 5.0, 6.0]));
+
+    let postprocessed = file
+        .read_index(&[
+            ReadIndexItem::index(1),
+            ReadIndexItem::new_axis(),
+            ReadIndexItem::ellipsis(),
+        ])
+        .expect("index/newaxis read_index");
+    assert_eq!(
+        postprocessed.report.lowering_kind,
+        ReadIndexLoweringKind::SelectorReadWithShapePostprocess
+    );
+    assert_eq!(postprocessed.value.shape, vec![1, 2]);
+    assert_eq!(postprocessed.value.data, TensorData::F64(vec![3.0, 4.0]));
+
+    let err = ReadIndexItem::slice(None, None, 0).expect_err("zero step rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    let err = file
+        .read_index(&[ReadIndexItem::ellipsis(), ReadIndexItem::ellipsis()])
+        .expect_err("duplicate ellipsis rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    let err = file
+        .read_index(&[ReadIndexItem::index(0), ReadIndexItem::index(1)])
+        .expect_err("scalar output rejects before FFI");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_exports_arrow_c_data_and_allows_later_reads() {
+    let path = unique_path("safe-wrapper-arrow.tio");
+    let options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let mut file = TensorFile::create(&path, options).expect("create Arrow export file");
+        file.append_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2])
+            .expect("append Arrow export values");
+    }
+
+    let file = TensorFile::open(&path).expect("open Arrow export file");
+    {
+        let arrow = file.read_values_arrow().expect("export Arrow C Data");
+        assert_eq!(arrow.array().length, 3);
+        assert_eq!(arrow.array().n_children, 1);
+        assert!(arrow.array().release.is_some());
+        assert!(arrow.schema().release.is_some());
+        assert!(!arrow.schema().format.is_null());
+        assert!(!arrow.array_ptr().is_null());
+        assert!(!arrow.schema_ptr().is_null());
+    }
+
+    let tensor = file
+        .read_all()
+        .expect("ordinary read after Arrow export drop");
+    assert_eq!(tensor.shape, vec![3, 2]);
+    assert_eq!(
+        tensor.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    );
 
     drop(file);
     let _ = fs::remove_file(path);
@@ -612,6 +1030,145 @@ fn safe_wrapper_read_options_policy_and_inferred_create_roundtrip() {
 }
 
 #[test]
+fn safe_wrapper_attributed_read_options_return_trace_json() {
+    let path = unique_path("safe-wrapper-attributed-read-options.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0).with_name("time"),
+        DimSpec::new(AxisKind::Symbol, 2).with_name("symbol"),
+        DimSpec::new(AxisKind::Channel, 2).with_name("channel"),
+    ];
+    let mut options = CreateOptions::streaming(DType::F32, dims, 0);
+    options.symbols = vec!["AAPL".to_string(), "MSFT".to_string()];
+    options.channels = vec!["open".to_string(), "close".to_string()];
+    {
+        let mut file = TensorFile::create(&path, options).expect("create attributed source file");
+        file.append_f32(&[1.0, 2.0, 3.0, 4.0], &[1, 2, 2])
+            .expect("append attributed source values");
+    }
+
+    let file = TensorFile::open(&path).expect("open attributed source file");
+    let selectors = [
+        EntrySelector::All,
+        EntrySelector::Range { start: 0, end: 1 },
+        EntrySelector::All,
+    ];
+    let ordinary = file
+        .read_with_options(&selectors, ReadWithOptions::serial())
+        .expect("ordinary read with options remains available");
+    let context = QueryTraceContext::new(
+        "tp353-run",
+        "tp353-row",
+        "safe-wrapper-test",
+        "rust",
+        "arcadia-tio-rs",
+        "read_with_options_attributed",
+        "monotonic",
+    )
+    .with_repeat_index(7);
+    let attributed = file
+        .read_with_options_attributed(&selectors, ReadWithOptions::serial(), &context)
+        .expect("attributed read with options");
+    assert_eq!(attributed.value, ordinary.value);
+    assert_eq!(attributed.execution, ordinary.execution);
+    assert_query_trace_json(attributed.trace.as_str(), "read_with_options_attributed");
+    assert!(
+        attributed
+            .trace
+            .as_str()
+            .contains("\"run_id\":\"tp353-run\"")
+    );
+    assert!(
+        attributed
+            .trace
+            .as_str()
+            .contains("\"row_id\":\"tp353-row\"")
+    );
+    assert!(attributed.trace.as_str().contains("\"repeat_index\":7"));
+    assert!(attributed.trace.as_str().contains("\"language\":\"rust\""));
+    assert!(
+        attributed
+            .trace
+            .as_str()
+            .contains("\"api_surface\":\"arcadia-tio-rs\"")
+    );
+
+    let dense_context = QueryTraceContext::new(
+        "tp353-run",
+        "tp353-dense-row",
+        "safe-wrapper-test",
+        "rust",
+        "arcadia-tio-rs",
+        "read_with_options_dense_attributed",
+        "monotonic",
+    )
+    .with_repeat_index(8);
+    let dense = file
+        .read_with_options_dense_attributed(
+            &selectors,
+            ReadWithOptions::parallel_threads(2),
+            &dense_context,
+            -1.0,
+        )
+        .expect("dense attributed read with options");
+    assert_eq!(dense.value.tensor.shape, vec![1, 1, 2]);
+    assert_eq!(dense.value.tensor.data, TensorData::F32(vec![1.0, 2.0]));
+    assert_query_trace_json(dense.trace.as_str(), "read_with_options_dense_attributed");
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_attributed_read_rejects_invalid_context_inputs() {
+    let path = unique_path("safe-wrapper-attributed-invalid-context.tio");
+    let options = CreateOptions::streaming(
+        DType::F32,
+        vec![DimSpec::new(AxisKind::Time, 0).with_name("time")],
+        0,
+    );
+    {
+        let mut file = TensorFile::create(&path, options).expect("create invalid-context file");
+        file.append_f32(&[1.0], &[1])
+            .expect("append invalid-context value");
+    }
+
+    let file = TensorFile::open(&path).expect("open invalid-context file");
+    let empty_run = QueryTraceContext::new(
+        "",
+        "row",
+        "phase",
+        "rust",
+        "arcadia-tio-rs",
+        "read_with_options_attributed",
+        "monotonic",
+    );
+    let err = file
+        .read_with_options_attributed(&[], ReadWithOptions::serial(), &empty_run)
+        .expect_err("empty trace run id is rejected before native call");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    assert!(err.message().contains("run_id must not be empty"));
+
+    let nul_phase = QueryTraceContext::new(
+        "run",
+        "row",
+        "bad\0phase",
+        "rust",
+        "arcadia-tio-rs",
+        "read_with_options_attributed",
+        "monotonic",
+    );
+    let err = file
+        .read_with_options_dense_attributed(&[], ReadWithOptions::serial(), &nul_phase, -1.0)
+        .expect_err("interior-NUL trace phase is rejected before native call");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    assert!(
+        err.message()
+            .contains("phase contains an interior NUL byte")
+    );
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn safe_wrapper_policy_universe_create_roundtrip() {
     let path = unique_path("safe-wrapper-policy-universe-create.tio");
     let dims = vec![
@@ -648,6 +1205,309 @@ fn safe_wrapper_policy_universe_create_roundtrip() {
         TensorData::F32(vec![3.0, 3.0, 4.0, 4.0])
     );
     drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_admin_metadata_helpers_validate_and_return_native_state() {
+    let path = unique_path("safe-wrapper-admin-metadata.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0).with_name("time"),
+        DimSpec::new(AxisKind::Symbol, 2).with_name("symbol"),
+        DimSpec::new(AxisKind::Channel, 2).with_name("channel"),
+    ];
+    let mut options = CreateOptions::streaming(DType::F32, dims, 0);
+    options.symbols = vec!["AAPL".to_string(), "MSFT".to_string()];
+    options.channels = vec!["open".to_string(), "close".to_string()];
+    options.user_kv = vec![("source".to_string(), "initial".to_string())];
+    let policy = CreatePolicyOptions::new(vec![1, 2], vec![0, 2, 2]);
+
+    let mut file = TensorFile::create_with_policy(&path, options, policy)
+        .expect("create admin metadata wrapper file");
+    assert_eq!(
+        file.chunk_plan().expect("read chunk plan").block_sizes,
+        vec![1, 2, 2]
+    );
+    assert_eq!(
+        file.index_checkpoint_every_commits()
+            .expect("read index checkpoint interval"),
+        1
+    );
+    assert_eq!(
+        file.set_index_checkpoint_every_commits(0)
+            .expect_err("zero checkpoint interval rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        file.set_dim_name(0, Some(""))
+            .expect_err("empty dimension name rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        file.set_dim_name(0, Some("bad\0name"))
+            .expect_err("interior NUL dimension name rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        file.set_symbols(&["bad\0symbol"])
+            .expect_err("interior NUL symbol rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        file.set_channels(&["bad\0channel"])
+            .expect_err("interior NUL channel rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        file.set_user_kv(&[("bad\0key", "value")])
+            .expect_err("interior NUL user metadata key rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+
+    match file.set_index_checkpoint_every_commits(2) {
+        Ok(()) => assert_eq!(
+            file.index_checkpoint_every_commits()
+                .expect("read updated checkpoint interval"),
+            2
+        ),
+        Err(err) => assert_eq!(err.code(), ErrorCode::Unimplemented),
+    }
+    match file.set_dim_name(0, Some("timestamp")) {
+        Ok(()) => assert_eq!(
+            TensorFile::load_meta(&path)
+                .expect("metadata after dimension rename")
+                .dims[0]
+                .name
+                .as_deref(),
+            Some("timestamp")
+        ),
+        Err(err) => assert_eq!(err.code(), ErrorCode::Unimplemented),
+    }
+    match file.set_symbols(&["GOOG", "TSLA"]) {
+        Ok(()) => assert_eq!(
+            TensorFile::load_meta(&path)
+                .expect("metadata after symbol update")
+                .symbols
+                .into_iter()
+                .map(|label| label.name)
+                .collect::<Vec<_>>(),
+            vec!["GOOG".to_string(), "TSLA".to_string()]
+        ),
+        Err(err) => assert_eq!(err.code(), ErrorCode::Unimplemented),
+    }
+    match file.set_channels(&["bid", "ask"]) {
+        Ok(()) => assert_eq!(
+            TensorFile::load_meta(&path)
+                .expect("metadata after channel update")
+                .channels
+                .into_iter()
+                .map(|label| label.name)
+                .collect::<Vec<_>>(),
+            vec!["bid".to_string(), "ask".to_string()]
+        ),
+        Err(err) => assert_eq!(err.code(), ErrorCode::Unimplemented),
+    }
+    match file.set_user_kv(&[("source", "updated"), ("owner", "rust-wrapper")]) {
+        Ok(()) => assert_eq!(
+            TensorFile::load_meta(&path)
+                .expect("metadata after user metadata update")
+                .user_kv
+                .into_iter()
+                .map(|item| (item.key, item.value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("source".to_string(), "updated".to_string()),
+                ("owner".to_string(), "rust-wrapper".to_string())
+            ]
+        ),
+        Err(err) => assert_eq!(err.code(), ErrorCode::Unimplemented),
+    }
+
+    let dim_clear_supported = match file.set_dim_name(0, None) {
+        Ok(()) => {
+            assert_eq!(
+                TensorFile::load_meta(&path)
+                    .expect("metadata after dimension name clear")
+                    .dims[0]
+                    .name
+                    .as_deref(),
+                None
+            );
+            true
+        }
+        Err(err) => {
+            assert_eq!(err.code(), ErrorCode::Unimplemented);
+            false
+        }
+    };
+    let empty_user_kv: [(&str, &str); 0] = [];
+    let user_kv_clear_supported = match file.set_user_kv(&empty_user_kv) {
+        Ok(()) => {
+            assert!(
+                TensorFile::load_meta(&path)
+                    .expect("metadata after user metadata clear")
+                    .user_kv
+                    .is_empty()
+            );
+            true
+        }
+        Err(err) => {
+            assert_eq!(err.code(), ErrorCode::Unimplemented);
+            false
+        }
+    };
+    drop(file);
+
+    let reopened = TensorFile::open(&path).expect("reopen admin metadata wrapper file");
+    let reopened_meta = TensorFile::load_meta(&path).expect("metadata after admin reopen");
+    if dim_clear_supported {
+        assert_eq!(reopened_meta.dims[0].name.as_deref(), None);
+    }
+    if user_kv_clear_supported {
+        assert!(reopened_meta.user_kv.is_empty());
+    }
+    drop(reopened);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_history_listing_and_mutation_methods() {
+    let path = unique_path("safe-wrapper-history-mutation.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0).with_name("time"),
+        DimSpec::new(AxisKind::Channel, 1).with_name("channel"),
+    ];
+    let options = CreateOptions::streaming(DType::F32, dims, 0);
+
+    let mut file = TensorFile::create(&path, options).expect("create history wrapper file");
+    file.append_f32(&[1.0], &[1, 1]).expect("append first row");
+    let commit_one = file
+        .head_commit()
+        .expect("head after first append")
+        .commit_seq;
+    file.append_f32(&[2.0], &[1, 1]).expect("append second row");
+    let commit_two = file
+        .head_commit()
+        .expect("head after second append")
+        .commit_seq;
+    file.append_f32(&[3.0], &[1, 1]).expect("append third row");
+    let commit_three = file
+        .head_commit()
+        .expect("head after third append")
+        .commit_seq;
+    assert_eq!(commit_two, commit_one + 1);
+    assert_eq!(commit_three, commit_two + 1);
+
+    let commits = file.list_commits(None).expect("list full commit history");
+    assert_eq!(commits.len(), 3);
+    assert_eq!(commits[0].commit_seq, commit_three);
+    assert_eq!(commits[1].commit_seq, commit_two);
+    assert_eq!(commits[2].commit_seq, commit_one);
+    assert_eq!(file.head_commit().expect("head commit"), commits[0]);
+    assert_eq!(
+        file.list_commits(Some(2))
+            .expect("list limited commit history")
+            .iter()
+            .map(|commit| commit.commit_seq)
+            .collect::<Vec<_>>(),
+        vec![commit_three, commit_two]
+    );
+    assert_eq!(
+        file.list_commits(Some(0))
+            .expect_err("zero limit rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+
+    let historical = file
+        .read_at_commit(commit_two, &[])
+        .expect("read at retained second commit");
+    assert_eq!(historical.shape, vec![2, 1]);
+    assert_eq!(historical.data, TensorData::F32(vec![1.0, 2.0]));
+
+    file.pop().expect("pop current head");
+    let after_pop = file.read_all().expect("latest after pop");
+    assert_eq!(after_pop.shape, vec![2, 1]);
+    assert_eq!(after_pop.data, TensorData::F32(vec![1.0, 2.0]));
+    let pop_head = file.head_commit().expect("head after pop").commit_seq;
+    assert!(pop_head > commit_three);
+    assert_eq!(
+        file.list_commits(Some(2))
+            .expect("history after pop")
+            .iter()
+            .map(|commit| commit.commit_seq)
+            .collect::<Vec<_>>(),
+        vec![pop_head, commit_two]
+    );
+
+    file.append_f32(&[4.0], &[1, 1]).expect("append fourth row");
+    file.append_f32(&[5.0], &[1, 1]).expect("append fifth row");
+    assert_eq!(
+        file.pop_batched(0)
+            .expect_err("zero batched pop rejected")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    file.pop_batched(2).expect("batched pop latest two rows");
+    let after_batched_pop = file.read_all().expect("latest after batched pop");
+    assert_eq!(after_batched_pop.shape, vec![2, 1]);
+    assert_eq!(after_batched_pop.data, TensorData::F32(vec![1.0, 2.0]));
+
+    file.revert_commit(commit_one)
+        .expect("revert to first retained commit");
+    let after_revert = file.read_all().expect("latest after revert");
+    assert_eq!(after_revert.shape, vec![1, 1]);
+    assert_eq!(after_revert.data, TensorData::F32(vec![1.0]));
+    let current_head = file.head_commit().expect("head after revert").commit_seq;
+    assert!(current_head > pop_head);
+    assert_eq!(
+        file.read_at_commit(commit_two, &[])
+            .expect("historical read survives mutations")
+            .data,
+        TensorData::F32(vec![1.0, 2.0])
+    );
+    let visible_after_revert = file
+        .list_commits(Some(2))
+        .expect("visible history after revert")
+        .iter()
+        .map(|commit| commit.commit_seq)
+        .collect::<Vec<_>>();
+    assert_eq!(visible_after_revert.len(), 2);
+    assert_eq!(visible_after_revert[0], current_head);
+    assert!(visible_after_revert[1] < current_head);
+    drop(file);
+
+    let reopened = TensorFile::open(&path).expect("reopen mutated history wrapper file");
+    assert_eq!(
+        reopened
+            .head_commit()
+            .expect("head after reopening mutated history")
+            .commit_seq,
+        current_head
+    );
+    assert_eq!(
+        reopened
+            .list_commits(Some(2))
+            .expect("visible history after reopening")
+            .iter()
+            .map(|commit| commit.commit_seq)
+            .collect::<Vec<_>>(),
+        visible_after_revert
+    );
+    assert_eq!(
+        reopened
+            .read_at_commit(commit_two, &[])
+            .expect("historical read survives reopening after mutations")
+            .data,
+        TensorData::F32(vec![1.0, 2.0])
+    );
+    drop(reopened);
     let _ = fs::remove_file(path);
 }
 
@@ -773,6 +1633,51 @@ fn safe_wrapper_rejects_universe_create_with_coordinates() {
     };
     assert_eq!(err.code(), arcadia_tio_rs::ErrorCode::InvalidArgument);
     assert!(!path.exists());
+}
+
+fn assert_query_trace_json(json: &str, operation: &str) {
+    assert_json_object_text(json);
+    assert!(json.contains("\"schema_version\":\"tio_query_attribution_trace.v1\""));
+    assert!(json.contains("\"public_api_call_seconds\":null"));
+    assert!(json.contains("\"name\":\"selector_normalize_and_validate\""));
+    assert!(json.contains("\"category\":\"binding\""));
+    assert!(json.contains(&format!("\"operation\":\"{operation}\"")));
+}
+
+fn assert_json_object_text(json: &str) {
+    let bytes = json.as_bytes();
+    assert!(
+        bytes.first() == Some(&b'{'),
+        "JSON should start with object: {json}"
+    );
+    assert!(
+        bytes.last() == Some(&b'}'),
+        "JSON should end with object: {json}"
+    );
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'\"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'\"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        assert!(depth >= 0, "JSON delimiters closed too early: {json}");
+    }
+    assert!(!in_string, "JSON string was unterminated: {json}");
+    assert_eq!(depth, 0, "JSON delimiters were unbalanced: {json}");
 }
 
 fn roundtrip_dtype(

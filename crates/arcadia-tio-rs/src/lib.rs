@@ -431,6 +431,448 @@ pub struct AppendRange {
     pub end: u32,
 }
 
+/// Sparse-intent detector used to classify logically absent subtensors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseDetector {
+    /// Treat a subtensor as absent when the native nullable representation marks it null.
+    NullSubtensor,
+    /// Treat a subtensor as absent when every value matches the supplied predicate.
+    PredicateSubtensor,
+}
+
+impl SparseDetector {
+    fn to_raw(self) -> sys::ArcadiaTioSparseDetectorKind {
+        match self {
+            Self::NullSubtensor => sys::ARCADIA_TIO_SPARSE_DETECTOR_NULL_SUBTENSOR,
+            Self::PredicateSubtensor => sys::ARCADIA_TIO_SPARSE_DETECTOR_PREDICATE_SUBTENSOR,
+        }
+    }
+}
+
+/// Value predicate for sparse-intent absence detection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SparseValuePredicate {
+    /// Match IEEE NaN values.
+    Nan,
+    /// Match zero values.
+    Zero,
+    /// Match an exact `f32` value.
+    EqualF32(f32),
+    /// Match an exact `f64` value.
+    EqualF64(f64),
+}
+
+impl SparseValuePredicate {
+    fn to_raw(self) -> sys::ArcadiaTioSparseValuePredicate {
+        let (kind, value) = match self {
+            Self::Nan => (sys::ARCADIA_TIO_SPARSE_PREDICATE_NAN, 0.0),
+            Self::Zero => (sys::ARCADIA_TIO_SPARSE_PREDICATE_ZERO, 0.0),
+            Self::EqualF32(value) => (sys::ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F32, value as f64),
+            Self::EqualF64(value) => (sys::ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F64, value),
+        };
+        sys::ArcadiaTioSparseValuePredicate { kind, value }
+    }
+}
+
+/// Fallback policy when native sparse lowering is not selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseFallbackPolicy {
+    /// Preserve exact values by appending densely when sparse lowering cannot be used.
+    Dense,
+}
+
+impl SparseFallbackPolicy {
+    fn to_raw(self) -> sys::ArcadiaTioSparseFallbackPolicy {
+        match self {
+            Self::Dense => sys::ARCADIA_TIO_SPARSE_FALLBACK_DENSE,
+        }
+    }
+}
+
+/// Safe sparse-intent rule used by f32/f64/i32/i64 sparse analysis and append helpers.
+///
+/// Integer payloads currently support only [`SparseRule::null_subtensor`] and
+/// [`SparseValuePredicate::Zero`]; exact integer predicates remain deferred.
+///
+/// A rule owns the sparse-axis list and threshold settings. The wrapper validates the owned
+/// axes against the open file before calling the C ABI so borrowed raw pointers only live for a
+/// single FFI call. Sparse-intent diagnostics describe the current native lowering decision; they
+/// are not storage-efficiency, compression-ratio, layout-superiority, or capacity claims.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseRule {
+    sparse_axes: Vec<usize>,
+    detector: SparseDetector,
+    predicate: SparseValuePredicate,
+    min_absent_fraction: f64,
+    min_absent_subtensors: u64,
+    fallback: SparseFallbackPolicy,
+}
+
+impl SparseRule {
+    /// Creates a null-subtensor sparse rule for the provided non-append sparse axes.
+    pub fn null_subtensor(sparse_axes: Vec<usize>) -> Self {
+        Self {
+            sparse_axes,
+            detector: SparseDetector::NullSubtensor,
+            predicate: SparseValuePredicate::Nan,
+            min_absent_fraction: 0.0,
+            min_absent_subtensors: 1,
+            fallback: SparseFallbackPolicy::Dense,
+        }
+    }
+
+    /// Creates a predicate-subtensor sparse rule for the provided non-append sparse axes.
+    pub fn predicate_subtensor(sparse_axes: Vec<usize>, predicate: SparseValuePredicate) -> Self {
+        Self {
+            sparse_axes,
+            detector: SparseDetector::PredicateSubtensor,
+            predicate,
+            min_absent_fraction: 0.0,
+            min_absent_subtensors: 1,
+            fallback: SparseFallbackPolicy::Dense,
+        }
+    }
+
+    /// Returns the configured sparse axes.
+    pub fn sparse_axes(&self) -> &[usize] {
+        &self.sparse_axes
+    }
+
+    /// Returns the configured absence detector.
+    pub fn detector(&self) -> SparseDetector {
+        self.detector
+    }
+
+    /// Returns the configured predicate. It is ignored for null-subtensor rules.
+    pub fn predicate(&self) -> SparseValuePredicate {
+        self.predicate
+    }
+
+    /// Returns the minimum absent fraction threshold.
+    pub fn min_absent_fraction(&self) -> f64 {
+        self.min_absent_fraction
+    }
+
+    /// Returns the minimum absent subtensor-count threshold.
+    pub fn min_absent_subtensors(&self) -> u64 {
+        self.min_absent_subtensors
+    }
+
+    /// Returns the configured fallback policy.
+    pub fn fallback(&self) -> SparseFallbackPolicy {
+        self.fallback
+    }
+
+    /// Sets the minimum absent fraction required before sparse lowering is considered.
+    pub fn with_min_absent_fraction(mut self, min_absent_fraction: f64) -> Self {
+        self.min_absent_fraction = min_absent_fraction;
+        self
+    }
+
+    /// Sets the minimum absent subtensor count required before sparse lowering is considered.
+    pub fn with_min_absent_subtensors(mut self, min_absent_subtensors: u64) -> Self {
+        self.min_absent_subtensors = min_absent_subtensors;
+        self
+    }
+
+    /// Sets the fallback policy used when sparse lowering is not selected.
+    pub fn with_fallback(mut self, fallback: SparseFallbackPolicy) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    fn validate_for_append(&self, dtype: DType, rank: usize, append_axis: usize) -> Result<()> {
+        if rank == 0 {
+            return Err(TioError::invalid_argument(
+                "sparse append shape rank must be non-zero",
+            ));
+        }
+        if append_axis >= rank {
+            return Err(TioError::invalid_argument(format!(
+                "append axis {append_axis} out of range for rank {rank}"
+            )));
+        }
+        if append_axis != 0 {
+            return Err(TioError::invalid_argument(
+                "sparse append currently supports append axis 0 only",
+            ));
+        }
+        if self.sparse_axes.is_empty() {
+            return Err(TioError::invalid_argument(
+                "sparse rule sparse_axes must not be empty",
+            ));
+        }
+        for (index, &axis) in self.sparse_axes.iter().enumerate() {
+            if axis >= rank {
+                return Err(TioError::invalid_argument(format!(
+                    "sparse axis {axis} out of range for rank {rank}"
+                )));
+            }
+            if axis == append_axis {
+                return Err(TioError::invalid_argument(
+                    "sparse axes must exclude the append axis",
+                ));
+            }
+            if self.sparse_axes[..index].contains(&axis) {
+                return Err(TioError::invalid_argument("sparse axes must be unique"));
+            }
+        }
+        if !self.min_absent_fraction.is_finite() || !(0.0..=1.0).contains(&self.min_absent_fraction)
+        {
+            return Err(TioError::invalid_argument(
+                "sparse rule min_absent_fraction must be finite and between 0.0 and 1.0",
+            ));
+        }
+        if self.detector == SparseDetector::PredicateSubtensor {
+            match (dtype, self.predicate) {
+                (DType::F32, SparseValuePredicate::EqualF64(_)) => {
+                    return Err(TioError::invalid_argument(
+                        "f32 sparse append cannot use an EqualF64 predicate",
+                    ));
+                }
+                (DType::F64, SparseValuePredicate::EqualF32(_)) => {
+                    return Err(TioError::invalid_argument(
+                        "f64 sparse append cannot use an EqualF32 predicate",
+                    ));
+                }
+                (DType::I32 | DType::I64, SparseValuePredicate::Zero) => {}
+                (DType::I32 | DType::I64, _) => {
+                    return Err(TioError::invalid_argument(
+                        "integer sparse append supports only NullSubtensor or Zero absence detection",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Native sparse-intent analysis outcome copied into Rust-owned values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseAppendOutcome {
+    /// Native analysis selected the RegularChunked sparse producer path.
+    SparseRegularChunked,
+    /// Native analysis selected dense append fallback.
+    DenseFallback,
+    /// Native analysis rejected the sparse-intent request.
+    Reject,
+    /// Native analysis selected the SparseChunkTree sparse producer path.
+    SparseChunkTree,
+}
+
+impl SparseAppendOutcome {
+    fn from_raw(value: sys::ArcadiaTioSparseAppendOutcome) -> Result<Self> {
+        match value {
+            sys::ARCADIA_TIO_SPARSE_APPEND_SPARSE_REGULAR_CHUNKED => Ok(Self::SparseRegularChunked),
+            sys::ARCADIA_TIO_SPARSE_APPEND_DENSE_FALLBACK => Ok(Self::DenseFallback),
+            sys::ARCADIA_TIO_SPARSE_APPEND_REJECT => Ok(Self::Reject),
+            sys::ARCADIA_TIO_SPARSE_APPEND_SPARSE_CHUNK_TREE => Ok(Self::SparseChunkTree),
+            other => Err(TioError::conversion(format!(
+                "unknown sparse append outcome value {other}"
+            ))),
+        }
+    }
+}
+
+/// Structured reason code explaining a sparse-intent analysis decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseAppendReason {
+    /// No absent subtensors were detected in the append payload.
+    NoAbsentSubtensorsDetected,
+    /// Sparse axes must not be empty.
+    SparseAxesMustNotBeEmpty,
+    /// Sparse axes must be unique.
+    SparseAxesMustBeUnique,
+    /// Sparse axes must be within the file rank.
+    SparseAxesOutOfBounds,
+    /// Sparse axes must not include the append axis.
+    SparseAxesMustExcludeAppendAxis,
+    /// Current root sparse append supports append axis zero only.
+    AppendAxisMustBeZeroForCurrentRootAppend,
+    /// The predicate is not compatible with the payload dtype.
+    PredicateDTypeMismatch,
+    /// Dense fallback preserves exact values.
+    DenseFallbackPreservesExactValues,
+    /// Sparse lowering was below the configured threshold.
+    SparseLoweringBelowThreshold,
+    /// WholeAppendUnit layout has no current sparse producer path.
+    WholeAppendUnitHasNoSparseProducerPath,
+    /// RegularChunked block shape was not published for sparse lowering.
+    RegularChunkedBlockShapeUnpublished,
+    /// RegularChunked dense fallback requires stable non-append extents.
+    RegularChunkedDenseFallbackRequiresStableNonAppendExtents,
+    /// RegularChunked dense fallback requires a dense published lane set.
+    RegularChunkedDenseFallbackRequiresDensePublishedLaneSet,
+    /// RegularChunked sparse lowering requires a stable published lane set.
+    RegularChunkedSparseLoweringRequiresStablePublishedLaneSet,
+    /// The tensor contains nulls that dense fallback cannot preserve.
+    TensorContainsNullsThatDenseFallbackCannotPreserve,
+    /// Logical absence does not compile to the current sparse model.
+    LogicalAbsenceDoesNotCompileToCurrentSparseModel,
+    /// The current native sparse lowering is not implemented for this detector.
+    CurrentSparseLoweringNotYetImplementedForDetector,
+}
+
+impl SparseAppendReason {
+    fn from_raw(value: sys::ArcadiaTioSparseAppendReason) -> Result<Self> {
+        match value {
+            sys::ARCADIA_TIO_SPARSE_REASON_NO_ABSENT_SUBTENSORS_DETECTED => {
+                Ok(Self::NoAbsentSubtensorsDetected)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_NOT_BE_EMPTY => {
+                Ok(Self::SparseAxesMustNotBeEmpty)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_BE_UNIQUE => {
+                Ok(Self::SparseAxesMustBeUnique)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_OUT_OF_BOUNDS => {
+                Ok(Self::SparseAxesOutOfBounds)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_EXCLUDE_APPEND_AXIS => {
+                Ok(Self::SparseAxesMustExcludeAppendAxis)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_APPEND_AXIS_MUST_BE_ZERO_FOR_CURRENT_ROOT_APPEND => {
+                Ok(Self::AppendAxisMustBeZeroForCurrentRootAppend)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_PREDICATE_DTYPE_MISMATCH => {
+                Ok(Self::PredicateDTypeMismatch)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_DENSE_FALLBACK_PRESERVES_EXACT_VALUES => {
+                Ok(Self::DenseFallbackPreservesExactValues)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_SPARSE_LOWERING_BELOW_THRESHOLD => {
+                Ok(Self::SparseLoweringBelowThreshold)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_WHOLE_APPEND_UNIT_HAS_NO_SPARSE_PRODUCER_PATH => {
+                Ok(Self::WholeAppendUnitHasNoSparseProducerPath)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_BLOCK_SHAPE_UNPUBLISHED => {
+                Ok(Self::RegularChunkedBlockShapeUnpublished)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_STABLE_NON_APPEND_EXTENTS => {
+                Ok(Self::RegularChunkedDenseFallbackRequiresStableNonAppendExtents)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_DENSE_PUBLISHED_LANE_SET => {
+                Ok(Self::RegularChunkedDenseFallbackRequiresDensePublishedLaneSet)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_SPARSE_LOWERING_REQUIRES_STABLE_PUBLISHED_LANE_SET => {
+                Ok(Self::RegularChunkedSparseLoweringRequiresStablePublishedLaneSet)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_TENSOR_CONTAINS_NULLS_THAT_DENSE_FALLBACK_CANNOT_PRESERVE => {
+                Ok(Self::TensorContainsNullsThatDenseFallbackCannotPreserve)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_LOGICAL_ABSENCE_DOES_NOT_COMPILE_TO_CURRENT_SPARSE_MODEL => {
+                Ok(Self::LogicalAbsenceDoesNotCompileToCurrentSparseModel)
+            }
+            sys::ARCADIA_TIO_SPARSE_REASON_CURRENT_SPARSE_LOWERING_NOT_YET_IMPLEMENTED_FOR_DETECTOR => {
+                Ok(Self::CurrentSparseLoweringNotYetImplementedForDetector)
+            }
+            other => Err(TioError::conversion(format!(
+                "unknown sparse append reason value {other}"
+            ))),
+        }
+    }
+}
+
+/// Rust-owned sparse-intent analysis report copied from native output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseAppendAnalysis {
+    /// Selected native append outcome.
+    pub outcome: SparseAppendOutcome,
+    /// Fraction of detected absent subtensors considered by native analysis.
+    pub absent_fraction: f64,
+    /// Count of absent subtensors detected by native analysis.
+    pub absent_subtensor_count: u64,
+    /// Count of total subtensors considered by native analysis.
+    pub total_subtensor_count: u64,
+    /// Structured native reason codes copied into Rust memory.
+    pub reasons: Vec<SparseAppendReason>,
+}
+
+fn empty_sparse_append_analysis() -> sys::ArcadiaTioSparseAppendAnalysis {
+    sys::ArcadiaTioSparseAppendAnalysis {
+        outcome: sys::ARCADIA_TIO_SPARSE_APPEND_REJECT,
+        absent_fraction: 0.0,
+        absent_subtensor_count: 0,
+        total_subtensor_count: 0,
+        reasons: ptr::null_mut(),
+        reasons_len: 0,
+    }
+}
+
+struct SparseAppendAnalysisGuard<'a> {
+    raw: &'a mut sys::ArcadiaTioSparseAppendAnalysis,
+}
+
+impl Drop for SparseAppendAnalysisGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: The guard is created only for raw analysis values initialized by this wrapper or
+        // native sparse analysis. Native free tolerates empty/null reason buffers and nulls the raw
+        // output after releasing any owned reasons, preventing accidental double-free by callers.
+        unsafe { sys::arcadia_tio_sparse_append_analysis_free(self.raw) };
+    }
+}
+
+fn take_sparse_append_analysis(
+    raw: &mut sys::ArcadiaTioSparseAppendAnalysis,
+) -> Result<SparseAppendAnalysis> {
+    let guard = SparseAppendAnalysisGuard { raw };
+    if guard.raw.reasons.is_null() && guard.raw.reasons_len != 0 {
+        return Err(TioError::conversion(
+            "native sparse append analysis returned null reasons with non-zero length",
+        ));
+    }
+    let raw_reasons = if guard.raw.reasons_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: Successful native analysis returns `reasons` pointing to `reasons_len` values.
+        // The guard frees the native analysis exactly once after this function copies the values;
+        // it also runs on conversion errors caused by unknown outcome or reason codes.
+        unsafe { slice::from_raw_parts(guard.raw.reasons.cast_const(), guard.raw.reasons_len) }
+    };
+    let reasons = raw_reasons
+        .iter()
+        .copied()
+        .map(SparseAppendReason::from_raw)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SparseAppendAnalysis {
+        outcome: SparseAppendOutcome::from_raw(guard.raw.outcome)?,
+        absent_fraction: guard.raw.absent_fraction,
+        absent_subtensor_count: guard.raw.absent_subtensor_count,
+        total_subtensor_count: guard.raw.total_subtensor_count,
+        reasons,
+    })
+}
+
+/// Commit metadata returned by retained-history listing APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitInfo {
+    /// Native commit sequence number.
+    pub commit_seq: u64,
+    /// Footer offset for this commit in the native file.
+    pub footer_offset: u64,
+    /// Previous visible footer offset recorded for this commit.
+    pub prev_footer_offset: u64,
+}
+
+impl From<sys::ArcadiaTioCommitInfo> for CommitInfo {
+    fn from(raw: sys::ArcadiaTioCommitInfo) -> Self {
+        Self {
+            commit_seq: raw.commit_seq,
+            footer_offset: raw.footer_offset,
+            prev_footer_offset: raw.prev_footer_offset,
+        }
+    }
+}
+
+/// Native chunking plan copied into Rust-owned memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkPlan {
+    /// Block size per axis in native rank order.
+    pub block_sizes: Vec<u32>,
+}
+
 /// 16-byte universe family/version identifier used by the C ABI.
 pub type UniverseUuid = [u8; 16];
 
@@ -789,6 +1231,90 @@ impl ReadWithShapePolicyOptions {
     }
 }
 
+/// Query-attribution context for opt-in diagnostic current reads.
+///
+/// All string fields are owned Rust strings. The safe wrapper converts them to temporary C strings
+/// for the attributed read call and never exposes the borrowed native pointers in public Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTraceContext {
+    /// Run identifier copied into native trace metadata.
+    pub run_id: String,
+    /// Result-row identifier copied into native trace metadata.
+    pub row_id: String,
+    /// Repeat index copied into native trace metadata.
+    pub repeat_index: u32,
+    /// Phase label copied into native trace metadata.
+    pub phase: String,
+    /// Language label copied into native trace metadata.
+    pub language: String,
+    /// Public API surface label copied into native trace metadata.
+    pub api_surface: String,
+    /// Operation label copied into native trace metadata.
+    pub operation: String,
+    /// Trace-clock label copied into native trace metadata.
+    pub trace_clock: String,
+}
+
+impl QueryTraceContext {
+    /// Creates a query-attribution context for a single diagnostic read.
+    pub fn new(
+        run_id: impl Into<String>,
+        row_id: impl Into<String>,
+        phase: impl Into<String>,
+        language: impl Into<String>,
+        api_surface: impl Into<String>,
+        operation: impl Into<String>,
+        trace_clock: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            row_id: row_id.into(),
+            repeat_index: 0,
+            phase: phase.into(),
+            language: language.into(),
+            api_surface: api_surface.into(),
+            operation: operation.into(),
+            trace_clock: trace_clock.into(),
+        }
+    }
+
+    /// Sets the repeat index included in native trace metadata.
+    pub fn with_repeat_index(mut self, repeat_index: u32) -> Self {
+        self.repeat_index = repeat_index;
+        self
+    }
+}
+
+/// Native query-attribution trace JSON copied into Rust memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTraceJson {
+    /// JSON text following the native `tio_query_attribution_trace.v1` schema.
+    pub json: String,
+}
+
+impl QueryTraceJson {
+    /// Returns the owned trace JSON text as `str`.
+    pub fn as_str(&self) -> &str {
+        &self.json
+    }
+
+    /// Consumes the trace wrapper and returns the owned JSON text.
+    pub fn into_string(self) -> String {
+        self.json
+    }
+}
+
+/// Current attributed read value with execution metadata and diagnostic trace JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributedReadResult<T> {
+    /// Read value.
+    pub value: T,
+    /// Execution metadata.
+    pub execution: ReadExecutionReport,
+    /// Query-attribution trace JSON copied from native-owned output.
+    pub trace: QueryTraceJson,
+}
+
 /// Historical read options with execution mode only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoricalReadWithOptions {
@@ -850,6 +1376,104 @@ pub enum EntrySelector {
     Take(Vec<u32>),
 }
 
+/// Basic read-index item for the native `read_index` lowering path.
+///
+/// This intentionally exposes the bounded C ABI first slice: `all`, `slice`, scalar `index`,
+/// `new_axis`, and `ellipsis`. Advanced array/mask indexing is not part of this API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadIndexItem {
+    /// Select all values along one input axis.
+    All,
+    /// Select a Python-style half-open slice with optional start/end and a non-zero step.
+    Slice {
+        /// Optional inclusive start bound.
+        start: Option<i64>,
+        /// Optional exclusive end bound.
+        end: Option<i64>,
+        /// Slice step; must be non-zero.
+        step: i64,
+    },
+    /// Select a single scalar index along one input axis.
+    Index(i64),
+    /// Insert a length-one output axis.
+    NewAxis,
+    /// Expand to the remaining input axes during native normalization.
+    Ellipsis,
+}
+
+impl ReadIndexItem {
+    /// Selects all values along one input axis.
+    pub fn all() -> Self {
+        Self::All
+    }
+
+    /// Creates a bounded or open-ended slice with a non-zero step.
+    pub fn slice(start: Option<i64>, end: Option<i64>, step: i64) -> Result<Self> {
+        if step == 0 {
+            return Err(TioError::invalid_argument(
+                "read_index slice step must not be zero",
+            ));
+        }
+        Ok(Self::Slice { start, end, step })
+    }
+
+    /// Selects a single scalar index along one input axis.
+    pub fn index(index: i64) -> Self {
+        Self::Index(index)
+    }
+
+    /// Inserts a length-one output axis.
+    pub fn new_axis() -> Self {
+        Self::NewAxis
+    }
+
+    /// Expands to the remaining input axes during native normalization.
+    pub fn ellipsis() -> Self {
+        Self::Ellipsis
+    }
+
+    fn to_raw(&self) -> Result<sys::ArcadiaTioReadIndexItem> {
+        match self {
+            Self::All => Ok(raw_read_index_item(sys::ARCADIA_TIO_READ_INDEX_ALL)),
+            Self::Slice { start, end, step } => {
+                if *step == 0 {
+                    return Err(TioError::invalid_argument(
+                        "read_index slice step must not be zero",
+                    ));
+                }
+                Ok(sys::ArcadiaTioReadIndexItem {
+                    kind: sys::ARCADIA_TIO_READ_INDEX_SLICE,
+                    has_start: u8::from(start.is_some()),
+                    start: start.unwrap_or_default(),
+                    has_end: u8::from(end.is_some()),
+                    end: end.unwrap_or_default(),
+                    step: *step,
+                    index: 0,
+                })
+            }
+            Self::Index(index) => {
+                let mut raw = raw_read_index_item(sys::ARCADIA_TIO_READ_INDEX_INDEX);
+                raw.index = *index;
+                Ok(raw)
+            }
+            Self::NewAxis => Ok(raw_read_index_item(sys::ARCADIA_TIO_READ_INDEX_NEW_AXIS)),
+            Self::Ellipsis => Ok(raw_read_index_item(sys::ARCADIA_TIO_READ_INDEX_ELLIPSIS)),
+        }
+    }
+}
+
+fn raw_read_index_item(kind: sys::ArcadiaTioReadIndexItemTag) -> sys::ArcadiaTioReadIndexItem {
+    sys::ArcadiaTioReadIndexItem {
+        kind,
+        has_start: 0,
+        start: 0,
+        has_end: 0,
+        end: 0,
+        step: 1,
+        index: 0,
+    }
+}
+
 /// Chunk key used by clear-block mutation APIs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkKey {
@@ -893,6 +1517,122 @@ pub struct ReadExecutionReport {
     pub query_parallel_reason_code: Option<String>,
     /// Query parallel reason-code taxonomy if reported.
     pub query_parallel_reason_code_taxonomy: Option<String>,
+}
+
+/// Native lowering path reported by `read_index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadIndexLoweringKind {
+    /// Native code did not report a recognized lowering path.
+    Unknown,
+    /// Lowered directly to selector reads.
+    SelectorRead,
+    /// Lowered to selector reads plus shape post-processing for scalar/new-axis items.
+    SelectorReadWithShapePostprocess,
+}
+
+impl ReadIndexLoweringKind {
+    fn from_raw(value: sys::ArcadiaTioReadIndexLoweringKind) -> Result<Self> {
+        match value {
+            sys::ARCADIA_TIO_READ_INDEX_LOWERING_UNKNOWN => Ok(Self::Unknown),
+            sys::ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ => Ok(Self::SelectorRead),
+            sys::ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ_WITH_SHAPE_POSTPROCESS => {
+                Ok(Self::SelectorReadWithShapePostprocess)
+            }
+            other => Err(TioError::conversion(format!(
+                "unknown read_index lowering kind value {other}"
+            ))),
+        }
+    }
+}
+
+/// Rust-owned `read_index` lowering report copied from native output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadIndexReport {
+    /// Lowering strategy selected by native code.
+    pub lowering_kind: ReadIndexLoweringKind,
+    /// Whether native code used a full-tensor fallback.
+    pub used_full_tensor_fallback: bool,
+}
+
+/// Current read-index value with lowering metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadIndexResult {
+    /// Read value.
+    pub value: Tensor,
+    /// Lowering metadata.
+    pub report: ReadIndexReport,
+}
+
+/// RAII owner for an Arrow C Data array/schema pair returned by native full-value export.
+///
+/// The pointers exposed by [`ArrowCData::array`] and [`ArrowCData::schema`] are borrowed and remain
+/// valid only while this value is alive. Dropping this value invokes non-null Arrow `release`
+/// callbacks exactly once. This is a bounded interop surface; it is not a generic zero-copy or
+/// performance guarantee.
+pub struct ArrowCData {
+    array: sys::ArrowArray,
+    schema: sys::ArrowSchema,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl ArrowCData {
+    /// Returns the borrowed Arrow C Data array carrier.
+    pub fn array(&self) -> &sys::ArrowArray {
+        &self.array
+    }
+
+    /// Returns the borrowed Arrow C Data schema carrier.
+    pub fn schema(&self) -> &sys::ArrowSchema {
+        &self.schema
+    }
+
+    /// Returns a raw borrowed pointer to the Arrow C Data array carrier.
+    pub fn array_ptr(&self) -> *const sys::ArrowArray {
+        &self.array
+    }
+
+    /// Returns a raw borrowed pointer to the Arrow C Data schema carrier.
+    pub fn schema_ptr(&self) -> *const sys::ArrowSchema {
+        &self.schema
+    }
+}
+
+impl Drop for ArrowCData {
+    fn drop(&mut self) {
+        // SAFETY: The native Arrow C Data contract transfers ownership of any non-null release
+        // callbacks to the caller. This RAII owner invokes each callback at most once on drop.
+        unsafe {
+            release_arrow_array(&mut self.array);
+            release_arrow_schema(&mut self.schema);
+        }
+    }
+}
+
+unsafe fn release_arrow_array(array: *mut sys::ArrowArray) {
+    // SAFETY: Caller guarantees `array` is a writable ArrowArray slot. A non-null release callback
+    // means the slot owns Arrow C Data resources that must be released by the caller.
+    if let Some(release) = unsafe { (*array).release } {
+        unsafe { release(array) };
+    }
+}
+
+unsafe fn release_arrow_schema(schema: *mut sys::ArrowSchema) {
+    // SAFETY: Caller guarantees `schema` is a writable ArrowSchema slot. A non-null release
+    // callback means the slot owns Arrow C Data resources that must be released by the caller.
+    if let Some(release) = unsafe { (*schema).release } {
+        unsafe { release(schema) };
+    }
+}
+
+impl fmt::Debug for ArrowCData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ArrowCData")
+            .field("array_length", &self.array.length)
+            .field("array_n_buffers", &self.array.n_buffers)
+            .field("array_n_children", &self.array.n_children)
+            .field("schema_format", &optional_c_string(self.schema.format))
+            .finish_non_exhaustive()
+    }
 }
 
 /// Historical query source kind.
@@ -1736,7 +2476,12 @@ pub struct CreateOptions {
     pub user_kv: Vec<(String, String)>,
     /// Optional coordinate descriptors.
     pub coordinates: Vec<CoordinateSpec>,
-    /// Optional write-time compression policy for future appends.
+    /// Optional write-time compression policy override for future appends.
+    ///
+    /// `None` leaves the native persisted default in place (currently Auto/Zstd).
+    /// Use `Some(CompressionConfig::uncompressed())` or
+    /// `Some(CompressionConfig::zstd_level(...))` only when the caller needs an
+    /// explicit override.
     pub compression: Option<CompressionConfig>,
 }
 
@@ -2658,6 +3403,114 @@ impl TensorFile {
         Ok(dims)
     }
 
+    /// Returns the native index-checkpoint interval in commits.
+    pub fn index_checkpoint_every_commits(&self) -> Result<u32> {
+        let mut every_commits = 0u32;
+        // SAFETY: `every_commits` is a valid output pointer and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_get_index_checkpoint_every_commits(
+                self.raw.as_ptr(),
+                &mut every_commits,
+            )
+        };
+        status_result(status, "failed to read index checkpoint interval")?;
+        Ok(every_commits)
+    }
+
+    /// Updates the native index-checkpoint interval in commits.
+    ///
+    /// The interval must be at least one. Native implementations that do not support this
+    /// metadata update return an ordinary wrapper error without changing the file.
+    pub fn set_index_checkpoint_every_commits(&mut self, every_commits: u32) -> Result<()> {
+        if every_commits == 0 {
+            return Err(TioError::invalid_argument(
+                "index checkpoint interval must be non-zero",
+            ));
+        }
+        // SAFETY: `self.raw` is a live native handle.
+        let status = unsafe {
+            sys::arcadia_tio_set_index_checkpoint_every_commits(self.raw.as_ptr(), every_commits)
+        };
+        status_result(status, "failed to set index checkpoint interval")
+    }
+
+    /// Returns the native chunking plan copied into Rust-owned memory.
+    pub fn chunk_plan(&self) -> Result<ChunkPlan> {
+        let mut raw_plan = NativeChunkPlan::new();
+        // SAFETY: `raw_plan` is a valid output pointer and the handle is live.
+        let status =
+            unsafe { sys::arcadia_tio_chunk_plan(self.raw.as_ptr(), raw_plan.as_mut_ptr()) };
+        status_result(status, "failed to read chunk plan")?;
+        copy_chunk_plan(raw_plan.as_ref())
+    }
+
+    /// Updates or clears one dimension name through the native metadata administration API.
+    ///
+    /// Passing `None` clears the name. Native implementations that do not support metadata-only
+    /// updates return an ordinary wrapper error without changing the file.
+    pub fn set_dim_name(&mut self, axis: usize, name: Option<&str>) -> Result<()> {
+        if matches!(name, Some("")) {
+            return Err(TioError::invalid_argument("dimension name cannot be empty"));
+        }
+        let name = name
+            .map(|value| string_to_cstring(value, "dimension name"))
+            .transpose()?;
+        let (ptr, has_name) = match name.as_ref() {
+            Some(value) => (value.as_ptr(), 1),
+            None => (ptr::null(), 0),
+        };
+        // SAFETY: Optional name CString, when present, outlives the call and the handle is live.
+        let status =
+            unsafe { sys::arcadia_tio_set_dim_name(self.raw.as_ptr(), axis, ptr, has_name) };
+        status_result(status, "failed to set dimension name")
+    }
+
+    /// Replaces Symbol-axis labels through the native metadata administration API.
+    ///
+    /// Native implementations may reject shrinking or unsupported metadata-only updates.
+    pub fn set_symbols<S: AsRef<str>>(&mut self, symbols: &[S]) -> Result<()> {
+        let prepared = PreparedStringList::new(symbols, "symbol label")?;
+        // SAFETY: Prepared C string pointers outlive the call and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_set_symbols(self.raw.as_ptr(), prepared.ptr(), prepared.len())
+        };
+        status_result(status, "failed to set symbol labels")
+    }
+
+    /// Replaces Channel-axis labels through the native metadata administration API.
+    ///
+    /// Native implementations may reject shrinking or unsupported metadata-only updates.
+    pub fn set_channels<S: AsRef<str>>(&mut self, channels: &[S]) -> Result<()> {
+        let prepared = PreparedStringList::new(channels, "channel label")?;
+        // SAFETY: Prepared C string pointers outlive the call and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_set_channels(self.raw.as_ptr(), prepared.ptr(), prepared.len())
+        };
+        status_result(status, "failed to set channel labels")
+    }
+
+    /// Replaces user key/value metadata through the native metadata administration API.
+    ///
+    /// Passing an empty slice requests clearing all user metadata. Native implementations that do
+    /// not support metadata-only updates return an ordinary wrapper error without changing the file.
+    pub fn set_user_kv<K, V>(&mut self, user_kv: &[(K, V)]) -> Result<()>
+    where
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let prepared = PreparedUserKvList::new(user_kv)?;
+        // SAFETY: Prepared key/value C string pointers outlive the call and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_set_user_kv(
+                self.raw.as_ptr(),
+                prepared.key_ptr(),
+                prepared.value_ptr(),
+                prepared.len(),
+            )
+        };
+        status_result(status, "failed to set user metadata")
+    }
+
     /// Returns the native path snapshot for this handle.
     pub fn path(&self) -> Result<String> {
         let mut raw_path: *mut c_char = ptr::null_mut();
@@ -2682,6 +3535,326 @@ impl TensorFile {
         // SAFETY: `raw_meta`/`len` are native-owned output from coordinate_meta and freed once.
         unsafe { sys::arcadia_tio_axis_coordinate_meta_free(raw_meta, len) };
         out
+    }
+
+    /// Analyzes how a sparse-intent f32 append would be handled by the native writer.
+    pub fn analyze_sparse_append_f32(
+        &self,
+        data: &[f32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<SparseAppendAnalysis> {
+        self.analyze_sparse_append(
+            DType::F32,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, raw| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // buffers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_analyze_sparse_append_f32(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        raw,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Analyzes how a sparse-intent f64 append would be handled by the native writer.
+    pub fn analyze_sparse_append_f64(
+        &self,
+        data: &[f64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<SparseAppendAnalysis> {
+        self.analyze_sparse_append(
+            DType::F64,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, raw| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // buffers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_analyze_sparse_append_f64(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        raw,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Analyzes how a sparse-intent i32 append would be handled by the native writer.
+    ///
+    /// Integer sparse append currently supports null-subtensor rules and zero predicates only;
+    /// exact integer predicates remain deferred.
+    pub fn analyze_sparse_append_i32(
+        &self,
+        data: &[i32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<SparseAppendAnalysis> {
+        self.analyze_sparse_append(
+            DType::I32,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, raw| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // buffers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_analyze_sparse_append_i32(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        raw,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Analyzes how a sparse-intent i64 append would be handled by the native writer.
+    ///
+    /// Integer sparse append currently supports null-subtensor rules and zero predicates only;
+    /// exact integer predicates remain deferred.
+    pub fn analyze_sparse_append_i64(
+        &self,
+        data: &[i64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<SparseAppendAnalysis> {
+        self.analyze_sparse_append(
+            DType::I64,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, raw| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // buffers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_analyze_sparse_append_i64(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        raw,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Appends f32 data using sparse-intent analysis without returning the assigned range.
+    pub fn append_sparse_f32(
+        &mut self,
+        data: &[f32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<()> {
+        self.append_sparse(DType::F32, data.len(), shape, rule, |handle, raw_rule| {
+            // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, and rule buffers are
+            // borrowed from Rust values that outlive this FFI call.
+            unsafe {
+                sys::arcadia_tio_append_sparse_f32(
+                    handle,
+                    data.as_ptr(),
+                    shape.as_ptr(),
+                    shape.len(),
+                    raw_rule,
+                )
+            }
+        })
+    }
+
+    /// Appends f32 data using sparse-intent analysis and returns the assigned entry range.
+    pub fn append_sparse_f32_with_range(
+        &mut self,
+        data: &[f32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_with_range(
+            DType::F32,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, start, end| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // pointers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_append_sparse_f32_with_range(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        start,
+                        end,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Appends f32 data using sparse-intent analysis and returns the assigned entry range.
+    ///
+    /// This is a readability alias for [`TensorFile::append_sparse_f32_with_range`].
+    /// The unsuffixed [`TensorFile::append_sparse_f32`] method is kept as a
+    /// compatibility-preserving status-only append.
+    pub fn append_sparse_f32_returning_range(
+        &mut self,
+        data: &[f32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_f32_with_range(data, shape, rule)
+    }
+
+    /// Appends f64 data using sparse-intent analysis without returning the assigned range.
+    pub fn append_sparse_f64(
+        &mut self,
+        data: &[f64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<()> {
+        self.append_sparse(DType::F64, data.len(), shape, rule, |handle, raw_rule| {
+            // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, and rule buffers are
+            // borrowed from Rust values that outlive this FFI call.
+            unsafe {
+                sys::arcadia_tio_append_sparse_f64(
+                    handle,
+                    data.as_ptr(),
+                    shape.as_ptr(),
+                    shape.len(),
+                    raw_rule,
+                )
+            }
+        })
+    }
+
+    /// Appends f64 data using sparse-intent analysis and returns the assigned entry range.
+    pub fn append_sparse_f64_with_range(
+        &mut self,
+        data: &[f64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_with_range(
+            DType::F64,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, start, end| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // pointers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_append_sparse_f64_with_range(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        start,
+                        end,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Appends f64 data using sparse-intent analysis and returns the assigned entry range.
+    ///
+    /// This is a readability alias for [`TensorFile::append_sparse_f64_with_range`].
+    /// The unsuffixed [`TensorFile::append_sparse_f64`] method is kept as a
+    /// compatibility-preserving status-only append.
+    pub fn append_sparse_f64_returning_range(
+        &mut self,
+        data: &[f64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_f64_with_range(data, shape, rule)
+    }
+
+    /// Appends i32 data using sparse-intent analysis and returns the assigned entry range.
+    ///
+    /// Integer sparse append currently supports null-subtensor rules and zero predicates only;
+    /// exact integer predicates remain deferred.
+    pub fn append_sparse_i32(
+        &mut self,
+        data: &[i32],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_with_range(
+            DType::I32,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, start, end| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // pointers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_append_sparse_i32_with_range(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        start,
+                        end,
+                    )
+                }
+            },
+        )
+    }
+
+    /// Appends i64 data using sparse-intent analysis and returns the assigned entry range.
+    ///
+    /// Integer sparse append currently supports null-subtensor rules and zero predicates only;
+    /// exact integer predicates remain deferred.
+    pub fn append_sparse_i64(
+        &mut self,
+        data: &[i64],
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<AppendRange> {
+        self.append_sparse_with_range(
+            DType::I64,
+            data.len(),
+            shape,
+            rule,
+            |handle, raw_rule, start, end| {
+                // SAFETY: The wrapper validates dtype/shape/rule. Data, shape, rule, and output
+                // pointers are borrowed from Rust values that outlive this FFI call.
+                unsafe {
+                    sys::arcadia_tio_append_sparse_i64_with_range(
+                        handle,
+                        data.as_ptr(),
+                        shape.as_ptr(),
+                        shape.len(),
+                        raw_rule,
+                        start,
+                        end,
+                    )
+                }
+            },
+        )
     }
 
     /// Appends a bulk f32 slice and returns the assigned append-entry range.
@@ -2952,6 +4125,77 @@ impl TensorFile {
             )
         };
         status_result(status, "failed to clear blocks")
+    }
+
+    /// Returns metadata for the current visible head commit.
+    pub fn head_commit(&self) -> Result<CommitInfo> {
+        let mut raw = MaybeUninit::<sys::ArcadiaTioCommitInfo>::uninit();
+        // SAFETY: `raw` is a valid output pointer and the handle is live.
+        let status = unsafe { sys::arcadia_tio_head_commit(self.raw.as_ptr(), raw.as_mut_ptr()) };
+        status_result(status, "failed to read head commit")?;
+        // SAFETY: Successful native call initialized the output commit.
+        Ok(unsafe { raw.assume_init() }.into())
+    }
+
+    /// Lists visible commits in native order.
+    ///
+    /// A `limit` of `None` requests the native full visible list; `Some(0)` is rejected because the
+    /// underlying C ABI uses zero as the unbounded sentinel.
+    pub fn list_commits(&self, limit: Option<u32>) -> Result<Vec<CommitInfo>> {
+        let raw_limit = match limit {
+            Some(0) => {
+                return Err(TioError::invalid_argument(
+                    "commit list limit must be non-zero; use None for the full list",
+                ));
+            }
+            Some(value) => value,
+            None => 0,
+        };
+        let mut raw_list = NativeCommitList::new();
+        // SAFETY: `raw_list` is a valid output pointer and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_list_commits(self.raw.as_ptr(), raw_limit, raw_list.as_mut_ptr())
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(TioError::from_last_error("failed to list commits"));
+        }
+        copy_commit_list(raw_list.as_ref())
+    }
+
+    /// Removes the current visible head commit.
+    ///
+    /// This mutates the open file in place and delegates all retention/underflow validation to the
+    /// native history implementation.
+    pub fn pop(&mut self) -> Result<()> {
+        // SAFETY: `self.raw` is a live native handle.
+        let status = unsafe { sys::arcadia_tio_pop(self.raw.as_ptr()) };
+        status_result(status, "failed to pop head commit")
+    }
+
+    /// Removes up to `n` visible head commits.
+    ///
+    /// This mutates the open file in place. Passing `0` is rejected by the safe wrapper because it
+    /// cannot change history and is usually a caller bug.
+    pub fn pop_batched(&mut self, n: u32) -> Result<()> {
+        if n == 0 {
+            return Err(TioError::invalid_argument(
+                "pop_batched count must be non-zero",
+            ));
+        }
+        // SAFETY: `self.raw` is a live native handle.
+        let status = unsafe { sys::arcadia_tio_pop_batched(self.raw.as_ptr(), n) };
+        status_result(status, "failed to pop batched commits")
+    }
+
+    /// Reverts the file to a visible target commit sequence.
+    ///
+    /// This mutates the open file in place and preserves native semantics for invalid or retained
+    /// history targets.
+    pub fn revert_commit(&mut self, target_commit_seq: u64) -> Result<()> {
+        // SAFETY: `self.raw` is a live native handle.
+        let status =
+            unsafe { sys::arcadia_tio_revert_commit(self.raw.as_ptr(), target_commit_seq) };
+        status_result(status, "failed to revert commit")
     }
 
     /// Returns shallow compatibility compaction statistics.
@@ -3296,6 +4540,37 @@ impl TensorFile {
         self.read_tensor(|handle, out| unsafe { sys::arcadia_tio_read_all(handle, out) })
     }
 
+    /// Exports full tensor values through the Arrow C Data Interface.
+    ///
+    /// The returned [`ArrowCData`] owns the Arrow `release` callbacks and invokes them on drop.
+    /// Borrowed C Data pointers are valid only while the returned value is alive.
+    pub fn read_values_arrow(&self) -> Result<ArrowCData> {
+        // SAFETY: All-zero Arrow C Data carriers represent empty caller-owned output slots with
+        // null release callbacks before the native function writes initialized values.
+        let mut raw_array: sys::ArrowArray = unsafe { mem::zeroed() };
+        // SAFETY: See `raw_array` initialization above.
+        let mut raw_schema: sys::ArrowSchema = unsafe { mem::zeroed() };
+        // SAFETY: Output structs are valid and the handle is live.
+        let status = unsafe {
+            sys::arcadia_tio_read_values_arrow(self.raw.as_ptr(), &mut raw_array, &mut raw_schema)
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Defensive cleanup for any partially initialized Arrow carriers.
+            unsafe {
+                release_arrow_array(&mut raw_array);
+                release_arrow_schema(&mut raw_schema);
+            }
+            return Err(TioError::from_last_error(
+                "failed to export tensor values as Arrow C Data",
+            ));
+        }
+        Ok(ArrowCData {
+            array: raw_array,
+            schema: raw_schema,
+            _not_send_or_sync: PhantomData,
+        })
+    }
+
     /// Reads the full tensor densely with a fill value and optional validity mask.
     pub fn read_all_dense(&self, fill_value: f64) -> Result<DenseTensor> {
         let mut raw_tensor = sys::ArcadiaTioTensor::default();
@@ -3320,6 +4595,42 @@ impl TensorFile {
         Ok(DenseTensor {
             tensor: tensor?,
             mask,
+        })
+    }
+
+    /// Reads current data through the native basic read-index lowering API.
+    pub fn read_index(&self, items: &[ReadIndexItem]) -> Result<ReadIndexResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_report = new_read_index_report();
+        // SAFETY: Prepared read-index items outlive the call; outputs are initialized and valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index(
+                self.raw.as_ptr(),
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &mut raw_tensor,
+                &mut raw_report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_read_index_report_free(&mut raw_report);
+            }
+            return Err(TioError::from_last_error("failed to read with read_index"));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let report = copy_read_index_report(&raw_report);
+        // SAFETY: Native-owned outputs are freed exactly once after copying.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_read_index_report_free(&mut raw_report);
+        }
+        Ok(ReadIndexResult {
+            value: tensor?,
+            report: report?,
         })
     }
 
@@ -3371,6 +4682,80 @@ impl TensorFile {
         self.read_tensor(|handle, out| unsafe {
             sys::arcadia_tio_read_axis_coordinates(handle, axis, out)
         })
+    }
+
+    /// Looks up the unique axis index for an inline validated i32 coordinate value.
+    pub fn coordinate_index_i32(&self, axis: usize, value: i32) -> Result<u32> {
+        self.validate_axis(axis)?;
+        let mut out_index = 0u32;
+        // SAFETY: `self.raw` is live and `out_index` is a valid output pointer for this call.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_index_i32(self.raw.as_ptr(), axis, value, &mut out_index)
+        };
+        status_result(status, "failed to look up i32 coordinate index")?;
+        Ok(out_index)
+    }
+
+    /// Looks up the unique axis index for an inline validated i64 coordinate value.
+    pub fn coordinate_index_i64(&self, axis: usize, value: i64) -> Result<u32> {
+        self.validate_axis(axis)?;
+        let mut out_index = 0u32;
+        // SAFETY: `self.raw` is live and `out_index` is a valid output pointer for this call.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_index_i64(self.raw.as_ptr(), axis, value, &mut out_index)
+        };
+        status_result(status, "failed to look up i64 coordinate index")?;
+        Ok(out_index)
+    }
+
+    /// Looks up the half-open axis-index range overlapping an inclusive i32 coordinate interval.
+    pub fn coordinate_range_i32(
+        &self,
+        axis: usize,
+        start: i32,
+        end: i32,
+    ) -> Result<std::ops::Range<u32>> {
+        self.validate_axis(axis)?;
+        let mut out_start = 0u32;
+        let mut out_end = 0u32;
+        // SAFETY: `self.raw` is live and both output pointers are valid for this call.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_range_i32(
+                self.raw.as_ptr(),
+                axis,
+                start,
+                end,
+                &mut out_start,
+                &mut out_end,
+            )
+        };
+        status_result(status, "failed to look up i32 coordinate range")?;
+        Ok(out_start..out_end)
+    }
+
+    /// Looks up the half-open axis-index range overlapping an inclusive i64 coordinate interval.
+    pub fn coordinate_range_i64(
+        &self,
+        axis: usize,
+        start: i64,
+        end: i64,
+    ) -> Result<std::ops::Range<u32>> {
+        self.validate_axis(axis)?;
+        let mut out_start = 0u32;
+        let mut out_end = 0u32;
+        // SAFETY: `self.raw` is live and both output pointers are valid for this call.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_range_i64(
+                self.raw.as_ptr(),
+                axis,
+                start,
+                end,
+                &mut out_start,
+                &mut out_end,
+            )
+        };
+        status_result(status, "failed to look up i64 coordinate range")?;
+        Ok(out_start..out_end)
     }
 
     /// Reads current selector data with execution options and metadata.
@@ -3468,6 +4853,133 @@ impl TensorFile {
                 mask,
             },
             execution: execution?,
+        })
+    }
+
+    /// Reads current selector data with execution options, metadata, and diagnostic trace JSON.
+    ///
+    /// This opt-in API preserves ordinary `read_with_options` semantics while returning native
+    /// query-attribution JSON for diagnostics. It is not benchmark or performance evidence by
+    /// itself.
+    pub fn read_with_options_attributed(
+        &self,
+        selectors: &[EntrySelector],
+        options: ReadWithOptions,
+        trace_context: &QueryTraceContext,
+    ) -> Result<AttributedReadResult<Tensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedReadWithOptions::new(&options)?;
+        let prepared_context = PreparedQueryTraceContext::new(trace_context)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut report = new_read_execution_report();
+        let mut trace_json = new_query_trace_json();
+        let raw_options = prepared_options.raw_options();
+        let raw_context = prepared_context.raw_context();
+        // SAFETY: Prepared selector, option, and context buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_with_options_attributed(
+                self.raw.as_ptr(),
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                &raw_context,
+                &mut raw_tensor,
+                &mut report,
+                &mut trace_json,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_read_execution_report_free(&mut report);
+                sys::arcadia_tio_query_trace_json_free(&mut trace_json);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read with options and query attribution",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let execution = copy_read_execution_report(&report);
+        let trace = copy_query_trace_json(&trace_json);
+        // SAFETY: Native-owned outputs are freed exactly once after copying.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_read_execution_report_free(&mut report);
+            sys::arcadia_tio_query_trace_json_free(&mut trace_json);
+        }
+        Ok(AttributedReadResult {
+            value: tensor?,
+            execution: execution?,
+            trace: trace?,
+        })
+    }
+
+    /// Reads current selector data densely with execution options, metadata, and diagnostic trace JSON.
+    ///
+    /// This opt-in API preserves ordinary `read_with_options_dense` semantics while returning native
+    /// query-attribution JSON for diagnostics. It is not benchmark or performance evidence by itself.
+    pub fn read_with_options_dense_attributed(
+        &self,
+        selectors: &[EntrySelector],
+        options: ReadWithOptions,
+        trace_context: &QueryTraceContext,
+        fill_value: f64,
+    ) -> Result<AttributedReadResult<DenseTensor>> {
+        let prepared_selectors = self.prepare_selectors(selectors)?;
+        let prepared_options = PreparedReadWithOptions::new(&options)?;
+        let prepared_context = PreparedQueryTraceContext::new(trace_context)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut report = new_read_execution_report();
+        let mut trace_json = new_query_trace_json();
+        let raw_options = prepared_options.raw_options();
+        let raw_context = prepared_context.raw_context();
+        // SAFETY: Prepared selector, option, and context buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_with_options_dense_attributed(
+                self.raw.as_ptr(),
+                prepared_selectors.ptr(),
+                prepared_selectors.len(),
+                &raw_options,
+                &raw_context,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut report,
+                &mut trace_json,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_read_execution_report_free(&mut report);
+                sys::arcadia_tio_query_trace_json_free(&mut trace_json);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor with options and query attribution",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let execution = copy_read_execution_report(&report);
+        let trace = copy_query_trace_json(&trace_json);
+        // SAFETY: Native-owned outputs are freed exactly once after copying.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_read_execution_report_free(&mut report);
+            sys::arcadia_tio_query_trace_json_free(&mut trace_json);
+        }
+        Ok(AttributedReadResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            execution: execution?,
+            trace: trace?,
         })
     }
 
@@ -3842,6 +5354,68 @@ impl TensorFile {
         Ok(AppendRange { start, end })
     }
 
+    fn analyze_sparse_append(
+        &self,
+        dtype: DType,
+        data_len: usize,
+        shape: &[u64],
+        rule: &SparseRule,
+        call: impl FnOnce(
+            *mut sys::ArcadiaTioHandle,
+            *const sys::ArcadiaTioSparseRule,
+            *mut sys::ArcadiaTioSparseAppendAnalysis,
+        ) -> i32,
+    ) -> Result<SparseAppendAnalysis> {
+        self.validate_sparse_append(dtype, data_len, shape, rule)?;
+        let prepared_rule = PreparedSparseRule::new(rule);
+        let raw_rule = prepared_rule.raw();
+        let mut raw_analysis = empty_sparse_append_analysis();
+        let status = call(self.raw.as_ptr(), &raw_rule, &mut raw_analysis);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: `raw_analysis` was initialized to an empty native-compatible value before the
+            // call. If native populated reasons before returning an error, this releases them once.
+            unsafe { sys::arcadia_tio_sparse_append_analysis_free(&mut raw_analysis) };
+            return Err(TioError::from_last_error("failed to analyze sparse append"));
+        }
+        take_sparse_append_analysis(&mut raw_analysis)
+    }
+
+    fn append_sparse(
+        &mut self,
+        dtype: DType,
+        data_len: usize,
+        shape: &[u64],
+        rule: &SparseRule,
+        call: impl FnOnce(*mut sys::ArcadiaTioHandle, *const sys::ArcadiaTioSparseRule) -> i32,
+    ) -> Result<()> {
+        self.validate_sparse_append(dtype, data_len, shape, rule)?;
+        let prepared_rule = PreparedSparseRule::new(rule);
+        let raw_rule = prepared_rule.raw();
+        let status = call(self.raw.as_ptr(), &raw_rule);
+        status_result(status, "failed to append sparse tensor data")
+    }
+
+    fn append_sparse_with_range(
+        &mut self,
+        dtype: DType,
+        data_len: usize,
+        shape: &[u64],
+        rule: &SparseRule,
+        call: impl FnOnce(
+            *mut sys::ArcadiaTioHandle,
+            *const sys::ArcadiaTioSparseRule,
+            *mut u32,
+            *mut u32,
+        ) -> i32,
+    ) -> Result<AppendRange> {
+        self.validate_sparse_append(dtype, data_len, shape, rule)?;
+        let prepared_rule = PreparedSparseRule::new(rule);
+        let raw_rule = prepared_rule.raw();
+        self.append_with_range(shape, |handle, start, end| {
+            call(handle, &raw_rule, start, end)
+        })
+    }
+
     fn prepare_selectors(&self, selectors: &[EntrySelector]) -> Result<PreparedSelectors> {
         PreparedSelectors::new(selectors, self.rank()?)
     }
@@ -3872,6 +5446,17 @@ impl TensorFile {
 
     fn validate_append(&self, dtype: DType, data_len: usize, shape: &[u64]) -> Result<()> {
         self.validate_typed_payload(dtype, data_len, shape, "append")
+    }
+
+    fn validate_sparse_append(
+        &self,
+        dtype: DType,
+        data_len: usize,
+        shape: &[u64],
+        rule: &SparseRule,
+    ) -> Result<()> {
+        self.validate_typed_payload(dtype, data_len, shape, "sparse append")?;
+        rule.validate_for_append(dtype, shape.len(), self.append_axis()?)
     }
 
     fn validate_mutation_payload(
@@ -4071,6 +5656,121 @@ fn copy_mask(raw: &sys::ArcadiaTioMask) -> Option<Vec<u8>> {
     Some(unsafe { slice::from_raw_parts(raw.data, raw.len) }.to_vec())
 }
 
+struct NativeCommitList {
+    raw: sys::ArcadiaTioCommitList,
+}
+
+impl NativeCommitList {
+    fn new() -> Self {
+        Self {
+            raw: sys::ArcadiaTioCommitList {
+                items: ptr::null_mut(),
+                len: 0,
+            },
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut sys::ArcadiaTioCommitList {
+        &mut self.raw
+    }
+
+    fn as_ref(&self) -> &sys::ArcadiaTioCommitList {
+        &self.raw
+    }
+}
+
+impl Drop for NativeCommitList {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is either empty or a native-owned commit-list output. The guard owns it and
+        // drops exactly once on all success/error/copy-conversion paths.
+        unsafe { sys::arcadia_tio_commit_list_free(&mut self.raw) };
+    }
+}
+
+struct NativeChunkPlan {
+    raw: sys::ArcadiaTioChunkPlan,
+}
+
+impl NativeChunkPlan {
+    fn new() -> Self {
+        Self {
+            raw: sys::ArcadiaTioChunkPlan {
+                block_sizes: ptr::null_mut(),
+                len: 0,
+            },
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut sys::ArcadiaTioChunkPlan {
+        &mut self.raw
+    }
+
+    fn as_ref(&self) -> &sys::ArcadiaTioChunkPlan {
+        &self.raw
+    }
+}
+
+impl Drop for NativeChunkPlan {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is either empty or a native-owned chunk-plan output. The guard owns it and
+        // drops exactly once on all success/error/copy-conversion paths.
+        unsafe { sys::arcadia_tio_chunk_plan_free(&mut self.raw) };
+    }
+}
+
+fn copy_commit_list(raw: &sys::ArcadiaTioCommitList) -> Result<Vec<CommitInfo>> {
+    if raw.len == 0 {
+        return Ok(Vec::new());
+    }
+    if raw.items.is_null() {
+        return Err(TioError::conversion("native commit list pointer is null"));
+    }
+    // SAFETY: The C ABI returns `len` commit records owned by the commit-list output while alive.
+    Ok(unsafe { slice::from_raw_parts(raw.items, raw.len) }
+        .iter()
+        .copied()
+        .map(CommitInfo::from)
+        .collect())
+}
+
+fn copy_chunk_plan(raw: &sys::ArcadiaTioChunkPlan) -> Result<ChunkPlan> {
+    if raw.len == 0 {
+        return Ok(ChunkPlan {
+            block_sizes: Vec::new(),
+        });
+    }
+    if raw.block_sizes.is_null() {
+        return Err(TioError::conversion(
+            "native chunk plan block-size pointer is null",
+        ));
+    }
+    // SAFETY: The C ABI returns `len` block-size entries owned by the chunk-plan output while alive.
+    Ok(ChunkPlan {
+        block_sizes: unsafe { slice::from_raw_parts(raw.block_sizes, raw.len) }.to_vec(),
+    })
+}
+
+fn new_query_trace_json() -> sys::ArcadiaTioQueryTraceJson {
+    sys::ArcadiaTioQueryTraceJson {
+        version: 1,
+        struct_size: mem::size_of::<sys::ArcadiaTioQueryTraceJson>(),
+        json: ptr::null_mut(),
+    }
+}
+
+fn copy_query_trace_json(raw: &sys::ArcadiaTioQueryTraceJson) -> Result<QueryTraceJson> {
+    if raw.json.is_null() {
+        return Err(TioError::conversion(
+            "native query trace JSON pointer is null",
+        ));
+    }
+    // SAFETY: The C ABI returns a native-owned NUL-terminated JSON string while the output is alive.
+    let json = unsafe { CStr::from_ptr(raw.json.cast_const()) }
+        .to_string_lossy()
+        .into_owned();
+    Ok(QueryTraceJson { json })
+}
+
 fn new_read_execution_report() -> sys::ArcadiaTioReadExecutionReport {
     sys::ArcadiaTioReadExecutionReport {
         version: 1,
@@ -4083,6 +5783,16 @@ fn new_read_execution_report() -> sys::ArcadiaTioReadExecutionReport {
         query_parallel_fallback_reason: ptr::null_mut(),
         query_parallel_reason_code: ptr::null_mut(),
         query_parallel_reason_code_taxonomy: ptr::null_mut(),
+    }
+}
+
+fn new_read_index_report() -> sys::ArcadiaTioReadIndexReport {
+    sys::ArcadiaTioReadIndexReport {
+        version: 1,
+        struct_size: mem::size_of::<sys::ArcadiaTioReadIndexReport>(),
+        lowering_kind: sys::ARCADIA_TIO_READ_INDEX_LOWERING_UNKNOWN,
+        used_full_tensor_fallback: 0,
+        reserved0: [0; 7],
     }
 }
 
@@ -4122,6 +5832,13 @@ fn copy_read_execution_report(
         query_parallel_reason_code_taxonomy: optional_c_string(
             raw.query_parallel_reason_code_taxonomy.cast_const(),
         ),
+    })
+}
+
+fn copy_read_index_report(raw: &sys::ArcadiaTioReadIndexReport) -> Result<ReadIndexReport> {
+    Ok(ReadIndexReport {
+        lowering_kind: ReadIndexLoweringKind::from_raw(raw.lowering_kind)?,
+        used_full_tensor_fallback: raw.used_full_tensor_fallback != 0,
     })
 }
 
@@ -4615,6 +6332,89 @@ fn copy_coordinate_meta(
         .collect()
 }
 
+struct PreparedStringList {
+    _strings: Vec<CString>,
+    ptrs: Vec<*const c_char>,
+}
+
+impl PreparedStringList {
+    fn new<S: AsRef<str>>(values: &[S], label: &str) -> Result<Self> {
+        let strings = values
+            .iter()
+            .map(|value| string_to_cstring(value.as_ref(), label))
+            .collect::<Result<Vec<_>>>()?;
+        let ptrs = strings.iter().map(|value| value.as_ptr()).collect();
+        Ok(Self {
+            _strings: strings,
+            ptrs,
+        })
+    }
+
+    fn ptr(&self) -> *const *const c_char {
+        if self.ptrs.is_empty() {
+            ptr::null()
+        } else {
+            self.ptrs.as_ptr()
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.ptrs.len()
+    }
+}
+
+struct PreparedUserKvList {
+    _keys: Vec<CString>,
+    _values: Vec<CString>,
+    key_ptrs: Vec<*const c_char>,
+    value_ptrs: Vec<*const c_char>,
+}
+
+impl PreparedUserKvList {
+    fn new<K, V>(values: &[(K, V)]) -> Result<Self>
+    where
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        let keys = values
+            .iter()
+            .map(|(key, _)| string_to_cstring(key.as_ref(), "user metadata key"))
+            .collect::<Result<Vec<_>>>()?;
+        let user_values = values
+            .iter()
+            .map(|(_, value)| string_to_cstring(value.as_ref(), "user metadata value"))
+            .collect::<Result<Vec<_>>>()?;
+        let key_ptrs = keys.iter().map(|value| value.as_ptr()).collect();
+        let value_ptrs = user_values.iter().map(|value| value.as_ptr()).collect();
+        Ok(Self {
+            _keys: keys,
+            _values: user_values,
+            key_ptrs,
+            value_ptrs,
+        })
+    }
+
+    fn key_ptr(&self) -> *const *const c_char {
+        if self.key_ptrs.is_empty() {
+            ptr::null()
+        } else {
+            self.key_ptrs.as_ptr()
+        }
+    }
+
+    fn value_ptr(&self) -> *const *const c_char {
+        if self.value_ptrs.is_empty() {
+            ptr::null()
+        } else {
+            self.value_ptrs.as_ptr()
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.key_ptrs.len()
+    }
+}
+
 #[allow(dead_code)]
 struct PreparedCreate<'a> {
     path: CString,
@@ -4992,6 +6792,44 @@ impl<'a> PreparedAppendUniverseOptions<'a> {
     }
 }
 
+struct PreparedSparseRule {
+    sparse_axes: Vec<usize>,
+    detector_kind: sys::ArcadiaTioSparseDetectorKind,
+    predicate: sys::ArcadiaTioSparseValuePredicate,
+    min_absent_fraction: f64,
+    min_absent_subtensors: u64,
+    fallback: sys::ArcadiaTioSparseFallbackPolicy,
+}
+
+impl PreparedSparseRule {
+    fn new(rule: &SparseRule) -> Self {
+        Self {
+            sparse_axes: rule.sparse_axes.clone(),
+            detector_kind: rule.detector.to_raw(),
+            predicate: rule.predicate.to_raw(),
+            min_absent_fraction: rule.min_absent_fraction,
+            min_absent_subtensors: rule.min_absent_subtensors,
+            fallback: rule.fallback.to_raw(),
+        }
+    }
+
+    fn raw(&self) -> sys::ArcadiaTioSparseRule {
+        sys::ArcadiaTioSparseRule {
+            detector_kind: self.detector_kind,
+            sparse_axes: if self.sparse_axes.is_empty() {
+                ptr::null()
+            } else {
+                self.sparse_axes.as_ptr()
+            },
+            sparse_axes_len: self.sparse_axes.len(),
+            predicate: self.predicate,
+            min_absent_fraction: self.min_absent_fraction,
+            min_absent_subtensors: self.min_absent_subtensors,
+            fallback: self.fallback,
+        }
+    }
+}
+
 struct PreparedSingleSelector {
     take_indices: Option<Vec<u32>>,
     selector: sys::ArcadiaTioEntrySelector,
@@ -5090,6 +6928,79 @@ impl<'a> PreparedChunkKeys<'a> {
     }
 }
 
+struct PreparedReadIndexItems {
+    items: Vec<sys::ArcadiaTioReadIndexItem>,
+}
+
+impl PreparedReadIndexItems {
+    fn new(items: &[ReadIndexItem], rank: usize) -> Result<Self> {
+        let mut ellipsis_count = 0usize;
+        let mut consuming = 0usize;
+        let mut output_rank_without_ellipsis_fill = 0usize;
+        for item in items {
+            match item {
+                ReadIndexItem::All | ReadIndexItem::Slice { .. } => {
+                    consuming = consuming
+                        .checked_add(1)
+                        .ok_or_else(|| TioError::invalid_argument("read_index rank overflow"))?;
+                    output_rank_without_ellipsis_fill = output_rank_without_ellipsis_fill
+                        .checked_add(1)
+                        .ok_or_else(|| TioError::invalid_argument("read_index rank overflow"))?;
+                }
+                ReadIndexItem::Index(_) => {
+                    consuming = consuming
+                        .checked_add(1)
+                        .ok_or_else(|| TioError::invalid_argument("read_index rank overflow"))?;
+                }
+                ReadIndexItem::NewAxis => {
+                    output_rank_without_ellipsis_fill = output_rank_without_ellipsis_fill
+                        .checked_add(1)
+                        .ok_or_else(|| TioError::invalid_argument("read_index rank overflow"))?;
+                }
+                ReadIndexItem::Ellipsis => {
+                    ellipsis_count += 1;
+                    if ellipsis_count > 1 {
+                        return Err(TioError::invalid_argument(
+                            "read_index supports at most one ellipsis",
+                        ));
+                    }
+                }
+            }
+        }
+        if consuming > rank {
+            return Err(TioError::invalid_argument(
+                "read_index has too many axis-consuming items for file rank",
+            ));
+        }
+        let ellipsis_or_padding_fill = rank - consuming;
+        let output_rank = output_rank_without_ellipsis_fill
+            .checked_add(ellipsis_or_padding_fill)
+            .ok_or_else(|| TioError::invalid_argument("read_index rank overflow"))?;
+        if output_rank == 0 {
+            return Err(TioError::invalid_argument(
+                "read_index scalar output is unsupported by the C ABI first slice",
+            ));
+        }
+        let items = items
+            .iter()
+            .map(ReadIndexItem::to_raw)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { items })
+    }
+
+    fn ptr(&self) -> *const sys::ArcadiaTioReadIndexItem {
+        if self.items.is_empty() {
+            ptr::null()
+        } else {
+            self.items.as_ptr()
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
 struct PreparedSelectors {
     take_indices: Vec<Vec<u32>>,
     selectors: Vec<sys::ArcadiaTioEntrySelector>,
@@ -5177,6 +7088,56 @@ impl PreparedSelectors {
     fn len(&self) -> usize {
         self.selectors.len()
     }
+}
+
+struct PreparedQueryTraceContext {
+    run_id: CString,
+    row_id: CString,
+    phase: CString,
+    language: CString,
+    api_surface: CString,
+    operation: CString,
+    trace_clock: CString,
+    repeat_index: u32,
+}
+
+impl PreparedQueryTraceContext {
+    fn new(context: &QueryTraceContext) -> Result<Self> {
+        Ok(Self {
+            run_id: non_empty_cstring(&context.run_id, "query trace run_id")?,
+            row_id: non_empty_cstring(&context.row_id, "query trace row_id")?,
+            phase: non_empty_cstring(&context.phase, "query trace phase")?,
+            language: non_empty_cstring(&context.language, "query trace language")?,
+            api_surface: non_empty_cstring(&context.api_surface, "query trace api_surface")?,
+            operation: non_empty_cstring(&context.operation, "query trace operation")?,
+            trace_clock: non_empty_cstring(&context.trace_clock, "query trace trace_clock")?,
+            repeat_index: context.repeat_index,
+        })
+    }
+
+    fn raw_context(&self) -> sys::ArcadiaTioQueryTraceContext {
+        sys::ArcadiaTioQueryTraceContext {
+            version: 1,
+            struct_size: mem::size_of::<sys::ArcadiaTioQueryTraceContext>(),
+            run_id: self.run_id.as_ptr(),
+            row_id: self.row_id.as_ptr(),
+            repeat_index: self.repeat_index,
+            phase: self.phase.as_ptr(),
+            language: self.language.as_ptr(),
+            api_surface: self.api_surface.as_ptr(),
+            operation: self.operation.as_ptr(),
+            trace_clock: self.trace_clock.as_ptr(),
+        }
+    }
+}
+
+fn non_empty_cstring(value: &str, label: &str) -> Result<CString> {
+    if value.is_empty() {
+        return Err(TioError::invalid_argument(format!(
+            "{label} must not be empty"
+        )));
+    }
+    string_to_cstring(value, label)
 }
 
 struct PreparedReadWithOptions {

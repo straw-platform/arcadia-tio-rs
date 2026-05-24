@@ -80,6 +80,20 @@ pub type ArcadiaTioV4CompactionAnalysisPolicy = c_int;
 pub type ArcadiaTioV4PreciseAccountingField = c_int;
 /// Retained-history compaction policy value.
 pub type ArcadiaTioV4RetainedHistoryPolicy = c_int;
+/// Sparse-intent detector selector value.
+pub type ArcadiaTioSparseDetectorKind = c_int;
+/// Sparse-intent value predicate selector value.
+pub type ArcadiaTioSparseValuePredicateKind = c_int;
+/// Sparse-intent fallback policy selector value.
+pub type ArcadiaTioSparseFallbackPolicy = c_int;
+/// Sparse-append analysis outcome value.
+pub type ArcadiaTioSparseAppendOutcome = c_int;
+/// Sparse-append analysis reason-code value.
+pub type ArcadiaTioSparseAppendReason = c_int;
+/// Read-index item tag value.
+pub type ArcadiaTioReadIndexItemTag = c_int;
+/// Read-index lowering-kind report value.
+pub type ArcadiaTioReadIndexLoweringKind = c_int;
 
 macro_rules! raw_constant {
     ($name:ident: $ty:ty = $value:expr) => {
@@ -190,6 +204,44 @@ raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_POPPED_SKIPPED_BYTES: ArcadiaTio
 raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_RECLAIMABLE_BYTES: ArcadiaTioV4PreciseAccountingField = 3);
 raw_constant!(ARCADIA_TIO_V4_RETAINED_HISTORY_RETAIN_LAST: ArcadiaTioV4RetainedHistoryPolicy = 0);
 
+raw_constant!(ARCADIA_TIO_SPARSE_DETECTOR_NULL_SUBTENSOR: ArcadiaTioSparseDetectorKind = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_DETECTOR_PREDICATE_SUBTENSOR: ArcadiaTioSparseDetectorKind = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_NAN: ArcadiaTioSparseValuePredicateKind = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_ZERO: ArcadiaTioSparseValuePredicateKind = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F32: ArcadiaTioSparseValuePredicateKind = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F64: ArcadiaTioSparseValuePredicateKind = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_FALLBACK_DENSE: ArcadiaTioSparseFallbackPolicy = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_SPARSE_REGULAR_CHUNKED: ArcadiaTioSparseAppendOutcome = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_DENSE_FALLBACK: ArcadiaTioSparseAppendOutcome = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_REJECT: ArcadiaTioSparseAppendOutcome = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_SPARSE_CHUNK_TREE: ArcadiaTioSparseAppendOutcome = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_NO_ABSENT_SUBTENSORS_DETECTED: ArcadiaTioSparseAppendReason = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_NOT_BE_EMPTY: ArcadiaTioSparseAppendReason = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_BE_UNIQUE: ArcadiaTioSparseAppendReason = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_OUT_OF_BOUNDS: ArcadiaTioSparseAppendReason = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_EXCLUDE_APPEND_AXIS: ArcadiaTioSparseAppendReason = 4);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_APPEND_AXIS_MUST_BE_ZERO_FOR_CURRENT_ROOT_APPEND: ArcadiaTioSparseAppendReason = 5);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_PREDICATE_DTYPE_MISMATCH: ArcadiaTioSparseAppendReason = 6);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_DENSE_FALLBACK_PRESERVES_EXACT_VALUES: ArcadiaTioSparseAppendReason = 7);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_LOWERING_BELOW_THRESHOLD: ArcadiaTioSparseAppendReason = 8);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_WHOLE_APPEND_UNIT_HAS_NO_SPARSE_PRODUCER_PATH: ArcadiaTioSparseAppendReason = 9);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_BLOCK_SHAPE_UNPUBLISHED: ArcadiaTioSparseAppendReason = 10);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_STABLE_NON_APPEND_EXTENTS: ArcadiaTioSparseAppendReason = 11);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_DENSE_PUBLISHED_LANE_SET: ArcadiaTioSparseAppendReason = 12);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_SPARSE_LOWERING_REQUIRES_STABLE_PUBLISHED_LANE_SET: ArcadiaTioSparseAppendReason = 13);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_TENSOR_CONTAINS_NULLS_THAT_DENSE_FALLBACK_CANNOT_PRESERVE: ArcadiaTioSparseAppendReason = 14);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_LOGICAL_ABSENCE_DOES_NOT_COMPILE_TO_CURRENT_SPARSE_MODEL: ArcadiaTioSparseAppendReason = 15);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_CURRENT_SPARSE_LOWERING_NOT_YET_IMPLEMENTED_FOR_DETECTOR: ArcadiaTioSparseAppendReason = 16);
+
+raw_constant!(ARCADIA_TIO_READ_INDEX_ALL: ArcadiaTioReadIndexItemTag = 0);
+raw_constant!(ARCADIA_TIO_READ_INDEX_SLICE: ArcadiaTioReadIndexItemTag = 1);
+raw_constant!(ARCADIA_TIO_READ_INDEX_INDEX: ArcadiaTioReadIndexItemTag = 2);
+raw_constant!(ARCADIA_TIO_READ_INDEX_NEW_AXIS: ArcadiaTioReadIndexItemTag = 3);
+raw_constant!(ARCADIA_TIO_READ_INDEX_ELLIPSIS: ArcadiaTioReadIndexItemTag = 4);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_UNKNOWN: ArcadiaTioReadIndexLoweringKind = 0);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ: ArcadiaTioReadIndexLoweringKind = 1);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ_WITH_SHAPE_POSTPROCESS: ArcadiaTioReadIndexLoweringKind = 2);
+
 /// Write-time compression config passed by pointer.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -244,6 +296,56 @@ pub struct ArcadiaTioMask {
     pub data: *mut u8,
     /// Number of mask elements.
     pub len: usize,
+}
+
+/// Arrow C Data Interface array carrier returned by Arrow read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArrowArray {
+    /// Logical length.
+    pub length: i64,
+    /// Null count, or -1 if unknown.
+    pub null_count: i64,
+    /// Logical offset.
+    pub offset: i64,
+    /// Number of buffers.
+    pub n_buffers: i64,
+    /// Number of child arrays.
+    pub n_children: i64,
+    /// Pointer to buffer pointers.
+    pub buffers: *mut *const c_void,
+    /// Pointer to child array pointers.
+    pub children: *mut *mut ArrowArray,
+    /// Optional dictionary array.
+    pub dictionary: *mut ArrowArray,
+    /// Release callback; caller must invoke it when done if non-null.
+    pub release: Option<unsafe extern "C" fn(*mut ArrowArray)>,
+    /// Private native data owned by the release callback.
+    pub private_data: *mut c_void,
+}
+
+/// Arrow C Data Interface schema carrier returned by Arrow read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArrowSchema {
+    /// Format string.
+    pub format: *const c_char,
+    /// Optional field name.
+    pub name: *const c_char,
+    /// Optional metadata string.
+    pub metadata: *const c_char,
+    /// Arrow schema flags.
+    pub flags: i64,
+    /// Number of child schemas.
+    pub n_children: i64,
+    /// Pointer to child schema pointers.
+    pub children: *mut *mut ArrowSchema,
+    /// Optional dictionary schema.
+    pub dictionary: *mut ArrowSchema,
+    /// Release callback; caller must invoke it when done if non-null.
+    pub release: Option<unsafe extern "C" fn(*mut ArrowSchema)>,
+    /// Private native data owned by the release callback.
+    pub private_data: *mut c_void,
 }
 
 /// Compaction behavior selector passed to compaction APIs.
@@ -608,6 +710,54 @@ pub struct ArcadiaTioV4RetainedHistoryCompactionPreciseReport {
     pub reason_code: *mut c_char,
 }
 
+/// Sparse-intent value predicate passed inside a sparse rule.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseValuePredicate {
+    /// Predicate kind.
+    pub kind: ArcadiaTioSparseValuePredicateKind,
+    /// Comparison value for equal predicates; ignored for other predicate kinds.
+    pub value: c_double,
+}
+
+/// Sparse-intent lowering rule borrowed by sparse append APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseRule {
+    /// Detector kind.
+    pub detector_kind: ArcadiaTioSparseDetectorKind,
+    /// Borrowed sparse-axis indices.
+    pub sparse_axes: *const usize,
+    /// Number of sparse-axis indices.
+    pub sparse_axes_len: usize,
+    /// Predicate used by predicate detectors.
+    pub predicate: ArcadiaTioSparseValuePredicate,
+    /// Minimum absent fraction required for sparse lowering.
+    pub min_absent_fraction: c_double,
+    /// Minimum absent subtensor count required for sparse lowering.
+    pub min_absent_subtensors: u64,
+    /// Dense fallback policy.
+    pub fallback: ArcadiaTioSparseFallbackPolicy,
+}
+
+/// Sparse-append analysis report returned by sparse analysis APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseAppendAnalysis {
+    /// Selected append outcome.
+    pub outcome: ArcadiaTioSparseAppendOutcome,
+    /// Fraction of absent subtensors detected.
+    pub absent_fraction: c_double,
+    /// Count of absent subtensors.
+    pub absent_subtensor_count: u64,
+    /// Count of total subtensors considered.
+    pub total_subtensor_count: u64,
+    /// Native-owned reason-code array; free with [`arcadia_tio_sparse_append_analysis_free`].
+    pub reasons: *mut ArcadiaTioSparseAppendReason,
+    /// Number of reason codes.
+    pub reasons_len: usize,
+}
+
 /// Auto-compaction configuration stored in file metadata.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -671,6 +821,28 @@ pub struct ArcadiaTioChunkKey {
     /// Borrowed chunk coordinate pointer.
     pub coords: *const u32,
     /// Number of chunk coordinates.
+    pub len: usize,
+}
+
+/// Commit metadata returned by history APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCommitInfo {
+    /// Commit sequence number.
+    pub commit_seq: u64,
+    /// Footer offset for this commit.
+    pub footer_offset: u64,
+    /// Previous footer offset.
+    pub prev_footer_offset: u64,
+}
+
+/// Native-owned commit list returned by history APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCommitList {
+    /// Native-owned commit array; free with [`arcadia_tio_commit_list_free`].
+    pub items: *mut ArcadiaTioCommitInfo,
+    /// Number of commits.
     pub len: usize,
 }
 
@@ -910,6 +1082,80 @@ pub struct ArcadiaTioReadExecutionReport {
     pub query_parallel_reason_code_taxonomy: *mut c_char,
 }
 
+/// Query trace context borrowed by attributed read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioQueryTraceContext {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed run identifier string.
+    pub run_id: *const c_char,
+    /// Borrowed row identifier string.
+    pub row_id: *const c_char,
+    /// Repeat index for benchmark-style callers.
+    pub repeat_index: u32,
+    /// Borrowed phase name string.
+    pub phase: *const c_char,
+    /// Borrowed language name string.
+    pub language: *const c_char,
+    /// Borrowed API surface name string.
+    pub api_surface: *const c_char,
+    /// Borrowed operation name string.
+    pub operation: *const c_char,
+    /// Borrowed trace-clock label string.
+    pub trace_clock: *const c_char,
+}
+
+/// Native-owned JSON trace returned by attributed read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioQueryTraceJson {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned JSON string; free with [`arcadia_tio_query_trace_json_free`].
+    pub json: *mut c_char,
+}
+
+/// Read-index item borrowed by low-level index read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadIndexItem {
+    /// Item tag.
+    pub kind: ArcadiaTioReadIndexItemTag,
+    /// Nonzero when `start` is present.
+    pub has_start: u8,
+    /// Slice start value.
+    pub start: i64,
+    /// Nonzero when `end` is present.
+    pub has_end: u8,
+    /// Slice end value.
+    pub end: i64,
+    /// Slice step value.
+    pub step: i64,
+    /// Scalar index value.
+    pub index: i64,
+}
+
+/// Read-index lowering report returned by low-level index read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadIndexReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Lowering strategy selected by native code.
+    pub lowering_kind: ArcadiaTioReadIndexLoweringKind,
+    /// Nonzero when native code used a full-tensor fallback.
+    pub used_full_tensor_fallback: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+}
+
 /// Historical read execution report returned by option-bearing historical reads.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -938,6 +1184,16 @@ pub struct ArcadiaTioHistoricalReadExecutionReport {
     pub query_source_kind: ArcadiaTioHistoricalQuerySourceKind,
     /// Commit sequence used for the historical query.
     pub query_commit_seq: u64,
+}
+
+/// Chunk plan returned by metadata APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioChunkPlan {
+    /// Native-owned block-size array; free with [`arcadia_tio_chunk_plan_free`].
+    pub block_sizes: *mut u32,
+    /// Number of block sizes.
+    pub len: usize,
 }
 
 /// Axis label item in file metadata.
@@ -1366,11 +1622,49 @@ unsafe extern "C" {
         axis: usize,
         out_values: *mut ArcadiaTioTensor,
     ) -> c_int;
+    /// Looks up the unique axis index for an inline validated i32 coordinate value.
+    pub fn arcadia_tio_coordinate_index_i32(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        value: i32,
+        out_index: *mut u32,
+    ) -> c_int;
+    /// Looks up the unique axis index for an inline validated i64 coordinate value.
+    pub fn arcadia_tio_coordinate_index_i64(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        value: i64,
+        out_index: *mut u32,
+    ) -> c_int;
+    /// Looks up the half-open axis-index range for an inclusive i32 coordinate interval.
+    pub fn arcadia_tio_coordinate_range_i32(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        start: i32,
+        end: i32,
+        out_start: *mut u32,
+        out_end: *mut u32,
+    ) -> c_int;
+    /// Looks up the half-open axis-index range for an inclusive i64 coordinate interval.
+    pub fn arcadia_tio_coordinate_range_i64(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        start: i64,
+        end: i64,
+        out_start: *mut u32,
+        out_end: *mut u32,
+    ) -> c_int;
 
     /// Reads the full tensor into a native-owned raw tensor.
     pub fn arcadia_tio_read_all(
         handle: *mut ArcadiaTioHandle,
         out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Reads the full tensor values as native-owned Arrow C Data array/schema carriers.
+    pub fn arcadia_tio_read_values_arrow(
+        handle: *mut ArcadiaTioHandle,
+        out_array: *mut ArrowArray,
+        out_schema: *mut ArrowSchema,
     ) -> c_int;
     /// Reads the full tensor into a dense tensor and optional native-owned mask.
     pub fn arcadia_tio_read_all_dense(
@@ -1488,6 +1782,117 @@ unsafe extern "C" {
         out_start_entry: *mut u32,
         out_end_entry: *mut u32,
     ) -> c_int;
+
+    /// Analyzes how sparse-intent f32 data would be appended.
+    pub fn arcadia_tio_analyze_sparse_append_f32(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_float,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_analysis: *mut ArcadiaTioSparseAppendAnalysis,
+    ) -> c_int;
+    /// Analyzes how sparse-intent f64 data would be appended.
+    pub fn arcadia_tio_analyze_sparse_append_f64(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_double,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_analysis: *mut ArcadiaTioSparseAppendAnalysis,
+    ) -> c_int;
+    /// Analyzes how sparse-intent i32 data would be appended.
+    pub fn arcadia_tio_analyze_sparse_append_i32(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i32,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_analysis: *mut ArcadiaTioSparseAppendAnalysis,
+    ) -> c_int;
+    /// Analyzes how sparse-intent i64 data would be appended.
+    pub fn arcadia_tio_analyze_sparse_append_i64(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i64,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_analysis: *mut ArcadiaTioSparseAppendAnalysis,
+    ) -> c_int;
+    /// Appends f32 data using sparse-intent analysis and best-effort lowering.
+    pub fn arcadia_tio_append_sparse_f32(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_float,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+    ) -> c_int;
+    /// Appends f32 sparse-intent data and returns an optional assigned entry range.
+    pub fn arcadia_tio_append_sparse_f32_with_range(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_float,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_start_entry: *mut u32,
+        out_end_entry: *mut u32,
+    ) -> c_int;
+    /// Appends f64 data using sparse-intent analysis and best-effort lowering.
+    pub fn arcadia_tio_append_sparse_f64(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_double,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+    ) -> c_int;
+    /// Appends f64 sparse-intent data and returns an optional assigned entry range.
+    pub fn arcadia_tio_append_sparse_f64_with_range(
+        handle: *mut ArcadiaTioHandle,
+        data: *const c_double,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_start_entry: *mut u32,
+        out_end_entry: *mut u32,
+    ) -> c_int;
+    /// Appends i32 data using sparse-intent analysis and best-effort lowering.
+    pub fn arcadia_tio_append_sparse_i32(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i32,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+    ) -> c_int;
+    /// Appends i32 sparse-intent data and returns an optional assigned entry range.
+    pub fn arcadia_tio_append_sparse_i32_with_range(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i32,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_start_entry: *mut u32,
+        out_end_entry: *mut u32,
+    ) -> c_int;
+    /// Appends i64 data using sparse-intent analysis and best-effort lowering.
+    pub fn arcadia_tio_append_sparse_i64(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i64,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+    ) -> c_int;
+    /// Appends i64 sparse-intent data and returns an optional assigned entry range.
+    pub fn arcadia_tio_append_sparse_i64_with_range(
+        handle: *mut ArcadiaTioHandle,
+        data: *const i64,
+        shape: *const u64,
+        rank: usize,
+        rule: *const ArcadiaTioSparseRule,
+        out_start_entry: *mut u32,
+        out_end_entry: *mut u32,
+    ) -> c_int;
+    /// Frees native-owned reason arrays in a sparse append analysis.
+    pub fn arcadia_tio_sparse_append_analysis_free(analysis: *mut ArcadiaTioSparseAppendAnalysis);
 
     /// Rewrites one selected entry with f32 payload data.
     pub fn arcadia_tio_rewrite_f32(
@@ -1662,16 +2067,59 @@ unsafe extern "C" {
         handle: *mut ArcadiaTioHandle,
         out_append_axis: *mut usize,
     ) -> c_int;
+    /// Reads index-checkpoint interval metadata.
+    pub fn arcadia_tio_get_index_checkpoint_every_commits(
+        handle: *mut ArcadiaTioHandle,
+        out_every_commits: *mut u32,
+    ) -> c_int;
+    /// Updates index-checkpoint interval metadata.
+    pub fn arcadia_tio_set_index_checkpoint_every_commits(
+        handle: *mut ArcadiaTioHandle,
+        every_commits: u32,
+    ) -> c_int;
+    /// Updates or clears one dimension name.
+    pub fn arcadia_tio_set_dim_name(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        name: *const c_char,
+        has_name: u8,
+    ) -> c_int;
+    /// Replaces Symbol-axis labels from borrowed strings.
+    pub fn arcadia_tio_set_symbols(
+        handle: *mut ArcadiaTioHandle,
+        symbols: *const *const c_char,
+        symbols_len: usize,
+    ) -> c_int;
+    /// Replaces Channel-axis labels from borrowed strings.
+    pub fn arcadia_tio_set_channels(
+        handle: *mut ArcadiaTioHandle,
+        channels: *const *const c_char,
+        channels_len: usize,
+    ) -> c_int;
+    /// Replaces user metadata key/value pairs from borrowed strings.
+    pub fn arcadia_tio_set_user_kv(
+        handle: *mut ArcadiaTioHandle,
+        user_kv_keys: *const *const c_char,
+        user_kv_values: *const *const c_char,
+        user_kv_len: usize,
+    ) -> c_int;
     /// Reads current dimension lengths.
     pub fn arcadia_tio_dim_lens(
         handle: *mut ArcadiaTioHandle,
         out_dim_lens: *mut u32,
         out_dim_lens_len: usize,
     ) -> c_int;
+    /// Reads the native chunk plan into a native-owned plan carrier.
+    pub fn arcadia_tio_chunk_plan(
+        handle: *mut ArcadiaTioHandle,
+        out_plan: *mut ArcadiaTioChunkPlan,
+    ) -> c_int;
     /// Reads current file path into a native-owned string.
     pub fn arcadia_tio_path(handle: *mut ArcadiaTioHandle, out_path: *mut *mut c_char) -> c_int;
     /// Frees native-owned strings returned by string APIs.
     pub fn arcadia_tio_string_free(value: *mut c_char);
+    /// Frees native-owned chunk plan arrays.
+    pub fn arcadia_tio_chunk_plan_free(plan: *mut ArcadiaTioChunkPlan);
     /// Frees native-owned file metadata.
     pub fn arcadia_tio_file_meta_free(meta: *mut ArcadiaTioFileMeta);
 
@@ -1739,10 +2187,22 @@ unsafe extern "C" {
     ) -> c_int;
     /// Frees native-owned strings in a current read execution report.
     pub fn arcadia_tio_read_execution_report_free(report: *mut ArcadiaTioReadExecutionReport);
+    /// Frees native-owned JSON strings in an attributed query trace.
+    pub fn arcadia_tio_query_trace_json_free(trace_json: *mut ArcadiaTioQueryTraceJson);
     /// Frees native-owned strings in a historical read execution report.
     pub fn arcadia_tio_historical_read_execution_report_free(
         report: *mut ArcadiaTioHistoricalReadExecutionReport,
     );
+    /// Frees native-owned strings in a read-index report.
+    pub fn arcadia_tio_read_index_report_free(report: *mut ArcadiaTioReadIndexReport);
+    /// Reads data through low-level read-index items into an owned tensor.
+    pub fn arcadia_tio_read_index(
+        handle: *mut ArcadiaTioHandle,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioReadIndexReport,
+    ) -> c_int;
     /// Reads current selector data with execution options into an owned tensor.
     pub fn arcadia_tio_read_with_options(
         handle: *mut ArcadiaTioHandle,
@@ -1762,6 +2222,30 @@ unsafe extern "C" {
         out_tensor: *mut ArcadiaTioTensor,
         out_mask: *mut ArcadiaTioMask,
         out_report: *mut ArcadiaTioReadExecutionReport,
+    ) -> c_int;
+    /// Reads current selector data with execution options and query attribution.
+    pub fn arcadia_tio_read_with_options_attributed(
+        handle: *mut ArcadiaTioHandle,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioReadWithOptionsOptions,
+        trace_context: *const ArcadiaTioQueryTraceContext,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioReadExecutionReport,
+        out_trace_json: *mut ArcadiaTioQueryTraceJson,
+    ) -> c_int;
+    /// Reads current dense selector data with execution options and query attribution.
+    pub fn arcadia_tio_read_with_options_dense_attributed(
+        handle: *mut ArcadiaTioHandle,
+        selectors: *const ArcadiaTioEntrySelector,
+        selectors_len: usize,
+        options: *const ArcadiaTioReadWithOptionsOptions,
+        trace_context: *const ArcadiaTioQueryTraceContext,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioReadExecutionReport,
+        out_trace_json: *mut ArcadiaTioQueryTraceJson,
     ) -> c_int;
     /// Reads historical selector data with execution options into an owned tensor.
     pub fn arcadia_tio_read_at_commit_with_options(
@@ -1827,4 +2311,27 @@ unsafe extern "C" {
         out_mask: *mut ArcadiaTioMask,
         out_report: *mut ArcadiaTioHistoricalReadExecutionReport,
     ) -> c_int;
+
+    /// Pops the current head commit.
+    pub fn arcadia_tio_pop(handle: *mut ArcadiaTioHandle) -> c_int;
+    /// Pops up to `n` current head commits.
+    pub fn arcadia_tio_pop_batched(handle: *mut ArcadiaTioHandle, n: u32) -> c_int;
+    /// Reverts the file to a target visible commit.
+    pub fn arcadia_tio_revert_commit(
+        handle: *mut ArcadiaTioHandle,
+        target_commit_seq: u64,
+    ) -> c_int;
+    /// Reads current head commit metadata.
+    pub fn arcadia_tio_head_commit(
+        handle: *mut ArcadiaTioHandle,
+        out_commit: *mut ArcadiaTioCommitInfo,
+    ) -> c_int;
+    /// Lists visible commit metadata into a native-owned commit list.
+    pub fn arcadia_tio_list_commits(
+        handle: *mut ArcadiaTioHandle,
+        limit: u32,
+        out_commits: *mut ArcadiaTioCommitList,
+    ) -> c_int;
+    /// Frees native-owned commit-list arrays.
+    pub fn arcadia_tio_commit_list_free(commits: *mut ArcadiaTioCommitList);
 }
