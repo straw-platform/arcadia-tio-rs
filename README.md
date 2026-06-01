@@ -10,6 +10,7 @@ such as `arcadia-tio` or `arcadia-tio-capi` through Cargo.
 - `crates/arcadia-tio-sys/` — unsafe C ABI declarations and link discovery.
 - `crates/arcadia-tio-rs/` — safe Rust wrapper over `arcadia-tio-sys`.
 - `native/x86_64-unknown-linux-gnu/lib/` — optional local-only native library copy for tests.
+- `examples/tutorials/run/run_rust.sh` — source-only tutorial runner for local validation.
 
 The safe wrapper covers the agreed source-visible public Rust beta scope:
 create/open metadata, policy and inferred create helpers, inline numeric
@@ -35,7 +36,8 @@ Supply a locally built native C ABI library, either by setting
 export ARCADIA_TIO_CAPI_LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
 export LD_LIBRARY_PATH="$ARCADIA_TIO_CAPI_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cargo test --workspace
-cargo run -p arcadia-tio-rs --example roundtrip
+bash examples/tutorials/run/run_rust.sh
+cargo run -p arcadia-tio-rs --example tutorial_01_quickstart_create_append_read
 ```
 
 The native library path is local-only. Do not commit, push, publish, upload,

@@ -14,3 +14,35 @@ path = "src/lib.rs"
 [dependencies]
 arcadia-tio-sys = { path = "../arcadia-tio-sys", version = "0.1.0" }
 
+[[example]]
+name = "tutorial_01_quickstart_create_append_read"
+path = "examples/tutorials/01_quickstart_create_append_read.rs"
+
+[[example]]
+name = "tutorial_02_layouts_reads_history"
+path = "examples/tutorials/02_layouts_reads_history.rs"
+
+[[example]]
+name = "tutorial_03_coordinates_v1_numeric"
+path = "examples/tutorials/03_coordinates_v1_numeric.rs"
+
+[[example]]
+name = "tutorial_04_coordinates_v2_full_surface"
+path = "examples/tutorials/04_coordinates_v2_full_surface.rs"
+
+[[example]]
+name = "tutorial_05_sparse_append"
+path = "examples/tutorials/05_sparse_append.rs"
+
+[[example]]
+name = "tutorial_06_mutation_history_universe"
+path = "examples/tutorials/06_mutation_history_universe.rs"
+
+[[example]]
+name = "tutorial_07_reform_compaction_diagnostics"
+path = "examples/tutorials/07_reform_compaction_diagnostics.rs"
+
+[[example]]
+name = "tutorial_08_compression_interop"
+path = "examples/tutorials/08_compression_interop.rs"
+

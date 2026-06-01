@@ -251,6 +251,33 @@ composed v2 reads, and authoritative index acceleration are deferred. Pop/revert
 checkpoint setter, clear-block, and unsupported auto-compaction calls
 intentionally surface native policy/layout support errors.
 
+## Tutorial examples
+
+User-facing tutorials live under `examples/tutorials/` and are registered as
+Cargo example targets so nested source files remain runnable from this crate
+manifest:
+
+| Cargo example target | Scenario |
+| --- | --- |
+| `tutorial_01_quickstart_create_append_read` | Quickstart create/append/read/metadata |
+| `tutorial_02_layouts_reads_history` | Layouts, selectors, shape policies, dense masks, and retained history |
+| `tutorial_03_coordinates_v1_numeric` | Numeric coordinate v1 descriptors, values, exact/range lookup, and lookup-composed reads |
+| `tutorial_04_coordinates_v2_full_surface` | Coordinate v2 bounded create/read/lookup/append/status surfaces |
+| `tutorial_05_sparse_append` | Sparse append analysis and f32/f64/i32/i64 zero/null/exact-integer predicates |
+| `tutorial_06_mutation_history_universe` | Mutation/history helpers and explicit universe-aware remap reads |
+| `tutorial_07_reform_compaction_diagnostics` | Reform, compaction, and native diagnostic report wrappers |
+| `tutorial_08_compression_interop` | Compression controls, read-index lowering, and Arrow C Data interop |
+
+```sh
+cargo run --example tutorial_01_quickstart_create_append_read
+cargo run --example tutorial_08_compression_interop
+```
+
+Use the native-library environment below when running them. The examples create
+tiny `.tio` files under OS temp directories and clean them up; do not copy native
+libraries, Cargo build output, or generated `.tio` data into the tutorial tree
+or source-only public checkout.
+
 ## Local test/runtime library setup
 
 Supply or copy the `arcadia_tio_capi` native shared library, then
