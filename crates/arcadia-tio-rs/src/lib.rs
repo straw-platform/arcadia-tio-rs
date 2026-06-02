@@ -5487,6 +5487,69 @@ impl<'a> PreparedAppendCoordinateBatchV2<'a> {
     }
 }
 
+/// Canonical alias for current coordinate options.
+pub type CoordinateOptions = CoordinateV2Options;
+/// Canonical alias for current coordinate value-domain metadata.
+pub type CoordinateValueDomain = CoordinateValueDomainV2;
+/// Canonical alias for current coordinate lookup key domains.
+pub type CoordinateKeyDomain = CoordinateKeyDomainV2;
+/// Canonical alias for current dictionary code dtypes.
+pub type CoordinateCodeDType = CoordinateCodeDTypeV2;
+/// Canonical alias for current fixed-text encoding metadata.
+pub type CoordinateFixedTextEncoding = CoordinateFixedTextEncodingV2;
+/// Canonical alias for current fixed-text padding metadata.
+pub type CoordinateFixedTextPadding = CoordinateFixedTextPaddingV2;
+/// Canonical alias for current external coordinate source kinds.
+pub type CoordinateSourceKind = CoordinateSourceKindV2;
+/// Canonical alias for current coordinate availability metadata.
+pub type CoordinateAvailability = CoordinateAvailabilityV2;
+/// Canonical alias for current coordinate status categories.
+pub type CoordinateStatusCategory = CoordinateStatusCategoryV2;
+/// Canonical alias for current coordinate index kinds.
+pub type CoordinateIndexKind = CoordinateIndexKindV2;
+/// Canonical alias for current coordinate index validation status.
+pub type CoordinateIndexValidationStatus = CoordinateIndexValidationStatusV2;
+/// Canonical alias for current coordinate index fallback metadata.
+pub type CoordinateIndexFallback = CoordinateIndexFallbackV2;
+/// Canonical alias for current coordinate index use metadata.
+pub type CoordinateIndexUse = CoordinateIndexUseV2;
+/// Canonical alias for current coordinate lookup result status.
+pub type CoordinateLookupResultStatus = CoordinateLookupResultStatusV2;
+/// Canonical alias for current fixed-text coordinate layout.
+pub type CoordinateFixedTextLayout = CoordinateFixedTextLayoutV2;
+/// Canonical alias for current dictionary summary metadata.
+pub type CoordinateDictionarySummary = CoordinateDictionarySummaryV2;
+/// Canonical alias for current dictionary entries.
+pub type CoordinateDictionaryEntry = CoordinateDictionaryEntryV2;
+/// Canonical alias for current external coordinate bindings.
+pub type CoordinateExternalBinding = CoordinateExternalBindingV2;
+/// Canonical alias for current index source bindings.
+pub type CoordinateIndexSourceBinding = CoordinateIndexSourceBindingV2;
+/// Canonical alias for current coordinate index summaries.
+pub type CoordinateIndexSummary = CoordinateIndexSummaryV2;
+/// Canonical alias for current coordinate input values.
+pub type CoordinateInputValues = CoordinateInputValuesV2;
+/// Canonical alias for current axis coordinate descriptors.
+pub type AxisCoordinateInput = AxisCoordinateInputV2;
+/// Canonical alias for current axis coordinate metadata.
+pub type AxisCoordinateMeta = AxisCoordinateMetaV2;
+/// More explicit canonical alias for current axis coordinate metadata.
+pub type AxisCoordinateMetadata = AxisCoordinateMetaV2;
+/// Canonical alias for current coordinate lookup keys.
+pub type CoordinateLookupKey = CoordinateLookupKeyV2;
+/// Canonical alias for current coordinate value slices.
+pub type CoordinateValueSlice = CoordinateValueSliceV2;
+/// Canonical alias for current dictionary outputs.
+pub type CoordinateDictionary = CoordinateDictionaryV2;
+/// Canonical alias for current coordinate lookup results.
+pub type CoordinateLookupResult = CoordinateLookupResultV2;
+/// Canonical alias for current append-coordinate entries.
+pub type AppendCoordinateEntry = AppendCoordinateEntryV2;
+/// Canonical alias for current append-coordinate batches.
+pub type AppendCoordinateBatch = AppendCoordinateBatchV2;
+/// Canonical alias for prepared append-coordinate batches.
+pub type PreparedAppendCoordinateBatch<'a> = PreparedAppendCoordinateBatchV2<'a>;
+
 struct PreparedAppendCoordinateEntryV2<'a> {
     // Keep descriptor/name C strings and dictionary-entry strings alive for raw C ABI pointers in `raw`.
     _descriptor_id: Option<CString>,
@@ -6156,6 +6219,16 @@ impl TensorFile {
         Ok(file)
     }
 
+    /// Creates a TensorFile from coordinate descriptors using the current coordinate API.
+    pub fn create_with_coordinates(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        coordinates: &[AxisCoordinateInput],
+        coordinate_options: CoordinateOptions,
+    ) -> Result<Self> {
+        Self::create_with_coordinates_v2(path, options, coordinates, coordinate_options)
+    }
+
     /// Creates a TensorFile from Coordinate v2 descriptors while leaving v1 `CoordinateSpec` helpers unchanged.
     pub fn create_with_coordinates_v2(
         path: impl AsRef<Path>,
@@ -6345,6 +6418,23 @@ impl TensorFile {
         Ok(file)
     }
 
+    /// Creates an inferred-layout TensorFile from coordinate descriptors using the current coordinate API.
+    pub fn create_inferred_with_coordinates(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        inferred_options: CreateInferredOptions,
+        coordinates: &[AxisCoordinateInput],
+        coordinate_options: CoordinateOptions,
+    ) -> Result<Self> {
+        Self::create_inferred_with_coordinates_v2(
+            path,
+            options,
+            inferred_options,
+            coordinates,
+            coordinate_options,
+        )
+    }
+
     /// Creates an inferred-layout TensorFile from Coordinate v2 descriptors.
     pub fn create_inferred_with_coordinates_v2(
         path: impl AsRef<Path>,
@@ -6446,6 +6536,23 @@ impl TensorFile {
             file.set_compression(compression)?;
         }
         Ok(file)
+    }
+
+    /// Creates a RegularChunked TensorFile from coordinate descriptors using the current coordinate API.
+    pub fn create_with_policy_with_coordinates(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+        policy_options: CreatePolicyOptions,
+        coordinates: &[AxisCoordinateInput],
+        coordinate_options: CoordinateOptions,
+    ) -> Result<Self> {
+        Self::create_with_policy_with_coordinates_v2(
+            path,
+            options,
+            policy_options,
+            coordinates,
+            coordinate_options,
+        )
     }
 
     /// Creates a RegularChunked TensorFile from Coordinate v2 descriptors.
@@ -6603,6 +6710,11 @@ impl TensorFile {
         // SAFETY: `raw_meta`/`len` are native-owned output from load_coordinate_meta and freed once.
         unsafe { sys::arcadia_tio_axis_coordinate_meta_free(raw_meta, len) };
         out
+    }
+
+    /// Loads current coordinate metadata without keeping a TensorFile handle open.
+    pub fn load_coordinate_metadata(path: impl AsRef<Path>) -> Result<Vec<AxisCoordinateMeta>> {
+        Self::load_coordinate_meta_v2(path)
     }
 
     /// Loads Coordinate v2 metadata without keeping a TensorFile handle open.
@@ -6797,6 +6909,11 @@ impl TensorFile {
         // SAFETY: `raw_meta`/`len` are native-owned output from coordinate_meta and freed once.
         unsafe { sys::arcadia_tio_axis_coordinate_meta_free(raw_meta, len) };
         out
+    }
+
+    /// Reads current coordinate metadata from the open handle.
+    pub fn coordinate_metadata(&self) -> Result<Vec<AxisCoordinateMeta>> {
+        self.coordinate_meta_v2()
     }
 
     /// Reads Coordinate v2 metadata from the open handle.
@@ -7182,6 +7299,16 @@ impl TensorFile {
         })
     }
 
+    /// Appends a bulk f32 slice with coordinate append-axis values and returns the assigned range.
+    pub fn append_f32_with_coordinates(
+        &mut self,
+        data: &[f32],
+        shape: &[u64],
+        coordinates: &AppendCoordinateBatch,
+    ) -> Result<AppendRange> {
+        self.append_f32_with_coordinates_v2(data, shape, coordinates)
+    }
+
     /// Appends a bulk f32 slice with Coordinate v2 append-axis values and returns the assigned range.
     ///
     /// Coordinate semantic validation (missing required values, wrong counts, descriptor/domain
@@ -7210,6 +7337,16 @@ impl TensorFile {
         })
     }
 
+    /// Appends a bulk f64 slice with coordinate append-axis values and returns the assigned range.
+    pub fn append_f64_with_coordinates(
+        &mut self,
+        data: &[f64],
+        shape: &[u64],
+        coordinates: &AppendCoordinateBatch,
+    ) -> Result<AppendRange> {
+        self.append_f64_with_coordinates_v2(data, shape, coordinates)
+    }
+
     /// Appends a bulk f64 slice with Coordinate v2 append-axis values and returns the assigned range.
     pub fn append_f64_with_coordinates_v2(
         &mut self,
@@ -7232,6 +7369,16 @@ impl TensorFile {
         })
     }
 
+    /// Appends a bulk i32 slice with coordinate append-axis values and returns the assigned range.
+    pub fn append_i32_with_coordinates(
+        &mut self,
+        data: &[i32],
+        shape: &[u64],
+        coordinates: &AppendCoordinateBatch,
+    ) -> Result<AppendRange> {
+        self.append_i32_with_coordinates_v2(data, shape, coordinates)
+    }
+
     /// Appends a bulk i32 slice with Coordinate v2 append-axis values and returns the assigned range.
     pub fn append_i32_with_coordinates_v2(
         &mut self,
@@ -7252,6 +7399,16 @@ impl TensorFile {
                 end,
             )
         })
+    }
+
+    /// Appends a bulk i64 slice with coordinate append-axis values and returns the assigned range.
+    pub fn append_i64_with_coordinates(
+        &mut self,
+        data: &[i64],
+        shape: &[u64],
+        coordinates: &AppendCoordinateBatch,
+    ) -> Result<AppendRange> {
+        self.append_i64_with_coordinates_v2(data, shape, coordinates)
     }
 
     /// Appends a bulk i64 slice with Coordinate v2 append-axis values and returns the assigned range.
@@ -8043,6 +8200,15 @@ impl TensorFile {
         })
     }
 
+    /// Reads current coordinate axis values into Rust-owned bytes while preserving status fields.
+    pub fn read_coordinate_axis(
+        &self,
+        axis: usize,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateValueSlice> {
+        self.read_axis_coordinates_v2(axis, options)
+    }
+
     /// Reads Coordinate v2 axis values into Rust-owned bytes while preserving status fields.
     pub fn read_axis_coordinates_v2(
         &self,
@@ -8074,6 +8240,15 @@ impl TensorFile {
         out
     }
 
+    /// Reads current coordinate dictionary metadata/entries into Rust-owned values.
+    pub fn coordinate_dictionary(
+        &self,
+        axis: usize,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateDictionary> {
+        self.coordinate_dictionary_v2(axis, options)
+    }
+
     /// Reads Coordinate v2 dictionary metadata/entries into Rust-owned values.
     pub fn coordinate_dictionary_v2(
         &self,
@@ -8103,6 +8278,16 @@ impl TensorFile {
         // SAFETY: `raw` is native-owned output and is freed exactly once after copying.
         unsafe { sys::arcadia_tio_coordinate_dictionary_v2_free(&mut raw) };
         out
+    }
+
+    /// Performs an exact coordinate lookup using a typed key.
+    pub fn coordinate_lookup(
+        &self,
+        axis: usize,
+        key: &CoordinateLookupKey,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateLookupResult> {
+        self.coordinate_lookup_v2(axis, key, options)
     }
 
     /// Performs an exact Coordinate v2 lookup using a typed key.
@@ -8144,6 +8329,17 @@ impl TensorFile {
         // SAFETY: `raw` is native-owned output and is freed exactly once after copying.
         unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
         out
+    }
+
+    /// Performs a half-open coordinate range lookup using typed lower/upper keys.
+    pub fn coordinate_lookup_range(
+        &self,
+        axis: usize,
+        lower: &CoordinateLookupKey,
+        upper: &CoordinateLookupKey,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateLookupResult> {
+        self.coordinate_lookup_range_v2(axis, lower, upper, options)
     }
 
     /// Performs a half-open Coordinate v2 range lookup using typed lower/upper keys.

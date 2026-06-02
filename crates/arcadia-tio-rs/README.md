@@ -55,30 +55,31 @@ lookup returns an axis index; range lookup returns a half-open `Range<u32>` for
 an inclusive coordinate interval. The read conveniences are ergonomic helpers,
 not coordinate-index acceleration.
 
-Coordinate v2 wrappers are also available under explicit `*_v2` names. Use
-`AxisCoordinateInputV2` builders with `TensorFile::create_with_coordinates_v2`,
-`create_inferred_with_coordinates_v2`, or
-`create_with_policy_with_coordinates_v2` for implemented source-only domains:
+Current coordinate wrappers are available under unsuffixed canonical names, with
+explicit `*_v2` aliases retained for source compatibility. Use
+`AxisCoordinateInput` builders with `TensorFile::create_with_coordinates`,
+`create_inferred_with_coordinates`, or `create_with_policy_with_coordinates` for
+implemented source-only domains:
 inline numeric values, fixed-width ASCII/right-space-padded text,
 dictionary-code coordinates with create-time dictionary entries, append-axis
 coordinate declarations, and descriptor-only external-reference summaries.
-`AppendCoordinateEntryV2`/`AppendCoordinateBatchV2` carry append-time coordinate
+`AppendCoordinateEntry`/`AppendCoordinateBatch` carry append-time coordinate
 values for append-axis descriptors: numeric `i32`/`i64` vectors, fixed-width
 ASCII/right-space-padded byte buffers or strings, and dictionary code vectors
 that may include append-time dictionary-extension entries attached with
 `with_dictionary_entries`/`dictionary_codes_*_with_entries`.
-`TensorFile::append_f32_with_coordinates_v2`, `append_f64_with_coordinates_v2`,
-`append_i32_with_coordinates_v2`, and `append_i64_with_coordinates_v2` append the
+`TensorFile::append_f32_with_coordinates`, `append_f64_with_coordinates`,
+`append_i32_with_coordinates`, and `append_i64_with_coordinates` append the
 payload plus a batch and return the native half-open `AppendRange`; missing
 required coordinates, wrong counts, domain/dtype mismatches, and publication
 conflicts are reported through the native status/last-error path and publish no
 payload-only fallback root.
-`TensorFile::coordinate_meta_v2`, `load_coordinate_meta_v2`,
-`read_axis_coordinates_v2`, `coordinate_dictionary_v2`,
-`coordinate_lookup_v2`, and `coordinate_lookup_range_v2` copy native-owned
-metadata/value/dictionary/lookup outputs into Rust-owned structs/bytes before
-calling the paired C free function. Build lookup keys with
-`CoordinateLookupKeyV2::i32`, `i64`, `fixed_text_ascii`/`fixed_text_bytes`,
+`TensorFile::coordinate_metadata`, `load_coordinate_metadata`,
+`read_coordinate_axis`, `coordinate_dictionary`, `coordinate_lookup`, and
+`coordinate_lookup_range` copy native-owned metadata/value/dictionary/lookup
+outputs into Rust-owned structs/bytes before calling the paired C free function.
+Build lookup keys with `CoordinateLookupKey::i32`, `i64`,
+`fixed_text_ascii`/`fixed_text_bytes`,
 `dictionary_code`, `stable_id`, `display_label`, `alias`, or `raw_time_i64`.
 Lookup results preserve `status`, `status_category`, `availability`, `reason`,
 unique positions, half-open ranges, and many-position vectors; ordinary missing,
