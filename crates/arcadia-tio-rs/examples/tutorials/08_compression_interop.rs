@@ -15,6 +15,8 @@ use arcadia_tio_rs::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Keep compression and interop flows in dedicated files to isolate any
+    // behavioral differences by scenario.
     let temp = TutorialTempDir::new("compression_interop")?;
 
     let default_path = temp.path().join("default_then_zstd.tio");
@@ -34,6 +36,7 @@ fn demonstrate_compression_controls(
     default_path: &Path,
     uncompressed_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Compare default-inherited compression with an explicit uncompressed override.
     let mut default_options = CreateOptions::streaming(
         DType::F32,
         vec![
@@ -77,6 +80,7 @@ fn demonstrate_compression_controls(
 }
 
 fn demonstrate_interop_surfaces(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Query read-index lowering metadata and Arrow export surfaces.
     let file = TensorFile::open(path)?;
 
     let indexed = file.read_index(&[

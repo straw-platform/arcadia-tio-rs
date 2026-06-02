@@ -23,6 +23,8 @@ use arcadia_tio_rs::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // One scratch directory per run contains all Coordinate V2 artifacts used by
+    // this tutorial.
     let temp = TutorialTempDir::new("coordinates_v2_full_surface")?;
 
     demo_numeric_and_fixed_text(temp.path())?;
@@ -38,6 +40,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Create a file with numeric + fixed-width text descriptors and assert both
+    // metadata and value-level lookup semantics.
     let path = root.join("coordinate_v2_numeric_fixed_text.tio");
     let options = CreateOptions::streaming(
         DType::F32,
@@ -48,6 +52,8 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
         ],
         0,
     );
+    // Descriptor declarations include optional ordering and explicit IDs for
+    // stable lookup and assertion.
     let coordinates = vec![
         AxisCoordinateInputV2::inline_i32(1, vec![10, 20])
             .with_descriptor_id("symbol-id-v2")
@@ -66,6 +72,7 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
             .with_required(true),
     ];
 
+    // Write payload under declared descriptors, then verify metadata contracts.
     let mut file = TensorFile::create_with_coordinates_v2(
         &path,
         options,
@@ -84,6 +91,7 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
     assert_eq!(meta[1].value_domain, CoordinateValueDomainV2::FixedText);
     assert_eq!(meta[1].fixed_text.width, 4);
 
+    // Export axis-1 values as typed bytes and validate fixed-width transport size.
     let numeric_values = file.read_axis_coordinates_v2(1, CoordinateV2Options::default())?;
     assert_eq!(
         numeric_values.value_domain,
@@ -94,6 +102,7 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
     assert_eq!(numeric_values.len, 2);
     assert_eq!(numeric_values.data, i32_bytes(&[10, 20]));
 
+    // Export axis-2 fixed-text bytes and confirm expected ASCII padding.
     let fixed_values = file.read_axis_coordinates_v2(2, CoordinateV2Options::default())?;
     assert_eq!(
         fixed_values.value_domain,
@@ -103,6 +112,8 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
     assert_eq!(fixed_values.len, 2);
     assert_eq!(fixed_values.data, b"BID ASK ".to_vec());
 
+    // Use explicit authoritative scans for deterministic, non-optional lookup
+    // outcomes across domains.
     let lookup_options = CoordinateV2Options::authoritative_scan();
     let numeric_exact =
         file.coordinate_lookup_v2(1, &CoordinateLookupKeyV2::i32(20), lookup_options)?;
@@ -151,6 +162,8 @@ fn demo_numeric_and_fixed_text(root: &Path) -> Result<(), Box<dyn std::error::Er
 }
 
 fn demo_dictionary_codes(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Demonstrate dictionary-code descriptors with explicit summary/revision
+    // metadata and reverse dictionary lookup by code / stable id / label.
     let path = root.join("coordinate_v2_dictionary.tio");
     let options = CreateOptions::streaming(
         DType::F64,
@@ -248,6 +261,8 @@ fn demo_dictionary_codes(root: &Path) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn demo_external_unavailable(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Exercise external-reference summary flow: descriptor exists but values are
+    // intentionally unavailable in-file.
     let path = root.join("coordinate_v2_external_unavailable.tio");
     let options = CreateOptions::streaming(
         DType::F32,
@@ -320,6 +335,8 @@ fn demo_external_unavailable(root: &Path) -> Result<(), Box<dyn std::error::Erro
 fn demo_append_coordinates_and_atomic_failures(
     root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Append-axis flow: one successful atomic append batch followed by
+    // required-metadata and shape-count failure probes.
     let path = root.join("coordinate_v2_append.tio");
     let options = CreateOptions::streaming(
         DType::F32,
@@ -354,6 +371,8 @@ fn demo_append_coordinates_and_atomic_failures(
             .with_descriptor_id("append-day-v2")
             .with_numeric_encoding(CoordinateEncoding::DateYyyymmdd),
     ]);
+    // A valid append batch should produce a normal append range and keep data
+    // shape consistent with commit state.
     let range = file.append_f32_with_coordinates_v2(&[1.0, 2.0, 3.0, 4.0], &[2, 2], &good_batch)?;
     assert_eq!((range.start, range.end), (0, 2));
     assert_eq!(file.dim_lens()?, vec![2, 2]);
@@ -367,6 +386,7 @@ fn demo_append_coordinates_and_atomic_failures(
     let before_meta = file.coordinate_meta_v2()?;
     let before_values = file.read_axis_coordinates_v2(0, CoordinateV2Options::default())?;
 
+    // Missing coordinate batches are atomic failures: no partial append.
     let missing = file
         .append_f32_with_coordinates_v2(
             &[5.0, 6.0, 7.0, 8.0],

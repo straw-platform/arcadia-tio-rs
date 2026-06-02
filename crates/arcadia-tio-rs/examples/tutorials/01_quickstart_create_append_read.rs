@@ -14,9 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arcadia_tio_rs::{AxisKind, CreateOptions, DType, DimSpec, TensorData, TensorFile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use a throwaway directory per run so each invocation is deterministic
+    // and leaves no persistent fixtures behind.
     let temp = TutorialTempDir::new("quickstart_create_append_read")?;
     let path = temp.path().join("quickstart.tio");
 
+    // Build metadata: 2D streaming tensor with explicit axis names and user kv.
     let dims = vec![
         DimSpec::new(AxisKind::Time, 0).with_name("time"),
         DimSpec::new(AxisKind::Channel, 2).with_name("channel"),
@@ -26,18 +29,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     options.user_kv = vec![("tutorial".to_string(), "rust quickstart".to_string())];
 
     {
+        // Create once, append once, and verify commit assignment while the
+        // mutable handle is still open.
         let mut file = TensorFile::create(&path, options)?;
         let appended = file.append_f32(&[1.0, 2.0, 3.0, 4.0], &[2, 2])?;
         assert_eq!((appended.start, appended.end), (0, 2));
         assert_eq!(file.dim_lens()?, vec![2, 2]);
     }
 
+    // Reopen as a read-only workflow to prove serialization boundaries and
+    // metadata retention across close/reopen.
     let file = TensorFile::open(&path)?;
     let values = file.read_all()?;
     assert_eq!(values.dtype, DType::F32);
     assert_eq!(values.shape, vec![2, 2]);
     assert_eq!(values.data, TensorData::F32(vec![1.0, 2.0, 3.0, 4.0]));
 
+    // Verify stored metadata instead of inferring from in-memory state.
     let meta = TensorFile::load_meta(&path)?;
     assert_eq!(meta.dtype, DType::F32);
     assert_eq!(meta.dims[0].name.as_deref(), Some("time"));

@@ -19,6 +19,8 @@ use arcadia_tio_rs::{
 const SHAPE: &[u64] = &[1, 4];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Keep sparse append scenarios in an ephemeral directory for deterministic
+    // cleanup between runs.
     let temp = TutorialTempDir::new("sparse_append")?;
 
     demo_f32_zero(temp.path())?;
@@ -35,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn create_sparse_file(path: &Path, dtype: DType) -> Result<TensorFile, Box<dyn std::error::Error>> {
+    // Small fixed random-access factory used by each predicate rule variant.
     let options = CreateOptions::random_access(
         dtype,
         vec![
@@ -47,6 +50,8 @@ fn create_sparse_file(path: &Path, dtype: DType) -> Result<TensorFile, Box<dyn s
 }
 
 fn demo_f32_zero(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Zero-mask rule for f32: verify analysis chooses sparse structure and then
+    // materialize a masked dense read for shape verification.
     let mut file = create_sparse_file(&root.join("f32_zero.tio"), DType::F32)?;
     let values = [11.0_f32, 0.0, 13.0, 0.0];
     let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
@@ -69,6 +74,7 @@ fn demo_f32_zero(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn demo_f64_zero(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // f64 uses the same predicate semantics and a parallel shape assertion path.
     let mut file = create_sparse_file(&root.join("f64_zero.tio"), DType::F64)?;
     let values = [101.0_f64, 0.0, 103.0, 0.0];
     let rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
@@ -91,6 +97,8 @@ fn demo_f64_zero(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn demo_i32_zero_and_exact(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // i32 covers zero predicate and exact integer predicate with both happy-path
+    // and intentional mismatch probes.
     let mut zero_file = create_sparse_file(&root.join("i32_zero.tio"), DType::I32)?;
     let zero_values = [21_i32, 0, 23, 0];
     let zero_rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
@@ -122,6 +130,7 @@ fn demo_i32_zero_and_exact(root: &Path) -> Result<(), Box<dyn std::error::Error>
     );
     assert_eq!(exact_dense.mask.as_deref(), Some(&[1, 0, 1, 0][..]));
 
+    // Mismatch between integer width and predicate width should fail.
     let mismatch = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::EqualI64(-7));
     let err = exact_file
         .analyze_sparse_append_i32(&exact_values, SHAPE, &mismatch)
@@ -135,6 +144,8 @@ fn demo_i32_zero_and_exact(root: &Path) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn demo_i64_zero_and_exact(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // i64 mirrors i32 semantics and demonstrates large absent-value exact
+    // matching with explicit overflow-safe sentinel values.
     let mut zero_file = create_sparse_file(&root.join("i64_zero.tio"), DType::I64)?;
     let zero_values = [201_i64, 0, 203, 0];
     let zero_rule = SparseRule::predicate_subtensor(vec![1], SparseValuePredicate::Zero);
@@ -181,9 +192,8 @@ fn demo_i64_zero_and_exact(root: &Path) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn demo_null_rule_boundary(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    // Plain typed Rust slices have no nullable bitmap. A NullSubtensor rule is
-    // still explicit API input, but for these dense numeric slices it detects no
-    // absent subtensors and appends densely to preserve exact values.
+    // Null-subtensor boundary case: plain numeric slices carry no explicit null
+    // bitmap, so null rule analysis resolves to dense fallback.
     let null_rule = SparseRule::null_subtensor(vec![1]);
 
     let mut i32_file = create_sparse_file(&root.join("i32_null_rule_dense_view.tio"), DType::I32)?;

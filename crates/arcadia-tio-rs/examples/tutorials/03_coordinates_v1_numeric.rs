@@ -18,9 +18,12 @@ use arcadia_tio_rs::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use a temporary scratch directory and focus on a single coordinate axis
+    // lookup flow.
     let temp = TutorialTempDir::new("coordinates_v1_numeric")?;
     let path = temp.path().join("coordinates_v1_numeric.tio");
 
+    // Coordinate metadata uses an inline numeric descriptor with strict ordering.
     let mut options = CreateOptions::streaming(
         DType::F64,
         vec![
@@ -45,10 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         required: true,
     });
 
+    // Create, append a 2x3 payload, and confirm the assigned commit range.
     let mut file = TensorFile::create(&path, options)?;
     let appended = file.append_f64(&[101.0, 102.0, 103.0, 201.0, 202.0, 203.0], &[2, 3])?;
     assert_eq!((appended.start, appended.end), (0, 2));
 
+    // Validate descriptor-level metadata before coordinate operations.
     let descriptors = file.coordinate_meta()?;
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].axis, 1);
@@ -62,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CoordinateValidationStatus::Validated
     );
 
+    // Validate raw coordinate value export and its shape/type contract.
     let coordinate_values = file.read_axis_coordinates(1)?;
     assert_eq!(coordinate_values.dtype, DType::I32);
     assert_eq!(coordinate_values.shape, vec![3]);
@@ -70,10 +76,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TensorData::I32(vec![20260514, 20260515, 20260516])
     );
 
+    // Exact and range coordinate lookups return deterministic offsets and
+    // half-open ranges.
     assert_eq!(file.coordinate_index_i32(1, 20260515)?, 1);
     assert_eq!(file.coordinate_range_i32(1, 20260514, 20260516)?, 0..3);
     assert_eq!(file.coordinate_range_i32(1, 20260515, 20260516)?, 1..3);
 
+    // Compose lookup result into ordinary axis reads for convenience API checks.
     let exact_read = file.read_at_coordinate_i32(1, 20260516)?;
     assert_eq!(exact_read.shape, vec![2, 1]);
     assert_eq!(exact_read.data, TensorData::F64(vec![103.0, 203.0]));

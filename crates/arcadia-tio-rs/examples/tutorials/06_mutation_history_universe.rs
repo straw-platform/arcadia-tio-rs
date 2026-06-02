@@ -19,6 +19,7 @@ use arcadia_tio_rs::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Keep mutation, history, and universe examples isolated in one scratch path.
     let temp = TutorialTempDir::new("mutation_history_universe")?;
 
     demo_rewrite_pop_revert_and_history(temp.path())?;
@@ -32,6 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Show three mutation families: rewrite, history reads, and explicit
+    // revert/pop semantics on commit progression.
     let path = root.join("mutation_history.tio");
     let options = CreateOptions::streaming(
         DType::F32,
@@ -47,6 +50,7 @@ fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::e
     file.append_f32(&base, &[3, 2])?;
     let base_commit = file.head_commit()?.commit_seq;
 
+    // Rewrite a subtensor slice to demonstrate commit advancement semantics.
     file.rewrite_slice_f32(
         &[EntrySelector::Take(vec![0, 2]), EntrySelector::All],
         &[10.0, 11.0, 50.0, 51.0],
@@ -59,6 +63,7 @@ fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::e
         TensorData::F32(vec![10.0, 11.0, 3.0, 4.0, 50.0, 51.0])
     );
 
+    // Read historical snapshot to validate old commit is preserved after rewrite.
     let historical_base = file.read_at_commit(base_commit, &[])?;
     assert_eq!(historical_base.shape, vec![3, 2]);
     assert_eq!(historical_base.data, TensorData::F32(base.to_vec()));
@@ -68,6 +73,7 @@ fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::e
         .expect_err("clear_blocks is an explicit unsupported boundary here");
     assert_eq!(clear_boundary.code(), ErrorCode::Unimplemented);
 
+    // Append/popup sequence exercises the reversible tip path.
     file.append_f32(&[7.0, 8.0], &[1, 2])?;
     file.pop()?;
     assert_eq!(
@@ -77,6 +83,7 @@ fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::e
     let after_pop_commit = file.head_commit()?.commit_seq;
     assert!(after_pop_commit > rewrite_commit);
 
+    // After pop, append again to verify file remains writable and consistent.
     file.append_f32(&[9.0, 10.0], &[1, 2])?;
     file.revert_commit(base_commit)?;
     let current_head = file.head_commit()?.commit_seq;
@@ -106,6 +113,8 @@ fn demo_rewrite_pop_revert_and_history(root: &Path) -> Result<(), Box<dyn std::e
 }
 
 fn demo_universe_authoring_and_remap(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Universe-aware append keeps payload + slot ids together and verifies both
+    // current and historical reads with explicit universe targeting.
     let path = root.join("universe_remap.tio");
     let options = CreateOptions::streaming(
         DType::F32,
@@ -118,8 +127,10 @@ fn demo_universe_authoring_and_remap(root: &Path) -> Result<(), Box<dyn std::err
     let universe_options = CreateUniverseOptions::new(vec![AxisIdentityInput::universe_aware(1)]);
     let family = uuid(42);
 
+    // Create file with an explicit universe-aware layout.
     let mut file = TensorFile::create_with_universe(&path, options, universe_options)?;
 
+    // First append defines an initial universe slot mapping.
     let first_append = AppendWithUniverseOptions {
         slots: vec![SlotUniverseBindings::new(vec![UniverseBinding::new(
             1,
@@ -139,6 +150,7 @@ fn demo_universe_authoring_and_remap(root: &Path) -> Result<(), Box<dyn std::err
     assert_eq!((first_range.start, first_range.end), (0, 1));
     let first_commit = file.head_commit()?.commit_seq;
 
+    // Second append adds an additional slot and remaps prior positions.
     let second_append = AppendWithUniverseOptions {
         slots: vec![
             SlotUniverseBindings::new(vec![UniverseBinding::new(1, family, uuid(2), 2)]),
@@ -153,6 +165,7 @@ fn demo_universe_authoring_and_remap(root: &Path) -> Result<(), Box<dyn std::err
         file.append_f32_with_universe(&[3.0, 4.0, 5.0, 6.0], &[2, 2], &second_append)?;
     assert_eq!((second_range.start, second_range.end), (1, 3));
 
+    // Read current and remapped views using explicit universe targets.
     let current_selectors = [
         EntrySelector::Range { start: 2, end: 3 },
         EntrySelector::All,
