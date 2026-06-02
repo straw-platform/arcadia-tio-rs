@@ -3,26 +3,25 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(any(feature = "arrow", feature = "ndarray"))]
-use arcadia_tio_rs::Tensor;
 use arcadia_tio_rs::{
     AppendCoordinateBatch, AppendCoordinateEntry, AppendWithUniverseOptions, AutoCompactionConfig,
     AxisCoordinateInput, AxisIdentityInput, AxisKind, CompactionMode, CompactionOptions,
-    CompressionConfig, CoordinateAvailability, CoordinateCodeDType, CoordinateDType,
-    CoordinateDictionaryEntry, CoordinateDictionarySummary, CoordinateEncoding,
-    CoordinateExternalBindingV2, CoordinateFixedTextLayout, CoordinateKind, CoordinateLookupKey,
-    CoordinateLookupResultStatus, CoordinateMonotonicity, CoordinateOptions, CoordinateOrdering,
-    CoordinateSourceKind, CoordinateSpec, CoordinateStatusCategory, CoordinateStorage,
-    CoordinateStorageKind, CoordinateUniqueness, CoordinateValidationStatus, CoordinateValueDomain,
-    CoordinateValues, CreateInferredOptions, CreateOptions, CreatePolicyOptions,
-    CreateUniverseOptions, DType, DimSpec, EntrySelector, ErrorCode, ExplicitExtentAxisTarget,
-    ExplicitUniverseAxisTarget, HistoricalQuerySourceKind, HistoricalReadWithOptions,
-    HistoricalReadWithShapePolicyOptions, QueryTraceContext, ReadIndexItem, ReadIndexLoweringKind,
-    ReadShapePolicy, ReadWithOptions, ReadWithShapePolicyOptions, ReformOptions,
-    SlotUniverseBindings, SparseAppendOutcome, SparseAppendReason, SparseRule,
-    SparseValuePredicate, StorageAccessKind, TensorData, TensorFile, UniverseBinding,
+    CompressionCodec, CompressionConfig, CompressionMode, CoordinateAvailability,
+    CoordinateCodeDType, CoordinateDType, CoordinateDictionaryEntry, CoordinateDictionarySummary,
+    CoordinateEncoding, CoordinateExternalBindingV2, CoordinateFixedTextLayout, CoordinateKind,
+    CoordinateLookupKey, CoordinateLookupResultStatus, CoordinateMonotonicity, CoordinateOptions,
+    CoordinateOrdering, CoordinateSourceKind, CoordinateSpec, CoordinateStatusCategory,
+    CoordinateStorage, CoordinateStorageKind, CoordinateUniqueness, CoordinateValidationStatus,
+    CoordinateValueDomain, CoordinateValues, CreateInferredOptions, CreateOptions,
+    CreatePolicyOptions, CreateUniverseOptions, DType, DimSpec, EntrySelector, ErrorCode,
+    ExplicitExtentAxisTarget, ExplicitUniverseAxisTarget, HistoricalQuerySourceKind,
+    HistoricalReadWithOptions, HistoricalReadWithShapePolicyOptions, QueryTraceContext,
+    ReadIndexItem, ReadIndexLoweringKind, ReadShapePolicy, ReadWithOptions,
+    ReadWithShapePolicyOptions, ReformOptions, SlotUniverseBindings, SparseAppendOutcome,
+    SparseAppendReason, SparseRule, SparseValuePredicate, StorageAccessKind, Tensor, TensorData,
+    TensorF32, TensorF64, TensorFile, TensorI32, TensorI64, UniverseBinding,
     V4CompactionAnalysisPolicy, V4PreciseAccountingField, V4PreciseAccountingOptions,
-    V4ReportStatus, V4RetainedHistoryCompactionOptions,
+    V4ReportStatus, V4RetainedHistoryCompactionOptions, typed_ops,
 };
 
 fn i32_bytes(values: &[i32]) -> Vec<u8> {
@@ -1341,6 +1340,113 @@ fn safe_wrapper_exports_arrow_c_data_and_allows_later_reads() {
     let _ = fs::remove_file(path);
 }
 
+#[test]
+fn typed_tensor_constructors_accessors_and_roundtrip_supported_dtypes() {
+    let f32_tensor = TensorF32::from_dense(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0])
+        .expect("valid typed f32 tensor");
+    assert_eq!(f32_tensor.dtype(), DType::F32);
+    assert_eq!(f32_tensor.shape(), &[2, 2]);
+    assert_eq!(f32_tensor.element_len().expect("element count"), 4);
+    assert_eq!(
+        f32_tensor.values().expect("typed f32 values"),
+        &[1.0, 2.0, 3.0, 4.0]
+    );
+
+    let raw: Tensor = f32_tensor.clone().into();
+    assert_eq!(raw.data, TensorData::F32(vec![1.0, 2.0, 3.0, 4.0]));
+    let rebuilt = TensorF32::try_from(raw).expect("typed f32 roundtrip from Tensor");
+    assert_eq!(rebuilt, f32_tensor);
+
+    let f64_tensor =
+        TensorF64::from_dense(vec![1, 2], vec![1.5, 2.5]).expect("valid typed f64 tensor");
+    assert_eq!(f64_tensor.values().expect("typed f64 values"), &[1.5, 2.5]);
+
+    let i32_tensor =
+        TensorI32::from_dense(vec![3], vec![10, 20, 30]).expect("valid typed i32 tensor");
+    assert_eq!(
+        i32_tensor.values().expect("typed i32 values"),
+        &[10, 20, 30]
+    );
+
+    let i64_tensor =
+        TensorI64::from_dense(vec![2], vec![100, 200]).expect("valid typed i64 tensor");
+    assert_eq!(
+        i64_tensor.into_tensor().data,
+        TensorData::I64(vec![100, 200])
+    );
+}
+
+#[test]
+fn typed_tensor_rejects_shape_and_dtype_mismatches() {
+    let err =
+        TensorF32::from_dense(vec![2, 2], vec![1.0, 2.0]).expect_err("shape mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let raw_f64 = Tensor::from_dense_f64(vec![2], vec![1.0, 2.0]).expect("valid f64 tensor");
+    let err = TensorF32::try_from(raw_f64).expect_err("dtype mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let inconsistent = Tensor {
+        dtype: DType::F32,
+        shape: vec![1],
+        data: TensorData::F64(vec![1.0]),
+    };
+    let err = TensorF32::try_from_tensor(inconsistent).expect_err("payload dtype mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn typed_ops_forward_selected_operations_and_validate_outputs() {
+    let tensor = TensorF64::from_dense(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        .expect("valid typed f64 tensor");
+
+    let transposed = typed_ops::transpose(&tensor).expect("typed transpose");
+    assert_eq!(transposed.shape(), &[3, 2]);
+    assert_eq!(
+        transposed.values().expect("transposed values"),
+        &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+    );
+
+    let shifted = typed_ops::add_scalar(&tensor, 10.0).expect("typed add scalar");
+    assert_eq!(shifted.values().expect("shifted values")[0], 11.0);
+
+    let row_sums = typed_ops::sum(&tensor, Some(&[1]), false).expect("typed row sums");
+    assert_eq!(row_sums.shape(), &[2]);
+    assert_eq!(row_sums.values().expect("row sum values"), &[6.0, 15.0]);
+
+    let row_argmax = typed_ops::argmax(&tensor, Some(&[1]), false).expect("typed argmax");
+    assert_eq!(row_argmax.dtype(), DType::I64);
+    assert_eq!(row_argmax.values().expect("argmax values"), &[2, 2]);
+
+    let rows = typed_ops::split(&tensor, 0, &[1, 1]).expect("typed split");
+    let rejoined = typed_ops::concat(&[&rows[0], &rows[1]], 0).expect("typed concat");
+    assert_eq!(rejoined.into_tensor(), tensor.clone().into_tensor());
+
+    let ints = TensorI32::from_dense(vec![2, 2], vec![1, 2, 3, 4]).expect("valid typed i32 tensor");
+    let doubled = typed_ops::mul_scalar(&ints, 2).expect("typed integer scalar multiply");
+    assert_eq!(
+        doubled.values().expect("doubled integer values"),
+        &[2, 4, 6, 8]
+    );
+    let cumulative = typed_ops::cumsum(&ints, Some(1)).expect("typed integer cumsum");
+    assert_eq!(
+        cumulative.values().expect("integer cumsum values"),
+        &[1, 3, 3, 7]
+    );
+}
+
+#[test]
+fn typed_tensor_addition_preserves_untyped_tensor_api_compatibility() {
+    let tensor = Tensor::from_dense_i32(vec![2], vec![10, 20]).expect("valid untyped i32 tensor");
+    assert_eq!(tensor.values_i32().expect("untyped values"), &[10, 20]);
+
+    let shifted = arcadia_tio_rs::ops::add_scalar(&tensor, 5_i32).expect("untyped add scalar");
+    assert_eq!(shifted.data, TensorData::I32(vec![15, 25]));
+
+    let typed = TensorI32::try_from(tensor.clone()).expect("typed view of existing Tensor");
+    assert_eq!(typed.into_tensor(), tensor);
+}
+
 #[cfg(feature = "arrow")]
 #[test]
 fn tensor_arrow_record_batch_and_ipc_roundtrip_owned_values() {
@@ -1434,6 +1540,324 @@ fn tensor_arrow_record_batch_rejects_zero_width_inner_shape() {
     assert_eq!(err.code(), ErrorCode::InvalidArgument);
 }
 
+#[cfg(feature = "csv")]
+#[test]
+fn tensor_csv_roundtrips_supported_dtypes_and_metadata() {
+    let f32_tensor =
+        Tensor::from_dense_f32(vec![2, 2], vec![1.0, 2.5, 3.25, 4.75]).expect("valid f32 tensor");
+    let csv = f32_tensor.to_csv_string().expect("f32 tensor to CSV");
+    assert!(csv.starts_with("record,dtype,shape,order,flat_index,value\n"));
+    assert!(csv.contains("metadata,f32,2x2,row-major,,\n"));
+    assert!(csv.contains("value,,,,0,1"));
+    assert_eq!(
+        Tensor::from_csv_str(&csv).expect("decode f32 CSV string"),
+        f32_tensor
+    );
+    assert_eq!(
+        Tensor::from_csv_bytes(&f32_tensor.to_csv_bytes().expect("f32 CSV bytes"))
+            .expect("decode f32 CSV bytes"),
+        f32_tensor
+    );
+
+    let f64_tensor =
+        Tensor::from_dense_f64(vec![1, 2, 2], vec![1.5, 2.5, 3.5, 4.5]).expect("valid f64 tensor");
+    assert_eq!(
+        Tensor::from_csv_str(&f64_tensor.to_csv_string().expect("f64 CSV"))
+            .expect("decode f64 CSV"),
+        f64_tensor
+    );
+
+    let i32_tensor =
+        Tensor::from_dense_i32(vec![4], vec![10, 20, 30, 40]).expect("valid i32 tensor");
+    assert_eq!(
+        Tensor::from_csv_bytes(&i32_tensor.to_csv_bytes().expect("i32 CSV bytes"))
+            .expect("decode i32 CSV"),
+        i32_tensor
+    );
+
+    let i64_tensor =
+        Tensor::from_dense_i64(vec![2, 2], vec![100, 200, 300, 400]).expect("valid i64 tensor");
+    assert_eq!(
+        Tensor::from_csv_str(&i64_tensor.to_csv_string().expect("i64 CSV"))
+            .expect("decode i64 CSV"),
+        i64_tensor
+    );
+
+    let empty_inner =
+        Tensor::from_dense_i64(vec![2, 0], Vec::new()).expect("zero-element shape remains valid");
+    let empty_csv = empty_inner.to_csv_string().expect("empty tensor CSV");
+    assert!(empty_csv.contains("metadata,i64,2x0,row-major,,\n"));
+    assert_eq!(
+        Tensor::from_csv_str(&empty_csv).expect("decode empty tensor CSV"),
+        empty_inner
+    );
+}
+
+#[cfg(feature = "csv")]
+#[test]
+fn tensor_csv_rejects_malformed_input() {
+    let err = Tensor::from_csv_str("record,dtype,shape,order,flat_index,value\n")
+        .expect_err("missing metadata rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,u32,2,row-major,,\n",
+    )
+    .expect_err("invalid dtype rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,f32,2x,row-major,,\n",
+    )
+    .expect_err("invalid shape rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,i32,2,column-major,,\n",
+    )
+    .expect_err("invalid order rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,i32,2,row-major,,\nvalue,,,,1,10\n",
+    )
+    .expect_err("out-of-order index rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,i32,2,row-major,,\nvalue,,,,0,10\n",
+    )
+    .expect_err("value count mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let err = Tensor::from_csv_str(
+        "record,dtype,shape,order,flat_index,value\nmetadata,i32,1,row-major,,\nvalue,,,,0,not_an_i32\n",
+    )
+    .expect_err("scalar parse error rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+}
+
+#[cfg(feature = "parquet")]
+#[test]
+fn tensor_parquet_roundtrips_supported_dtypes_metadata_and_files() {
+    let f32_tensor =
+        Tensor::from_dense_f32(vec![2, 2], vec![1.0, 2.5, 3.25, 4.75]).expect("valid f32 tensor");
+    let f32_bytes = f32_tensor
+        .to_parquet_bytes()
+        .expect("f32 tensor to Parquet");
+    assert!(f32_bytes.starts_with(b"PAR1"));
+    assert!(f32_bytes.ends_with(b"PAR1"));
+    assert_eq!(
+        Tensor::from_parquet_bytes(&f32_bytes).expect("decode f32 Parquet bytes"),
+        f32_tensor
+    );
+
+    let f64_tensor =
+        Tensor::from_dense_f64(vec![1, 2, 2], vec![1.5, 2.5, 3.5, 4.5]).expect("valid f64 tensor");
+    assert_eq!(
+        Tensor::from_parquet_bytes(&f64_tensor.to_parquet_bytes().expect("f64 Parquet"))
+            .expect("decode f64 Parquet"),
+        f64_tensor
+    );
+
+    let i32_tensor =
+        Tensor::from_dense_i32(vec![4], vec![10, 20, 30, 40]).expect("valid i32 tensor");
+    assert_eq!(
+        Tensor::from_parquet_bytes(&i32_tensor.to_parquet_bytes().expect("i32 Parquet"))
+            .expect("decode i32 Parquet"),
+        i32_tensor
+    );
+
+    let i64_tensor =
+        Tensor::from_dense_i64(vec![2, 2], vec![100, 200, 300, 400]).expect("valid i64 tensor");
+    let path = parquet_local_unique_path("tensor-parquet-roundtrip.parquet");
+    i64_tensor
+        .to_parquet_file(&path)
+        .expect("write i64 Parquet file");
+    assert_eq!(
+        Tensor::from_parquet_file(&path).expect("decode i64 Parquet file"),
+        i64_tensor
+    );
+    let _ = fs::remove_file(path);
+
+    let empty_inner =
+        Tensor::from_dense_i64(vec![2, 0], Vec::new()).expect("zero-element shape remains valid");
+    assert_eq!(
+        Tensor::from_parquet_bytes(
+            &empty_inner
+                .to_parquet_bytes()
+                .expect("empty tensor Parquet bytes")
+        )
+        .expect("decode empty tensor Parquet"),
+        empty_inner
+    );
+}
+
+#[cfg(feature = "parquet")]
+#[test]
+fn tensor_parquet_rejects_malformed_and_unsupported_input() {
+    let err = Tensor::from_parquet_bytes(b"not a parquet file")
+        .expect_err("malformed Parquet bytes reject");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let missing_metadata = parquet_missing_metadata_bytes();
+    let err = Tensor::from_parquet_bytes(&missing_metadata).expect_err("missing metadata rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let out_of_order = parquet_i32_bytes_with_indices(&[1, 0], &[10, 20]);
+    let err = Tensor::from_parquet_bytes(&out_of_order).expect_err("out-of-order indices reject");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    let schema_mismatch = parquet_i64_value_bytes_with_i32_metadata();
+    let err = Tensor::from_parquet_bytes(&schema_mismatch).expect_err("schema mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_local_unique_path(name: &str) -> PathBuf {
+    let dir = PathBuf::from(".tmp").join("arcadia-tio-rs-tests");
+    fs::create_dir_all(&dir).expect("create project-local test temp directory");
+    dir.join(format!(
+        "{}-{}-{name}",
+        std::process::id(),
+        unique_counter()
+    ))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_missing_metadata_bytes() -> Vec<u8> {
+    let schema = std::sync::Arc::new(
+        parquet::schema::parser::parse_message_type(
+            "message arcadia_tio_tensor { REQUIRED INT64 flat_index; REQUIRED INT32 value; }",
+        )
+        .expect("test Parquet schema"),
+    );
+    let mut out = Vec::new();
+    {
+        let writer =
+            parquet::file::writer::SerializedFileWriter::new(&mut out, schema, Default::default())
+                .expect("test Parquet writer");
+        writer.close().expect("close missing-metadata Parquet");
+    }
+    out
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_i32_bytes_with_indices(indices: &[i64], values: &[i32]) -> Vec<u8> {
+    assert_eq!(indices.len(), values.len());
+    let schema = std::sync::Arc::new(
+        parquet::schema::parser::parse_message_type(
+            "message arcadia_tio_tensor { REQUIRED INT64 flat_index; REQUIRED INT32 value; }",
+        )
+        .expect("test Parquet schema"),
+    );
+    let props = std::sync::Arc::new(
+        parquet::file::properties::WriterProperties::builder()
+            .set_key_value_metadata(Some(parquet_test_metadata(
+                "i32",
+                &values.len().to_string(),
+            )))
+            .build(),
+    );
+    let mut out = Vec::new();
+    {
+        let mut writer = parquet::file::writer::SerializedFileWriter::new(&mut out, schema, props)
+            .expect("test Parquet writer");
+        let mut row_group = writer.next_row_group().expect("test row group");
+        let mut flat_column = row_group
+            .next_column()
+            .expect("flat column result")
+            .expect("flat column");
+        assert_eq!(
+            flat_column
+                .typed::<parquet::data_type::Int64Type>()
+                .write_batch(indices, None, None)
+                .expect("write flat indices"),
+            indices.len()
+        );
+        flat_column.close().expect("close flat column");
+        let mut value_column = row_group
+            .next_column()
+            .expect("value column result")
+            .expect("value column");
+        assert_eq!(
+            value_column
+                .typed::<parquet::data_type::Int32Type>()
+                .write_batch(values, None, None)
+                .expect("write values"),
+            values.len()
+        );
+        value_column.close().expect("close value column");
+        row_group.close().expect("close row group");
+        writer.close().expect("close indexed Parquet");
+    }
+    out
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_i64_value_bytes_with_i32_metadata() -> Vec<u8> {
+    let schema = std::sync::Arc::new(
+        parquet::schema::parser::parse_message_type(
+            "message arcadia_tio_tensor { REQUIRED INT64 flat_index; REQUIRED INT64 value; }",
+        )
+        .expect("test Parquet schema"),
+    );
+    let props = std::sync::Arc::new(
+        parquet::file::properties::WriterProperties::builder()
+            .set_key_value_metadata(Some(parquet_test_metadata("i32", "1")))
+            .build(),
+    );
+    let mut out = Vec::new();
+    {
+        let mut writer = parquet::file::writer::SerializedFileWriter::new(&mut out, schema, props)
+            .expect("test Parquet writer");
+        let mut row_group = writer.next_row_group().expect("test row group");
+        let mut flat_column = row_group
+            .next_column()
+            .expect("flat column result")
+            .expect("flat column");
+        assert_eq!(
+            flat_column
+                .typed::<parquet::data_type::Int64Type>()
+                .write_batch(&[0_i64], None, None)
+                .expect("write flat index"),
+            1
+        );
+        flat_column.close().expect("close flat column");
+        let mut value_column = row_group
+            .next_column()
+            .expect("value column result")
+            .expect("value column");
+        assert_eq!(
+            value_column
+                .typed::<parquet::data_type::Int64Type>()
+                .write_batch(&[10_i64], None, None)
+                .expect("write i64 value"),
+            1
+        );
+        value_column.close().expect("close value column");
+        row_group.close().expect("close row group");
+        writer.close().expect("close schema-mismatch Parquet");
+    }
+    out
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_test_metadata(dtype: &str, shape: &str) -> Vec<parquet::file::metadata::KeyValue> {
+    vec![
+        parquet::file::metadata::KeyValue::new(
+            "arcadia_tio_format".to_string(),
+            "arcadia_tio_tensor_parquet_v1".to_string(),
+        ),
+        parquet::file::metadata::KeyValue::new("arcadia_tio_dtype".to_string(), dtype.to_string()),
+        parquet::file::metadata::KeyValue::new("arcadia_tio_shape".to_string(), shape.to_string()),
+        parquet::file::metadata::KeyValue::new(
+            "arcadia_tio_order".to_string(),
+            "row-major".to_string(),
+        ),
+    ]
+}
+
 #[cfg(feature = "ndarray")]
 #[test]
 fn tensor_ndarray_roundtrips_supported_dtypes() {
@@ -1520,7 +1944,7 @@ fn safe_wrapper_compression_option_roundtrips_f32() {
         DimSpec::new(AxisKind::Symbol, 32),
     ];
     let mut options = CreateOptions::streaming(DType::F32, dims, 0);
-    options.compression = Some(CompressionConfig::zstd_level(3));
+    options.compression = Some(CompressionConfig::try_zstd_level(5).expect("valid zstd level"));
     let values = vec![0.0f32; 4 * 32];
     {
         let mut file = TensorFile::create(&path, options).expect("create compressed wrapper file");
@@ -1536,6 +1960,105 @@ fn safe_wrapper_compression_option_roundtrips_f32() {
     assert_eq!(tensor.data, TensorData::F32(values));
     drop(file);
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_uncompressed_compression_option_roundtrips_f32() {
+    let path = unique_path("safe-wrapper-uncompressed-f32.tio");
+    let dims = vec![
+        DimSpec::new(AxisKind::Time, 0),
+        DimSpec::new(AxisKind::Symbol, 4),
+    ];
+    let mut options = CreateOptions::streaming(DType::F32, dims, 0);
+    options.compression = Some(CompressionConfig::uncompressed());
+    let values = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    {
+        let mut file =
+            TensorFile::create(&path, options).expect("create uncompressed wrapper file");
+        let range = file
+            .append_f32(&values, &[2, 4])
+            .expect("append uncompressed wrapper values");
+        assert_eq!((range.start, range.end), (0, 2));
+    }
+    let file = TensorFile::open(&path).expect("open uncompressed wrapper file");
+    let tensor = file.read_all().expect("read uncompressed wrapper values");
+    assert_eq!(tensor.dtype, DType::F32);
+    assert_eq!(tensor.shape, vec![2, 4]);
+    assert_eq!(tensor.data, TensorData::F32(values));
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn safe_wrapper_compression_public_builders_and_raw_compatibility() {
+    let default_auto = CompressionConfig::auto_zstd();
+    assert_eq!(
+        default_auto.mode().expect("default auto mode"),
+        CompressionMode::Auto
+    );
+    assert_eq!(
+        default_auto.codec().expect("default auto codec"),
+        CompressionCodec::Zstd
+    );
+    assert_eq!(
+        default_auto.min_payload_bytes,
+        CompressionConfig::DEFAULT_MIN_PAYLOAD_BYTES
+    );
+    assert_eq!(
+        default_auto.zstd_level,
+        CompressionConfig::DEFAULT_ZSTD_LEVEL
+    );
+
+    let config = CompressionConfig::auto_zstd_min_payload(1024)
+        .with_codec(CompressionCodec::Zstd)
+        .try_with_zstd_level(5)
+        .expect("valid Auto/Zstd config");
+    assert_eq!(config.mode().expect("safe mode"), CompressionMode::Auto);
+    assert_eq!(config.codec().expect("safe codec"), CompressionCodec::Zstd);
+    assert_eq!(config.min_payload_bytes, 1024);
+    assert_eq!(config.zstd_level, 5);
+
+    let raw = config.try_to_raw().expect("validated raw config");
+    assert_eq!(raw.mode, CompressionMode::Auto.to_raw());
+    assert_eq!(raw.codec, CompressionCodec::Zstd.to_raw());
+    assert_eq!(
+        CompressionConfig::from_raw(raw).expect("raw roundtrip"),
+        config
+    );
+
+    let raw_field_config = CompressionConfig {
+        mode: CompressionMode::ForceOn.to_raw(),
+        codec: CompressionCodec::Zstd.to_raw(),
+        min_payload_bytes: 0,
+        zstd_level: 4,
+    };
+    assert_eq!(
+        raw_field_config
+            .validate()
+            .expect("raw fields remain compatible")
+            .mode()
+            .expect("safe mode"),
+        CompressionMode::ForceOn
+    );
+
+    assert_eq!(
+        CompressionConfig::try_zstd_level(CompressionConfig::ZSTD_MAX_LEVEL + 1)
+            .expect_err("invalid zstd level rejects early")
+            .code(),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        CompressionConfig {
+            mode: 99,
+            codec: CompressionCodec::Zstd.to_raw(),
+            min_payload_bytes: 0,
+            zstd_level: CompressionConfig::DEFAULT_ZSTD_LEVEL,
+        }
+        .validate()
+        .expect_err("invalid raw mode rejects")
+        .code(),
+        ErrorCode::InvalidArgument
+    );
 }
 
 #[test]

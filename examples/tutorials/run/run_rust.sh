@@ -62,8 +62,8 @@ for source in "${sources[@]}"; do
   example="tutorial_${stem}"
   case "$stem" in
     09_tensor_ops_conversions)
-      echo "==> cargo run --manifest-path $crate_manifest --features arrow,ndarray --example $example"
-      cargo run --manifest-path "$crate_manifest" --features arrow,ndarray --example "$example"
+      echo "==> cargo run --manifest-path $crate_manifest --features arrow,ndarray,csv,parquet --example $example"
+      cargo run --manifest-path "$crate_manifest" --features arrow,ndarray,csv,parquet --example "$example"
       ;;
     *)
       echo "==> cargo run --manifest-path $crate_manifest --example $example"

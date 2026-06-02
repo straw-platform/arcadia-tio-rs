@@ -11,8 +11,10 @@ The API slice is intentionally bounded but now covers the agreed public Rust
 17-family parity scope for beta workflows: safe lifecycle ownership, owned
 error strings, create/open metadata types, policy/inferred create helpers,
 write-forward compression selection, bulk tensor I/O helpers, owned in-memory
-shape/index/math/reduction tensor operation helpers for f32/f64/i32/i64 dense
-payloads, sparse-intent analysis and append helpers, universe-aware create/append
+shape/index/assembly/reordering/math/reduction tensor operation helpers for
+f32/f64/i32/i64 dense payloads, public owned dtype-specific tensor wrappers and
+typed operation forwarding, sparse-intent analysis and append helpers,
+universe-aware create/append
 authoring, bounded Current coordinate create/read/lookup/append helpers,
 current read options and shape policies, historical
 `read_at_commit` options and shape policies, retained-history head/list helpers,
@@ -27,12 +29,14 @@ It also exposes opt-in current-read query-attribution helpers
 return the normal tensor/dense output plus native diagnostic trace JSON copied
 into Rust-owned memory, plus bounded low-level interop helpers for native
 `read_index` selection and Arrow C Data value export. Optional non-default
-`arrow` and `ndarray` Cargo features add owned-copy `Tensor` conversions to
-Arrow `RecordBatch`/IPC bytes and Rust `ndarray::ArrayD<T>` for dense
-f32/f64/i32/i64 payloads. Query attribution, Arrow C Data export, and owned
-conversion helpers are API-completeness/interoperability surfaces only: they are
-not benchmark evidence and do not create performance, phase-percentage,
-zero-copy, storage, cache, layout, or release-readiness claims.
+`arrow`, `ndarray`, `csv`, and `parquet` Cargo features add owned-copy
+`Tensor` conversion gates for dense f32/f64/i32/i64 payloads: Arrow
+`RecordBatch`/IPC bytes, Rust `ndarray::ArrayD<T>`, and companion CSV/Parquet
+layouts with explicit dtype/shape metadata. Query attribution, Arrow C Data
+export, and owned conversion helpers are API-completeness/interoperability
+surfaces only: they are not benchmark evidence and do not create performance,
+phase-percentage, zero-copy, storage, cache, layout, external-format, or
+release-readiness claims.
 
 Append, sparse-intent analysis, mutation, reform, compaction, diagnostics, and
 attributed read helpers borrow Rust slices/paths/trace-context strings only for
@@ -44,11 +48,14 @@ immediately free the C allocation. `read_values_arrow` is the exception: it
 returns an `ArrowCData` RAII owner for the Arrow C Data release callbacks;
 borrowed Arrow pointers are valid only while that owner is alive and are
 released exactly once when it is dropped. The public `ops` namespace provides
-owned-copy in-memory helpers over dense `TensorData`; optional conversion
-features are also owned-copy only. This slice still does not expose generic
-zero-copy borrowed views over native buffers, private/core tensor view types,
-Arrow CSV/Parquet adapters, direct Python NumPy integration, or C++ convenience
-APIs.
+owned-copy in-memory helpers over dense `TensorData`; `TypedTensor<T>` and the
+`typed_ops` namespace provide dtype-checked owned wrappers over that same public
+`Tensor` model without depending on private core typed tensors; optional
+conversion features are also owned-copy only. This slice still does not expose
+generic zero-copy borrowed views over native buffers, private/core tensor view
+semantics, typed file handles, native `.tio` file conversion shortcuts,
+external-format storage claims, direct Python NumPy integration, or C++
+convenience APIs.
 
 Inline numeric coordinate authoring and lookup are exposed for validated
 `i32`/`i64` axis coordinates. `CreateOptions::coordinates` can be used with
@@ -102,6 +109,34 @@ variable-length strings, locale/collation/case folding, broad calendar or
 resolver semantics, lookup-composed coordinate reads, or
 benchmark/release/readiness claims.
 
+## Write-forward compression controls
+
+Create options inherit the native persisted Auto/Zstd write policy when
+`CreateOptions::compression` is `None`. Prefer the safe constructors, enums, and
+builder accessors when an application needs an explicit write-forward override:
+`CompressionConfig::uncompressed()`, `CompressionConfig::try_zstd_level(level)`,
+`CompressionConfig::auto_zstd()`, `CompressionConfig::auto_zstd_min_payload(bytes)`,
+`CompressionMode`, and `CompressionCodec`.
+
+```rust,no_run
+# use arcadia_tio_rs::{CompressionCodec, CompressionConfig, CompressionMode};
+# fn main() -> arcadia_tio_rs::Result<()> {
+let compression = CompressionConfig::auto_zstd_min_payload(4096)
+    .with_mode(CompressionMode::Auto)
+    .with_codec(CompressionCodec::Zstd)
+    .try_with_zstd_level(3)?;
+assert_eq!(compression.mode()?, CompressionMode::Auto);
+# Ok(())
+# }
+```
+
+`CompressionConfig` also exposes its raw `mode`, `codec`, `min_payload_bytes`,
+and `zstd_level` fields for low-level source compatibility with earlier wrapper
+users and the C ABI. Treat those fields as an escape hatch: direct raw-field
+construction is validated before native calls, unsupported raw codecs remain
+errors, and this API documents write selection only rather than compression
+ratio, storage-efficiency, or compressed-byte accounting claims.
+
 ## In-memory tensor operations
 
 The `ops` module works entirely over Rust-owned `Tensor`/`TensorData` values and
@@ -109,10 +144,12 @@ is independent of the native C ABI after data has been read or constructed.
 It supports dense `f32`, `f64`, `i32`, and `i64` payloads for row-major shape
 helpers (`reshape`, `flatten`, `expand_dims`, `squeeze`, `permute_axes`,
 `swap_axes`, `transpose`, `move_axis`, and `broadcast_to`), axis indexing
-(`slice_axis`, `slice_axis_step`, `take_axis`, and `index_axis`), exact-dtype
-scalar/binary arithmetic with binary broadcasting (`add`, `sub`, `mul`, `div`
-and the `*_scalar` variants), and `sum`/`mean`/`min`/`max` reductions over
-selected axes.
+(`slice_axis`, `slice_axis_step`, `take_axis`, and `index_axis`), owned assembly
+and reordering (`concat`, `stack`, `split`, `unstack`, `repeat`, `tile`, `flip`,
+and `roll`), exact-dtype scalar/binary arithmetic with binary broadcasting
+(`add`, `sub`, `mul`, `div` and the `*_scalar` variants), reductions
+(`sum`, `mean`, `min`, `max`, `argmin`, `argmax`, `var`, and `std`) over
+selected axes, and cumulative reductions (`cumsum` and `cumprod`).
 
 ```rust,no_run
 # use arcadia_tio_rs::{ops, Scalar, Tensor, TensorData};
@@ -125,30 +162,103 @@ assert_eq!(transposed.data, TensorData::F64(vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]))
 let shifted = ops::add_scalar(&tensor, Scalar::F64(10.0))?;
 assert_eq!(shifted.values_f64()?[0], 11.0);
 
+let rows = ops::split(&tensor, 0, &[1, 1])?;
+let restacked = ops::stack(&[&rows[0], &rows[1]], 0)?;
+assert_eq!(restacked.data, tensor.data);
+
+let rolled = ops::roll(&tensor, -1, 1)?;
+assert_eq!(rolled.data, TensorData::F64(vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0]));
+
 let row_sums = ops::sum(&tensor, Some(&[1]), false)?;
 assert_eq!(row_sums.data, TensorData::F64(vec![6.0, 15.0]));
+
+let row_argmax = ops::argmax(&tensor, Some(&[1]), false)?;
+assert_eq!(row_argmax.data, TensorData::I64(vec![2, 2]));
+
+let cumulative = ops::cumsum(&tensor, Some(-1))?;
+assert_eq!(cumulative.data, TensorData::F64(vec![1.0, 3.0, 6.0, 4.0, 9.0, 15.0]));
+
+let row_var = ops::var(&tensor, Some(&[1]), false)?;
+assert_eq!(row_var.data, TensorData::F64(vec![2.0 / 3.0, 2.0 / 3.0]));
 # Ok(())
 # }
 ```
 
 These helpers validate dtype/shape/payload consistency before operating and
 materialize new owned row-major tensors with fallible allocation checks for large
-outputs. They do not propagate dense validity masks, null bitmaps, Arrow arrays,
-borrowed native buffers, or private view semantics. Binary operations require
-exact dtype matching; integer arithmetic is checked; integer division by zero
-returns an error; integer `mean` returns an `f64` tensor because fractional
-results cannot be represented in the original integer dtype; and all-axis
-reductions must use `keepdims = true` because public `Tensor` does not represent
-rank-0 scalar outputs.
+outputs. Assembly helpers require exact dtype/rank compatibility, `stack`
+requires identical input shapes, `split` sections must be non-empty and sum to
+the selected axis length, `unstack` rejects rank-1 inputs that would produce
+rank-0 tensors, and negative axes are normalized consistently with the other
+axis helpers. Zero-repeat/tile or empty-axis operations produce owned empty
+tensors when the resulting shape has zero elements. They do not propagate dense
+validity masks, null bitmaps, Arrow arrays, borrowed native buffers, or private
+view semantics. Binary operations require exact dtype matching; integer
+arithmetic is checked; integer division by zero returns an error; integer
+`mean`, `var`, and `std` return `f64` tensors because fractional results cannot
+be represented in the original integer dtype; integer `cumsum`/`cumprod` use
+checked arithmetic; and `argmin`/`argmax` return `i64` row-major offsets within
+the reduced subspace. Variance and standard deviation are population statistics
+(`ddof = 0`). Floating NaN comparisons use Rust `PartialOrd` semantics inherited
+from `min`/`max`: unordered comparisons do not replace the current candidate.
+All-axis reductions must use `keepdims = true` because public `Tensor` does not
+represent rank-0 scalar outputs.
 
-## Optional Arrow and ndarray conversion features
+## Typed owned tensor wrappers and operations
 
-Default features remain empty. Enable `arrow` and/or `ndarray` only when an
-application wants the extra public Rust ecosystem dependencies:
+Use `TypedTensor<T>` or the aliases `TensorF32`, `TensorF64`, `TensorI32`, and
+`TensorI64` when a Rust call path should carry the expected dtype in the type
+signature while remaining interoperable with existing untyped `Tensor` APIs.
+The wrapper crate provides scalar support for dense `f32`, `f64`, `i32`, and
+`i64` payloads. Constructors use the same public dense tensor validation as
+`Tensor::from_dense_*`; `TryFrom<Tensor>`, `try_from_tensor`, `as_tensor`,
+`inner`, and `into_tensor` provide fallible and consuming conversion boundaries.
+
+```rust,no_run
+# use arcadia_tio_rs::{typed_ops, DType, Tensor, TensorF64, TensorI32};
+# fn main() -> arcadia_tio_rs::Result<()> {
+let tensor = TensorF64::from_dense(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])?;
+assert_eq!(tensor.dtype(), DType::F64);
+assert_eq!(tensor.values()?, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+let shifted = typed_ops::add_scalar(&tensor, 10.0)?;
+assert_eq!(shifted.values()?[0], 11.0);
+
+let row_sums = typed_ops::sum(&tensor, Some(&[1]), false)?;
+assert_eq!(row_sums.values()?, &[6.0, 15.0]);
+
+let row_argmax = typed_ops::argmax(&tensor, Some(&[1]), false)?;
+assert_eq!(row_argmax.values()?, &[2, 2]);
+
+let raw: Tensor = row_sums.clone().into();
+let rebuilt = TensorF64::try_from(raw)?;
+assert_eq!(rebuilt, row_sums);
+
+let ints = TensorI32::from_dense(vec![2, 2], vec![1, 2, 3, 4])?;
+let cumulative = typed_ops::cumsum(&ints, Some(1))?;
+assert_eq!(cumulative.values()?, &[1, 3, 3, 7]);
+# Ok(())
+# }
+```
+
+`typed_ops` forwards the bounded owned-copy operation slice from `ops` and then
+validates result dtypes. It covers dtype-preserving shape/index/assembly,
+reordering, scalar/binary arithmetic, `sum`/`min`/`max`, and cumulative helpers;
+`argmin`/`argmax` return `TensorI64`. Dtype-promoting `mean`, `var`, and `std`
+remain available through untyped `ops` on `typed.as_tensor()` because integer
+inputs produce f64 outputs. Typed wrappers are not borrowed native views, do not
+carry validity masks, do not expose `TypedTensorFile`/typed file handles, and do
+not add a dependency on the private `arcadia-tio` core crate.
+
+## Optional owned conversion features
+
+Default features remain empty. Enable `arrow`, `ndarray`, `csv`, and/or
+`parquet` only when an application wants the extra public Rust ecosystem
+dependencies:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { path = "crates/arcadia-tio-rs", features = ["arrow", "ndarray"] }
+arcadia-tio-rs = { path = "crates/arcadia-tio-rs", features = ["arrow", "ndarray", "csv", "parquet"] }
 ```
 
 The `arrow` feature converts owned dense `Tensor` values to a companion Arrow
@@ -180,6 +290,15 @@ The `ndarray` feature converts owned dense f32/f64/i32/i64 tensors to and from
 Rust `ndarray::ArrayD<T>` values with dtype, rank, shape, and payload-length
 validation. It does not add NumPy, PyO3, or Python bindings.
 
+The `csv` and `parquet` feature gates are for companion owned-tensor conversion
+layouts with explicit dtype, shape, row-major order, and flat-index metadata.
+The `csv` feature exposes `Tensor::to_csv_string`, `to_csv_bytes`,
+`from_csv_str`, and `from_csv_bytes`; the `parquet` feature exposes
+`Tensor::to_parquet_bytes`, `to_parquet_file`, `from_parquet_bytes`, and
+`from_parquet_file`. They are not native `.tio` storage formats, not Arrow
+CSV/Parquet adapters, not benchmark or storage-efficiency evidence, and not
+shortcuts for converting a native `TensorFile` path into another file format.
+
 ```rust,no_run
 # use arcadia_tio_rs::{Tensor, TensorData};
 # fn main() -> arcadia_tio_rs::Result<()> {
@@ -196,19 +315,53 @@ assert_eq!(rebuilt.data, TensorData::I64(vec![10, 20, 30, 40]));
 # }
 ```
 
-Run feature tests explicitly when using these conversions:
+```rust,no_run
+# use arcadia_tio_rs::{Tensor, TensorData};
+# fn main() -> arcadia_tio_rs::Result<()> {
+# #[cfg(all(feature = "csv", feature = "parquet"))]
+# {
+let tensor = Tensor::from_dense_f64(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0])?;
+
+let csv_text = tensor.to_csv_string()?;
+let from_csv = Tensor::from_csv_str(&csv_text)?;
+assert_eq!(from_csv.data, TensorData::F64(vec![1.0, 2.0, 3.0, 4.0]));
+
+let parquet_bytes = tensor.to_parquet_bytes()?;
+let from_parquet = Tensor::from_parquet_bytes(&parquet_bytes)?;
+assert_eq!(from_parquet, tensor);
+# }
+# Ok(())
+# }
+```
+
+Run feature tests explicitly when using these conversions. The exported public
+checkout provides `cargo make ci` and `cargo make test-matrix` to cover default,
+explicit `--no-default-features`, `arrow,ndarray`, `csv,parquet`, and
+`--all-features` combinations once the local native library path is configured:
 
 ```sh
-cargo test -p arcadia-tio-rs --features arrow,ndarray
+cargo make ci
+cargo make test-matrix
+cargo make test-arrow-ndarray
+cargo make test-csv-parquet
+```
+
+From the private source repository, equivalent direct feature checks can target
+this manifest:
+
+```sh
+cargo test -p arcadia-tio-rs --no-default-features --features arrow,ndarray
+cargo test -p arcadia-tio-rs --no-default-features --features csv,parquet
 ```
 
 ## Example
 
 ```rust,no_run
 use arcadia_tio_rs::{
-    AxisKind, CompressionConfig, CoordinateEncoding, CoordinateKind, CoordinateMonotonicity,
-    CoordinateOrdering, CoordinateSpec, CoordinateStorage, CoordinateSortedness,
-    CoordinateUniqueness, CoordinateValues, CreateOptions, DType, DimSpec, TensorData, TensorFile,
+    AxisKind, CompressionCodec, CompressionConfig, CompressionMode, CoordinateEncoding,
+    CoordinateKind, CoordinateMonotonicity, CoordinateOrdering, CoordinateSpec, CoordinateStorage,
+    CoordinateSortedness, CoordinateUniqueness, CoordinateValues, CreateOptions, DType, DimSpec,
+    TensorData, TensorFile,
 };
 
 # fn main() -> arcadia_tio_rs::Result<()> {
@@ -219,9 +372,14 @@ let mut options = CreateOptions::streaming(
     0,
 );
 // Leaving `compression` as None inherits the native persisted Auto/Zstd
-// write policy. Set an explicit override only when the file should force
-// uncompressed writes or force zstd for future appends.
-options.compression = Some(CompressionConfig::zstd_level(3));
+// write policy. Safe builders/enums avoid raw `arcadia_tio_sys` constants when
+// an explicit Auto/Zstd threshold or forced zstd policy is needed.
+options.compression = Some(
+    CompressionConfig::auto_zstd_min_payload(4096)
+        .with_mode(CompressionMode::Auto)
+        .with_codec(CompressionCodec::Zstd)
+        .try_with_zstd_level(3)?,
+);
 options.coordinates.push(CoordinateSpec {
     axis: 1,
     name: Some("day".to_string()),
@@ -335,12 +493,13 @@ source-only handoff review rechecked coordinate authoring, exact integer sparse
 predicates, coordinate read conveniences, generated signatures, and FFI
 ownership, and accepted no runtime ownership/parity blocker for this wrapper
 slice. This is not broad parity with every private Rust maintainer hook, private
-zero-copy tensor view, typed tensor wrapper, Arrow CSV/Parquet adapters beyond
-the owned RecordBatch/IPC feature, Python NumPy/Arrow convenience, or C++
-DenseTensor helper.
+zero-copy tensor view, typed file wrapper/private typed view semantics, Arrow
+append/import, native `.tio` file conversion shortcuts for CSV/Parquet, Python
+NumPy/Arrow convenience, or C++ DenseTensor helper.
 It currently covers bulk create/open/append/read, owned in-memory
-shape/index/math/reduction tensor ops over dense f32/f64/i32/i64 `TensorData`,
-f32/f64 sparse-intent analysis/append plus bounded i32/i64
+shape/index/assembly/reordering/math/reduction tensor ops over dense
+f32/f64/i32/i64 `TensorData`, owned typed tensor wrappers and dtype-preserving
+typed operation forwarding, f32/f64 sparse-intent analysis/append plus bounded i32/i64
 zero/null/exact-integer sparse-intent analysis/append, RegularChunked policy
 create, inferred create, inline numeric coordinate-bearing policy/inferred create,
 universe-aware authoring, current and historical read options, current and
@@ -353,11 +512,13 @@ workflows including retained-history compaction reports, and V4
 diagnostics/precise-accounting report APIs. Diagnostic current
 query-attribution helpers are available as API-completeness access to native
 trace JSON, bounded read-index/Arrow C Data helpers expose native interop
-vocabulary outside the original 17-family score, and optional Arrow/ndarray
-feature conversions expose owned-copy Rust ecosystem handoffs. These remain
-outside benchmark/performance evidence. Tensor ops and conversion helpers are
-owned-copy conveniences only and do not expose generic zero-copy native views,
-mask/null propagation, direct NumPy integration, or compressed storage-accounting
+vocabulary outside the original 17-family score, and optional Arrow/ndarray plus
+CSV/Parquet feature conversions expose owned-copy Rust ecosystem and companion
+format handoffs. These remain
+outside benchmark/performance evidence. Tensor ops, typed wrappers, and
+conversion helpers are owned-copy conveniences only and do not expose generic
+zero-copy native views, mask/null propagation,
+typed file handles, direct NumPy integration, or compressed storage-accounting
 eligibility claims. Legacy numeric coordinate lookup/read
 conveniences remain inline numeric-only for fixed axes:
 exact/range coordinate read helpers compose lookup with ordinary axis-range reads
@@ -385,21 +546,22 @@ manifest:
 | `tutorial_06_mutation_history_universe` | Mutation/history helpers and explicit universe-aware remap reads |
 | `tutorial_07_reform_compaction_diagnostics` | Reform, compaction, and native diagnostic report wrappers |
 | `tutorial_08_compression_interop` | Compression controls, read-index lowering, and Arrow C Data interop |
-| `tutorial_09_tensor_ops_conversions` | Owned dense tensor ops plus optional Arrow RecordBatch/IPC and ndarray conversions |
+| `tutorial_09_tensor_ops_conversions` | Owned dense tensor ops, typed wrappers/`typed_ops`, optional Arrow RecordBatch/IPC plus ndarray conversions, and CSV/Parquet companion conversions |
 
 ```sh
 cargo run --example tutorial_01_quickstart_create_append_read
 cargo run --example tutorial_08_compression_interop
-cargo run --features arrow,ndarray --example tutorial_09_tensor_ops_conversions
+cargo run --features arrow,ndarray,csv,parquet --example tutorial_09_tensor_ops_conversions
 ```
 
 Use the native-library environment below when running them. Default tutorial
 examples build with empty default features; `tutorial_09_tensor_ops_conversions`
-requires the opt-in `arrow,ndarray` features. The examples create tiny `.tio`
-files and, for the feature-gated tutorial, a tiny Arrow IPC payload under OS temp
-directories and clean them up; do not copy native libraries, Cargo build output,
-generated `.tio` data, or generated IPC data into the tutorial tree or
-source-only public checkout.
+requires the opt-in `arrow,ndarray,csv,parquet` features. The examples create
+tiny `.tio` files and, for the feature-gated tutorial, tiny Arrow IPC and Parquet
+companion payloads under temporary directories and clean them up; CSV
+string/bytes roundtrips stay in memory. Do not copy native libraries, Cargo
+build output, generated `.tio` data, or generated IPC/CSV/Parquet data into the
+tutorial tree or source-only public checkout.
 
 ## Production integration checklist
 
@@ -407,7 +569,7 @@ Before shipping an application that uses this crate:
 
 - Validate against the exact native `arcadia_tio_capi` library you intend to deploy.
 - Set `ARCADIA_TIO_CAPI_LIB_DIR` for link discovery and configure runtime loader lookup separately.
-- Run the workspace tests and tutorial examples with that library. The public checkout includes a Cargo target runner that automatically mirrors `ARCADIA_TIO_CAPI_LIB_DIR` or `native/<target>/lib` into the platform runtime-loader path for common Linux/macOS `cargo run` and `cargo test` invocations.
+- Run the workspace tests, public cargo-make matrix, and tutorial examples with that library. The public checkout includes `cargo make ci` (`fmt`, all-feature `check`, and default/no-default/optional/all-feature wrapper tests) plus a Cargo target runner that automatically mirrors `ARCADIA_TIO_CAPI_LIB_DIR` or `native/<target>/lib` into the platform runtime-loader path for common Linux/macOS `cargo run` and `cargo test` invocations.
 - Keep generated `.tio` data and native/package artifacts out of this source-only checkout unless a separate release task approves them.
 - Preserve the documented API boundaries: coordinate external summaries are not dereferenced, optional indexes are not authoritative truth, and examples are not benchmark, storage, compression, capacity, or release-readiness evidence.
 
@@ -420,7 +582,21 @@ point Cargo/linker discovery at the directory containing it:
 LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
 ARCADIA_TIO_CAPI_LIB_DIR="$LIB_DIR" \
 LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  cargo test -p arcadia-tio-rs
+  cargo test -p arcadia-tio-rs --all-features
+```
+
+The exported public checkout provides matching cargo-make conveniences once a
+local native library is available through `ARCADIA_TIO_CAPI_LIB_DIR` or the
+ignored `native/<target>/lib` layout:
+
+```sh
+cargo make native-info
+cargo make ci
+cargo make test-matrix
+cargo make test-no-default
+cargo make test-arrow-ndarray
+cargo make test-csv-parquet
+cargo make test-all-features
 ```
 
 The public checkout's Cargo target runner does the runtime-loader environment

@@ -13,16 +13,22 @@ description = "Show available tasks"
 script_runner = "@shell"
 script = '''
 echo "Common tasks:"
-echo "  cargo make build       # build all crates with all features"
-echo "  cargo make test        # run all tests with the local native library"
-echo "  cargo make check       # cargo check all crates with all features"
-echo "  cargo make fmt         # verify rustfmt"
-echo "  cargo make ci          # fmt + check + test"
-echo "  cargo make native-info # print detected local native library path"
+echo "  cargo make build              # build all crates with all features"
+echo "  cargo make check              # cargo check all crates with all features"
+echo "  cargo make test               # run all-feature workspace tests with the local native library"
+echo "  cargo make test-matrix        # run default/no-default/optional/all-feature wrapper tests"
+echo "  cargo make test-default       # run safe wrapper tests with default features"
+echo "  cargo make test-no-default    # run safe wrapper tests with --no-default-features"
+echo "  cargo make test-arrow-ndarray # run safe wrapper tests with arrow,ndarray"
+echo "  cargo make test-csv-parquet   # run safe wrapper tests with csv,parquet"
+echo "  cargo make test-all-features  # run safe wrapper tests with --all-features"
+echo "  cargo make fmt                # verify rustfmt"
+echo "  cargo make ci                 # fmt + all-feature check + feature test matrix"
+echo "  cargo make native-info        # print detected local native library path"
 echo ""
 echo "Native library:"
-echo "  By default tasks use native/<rustc-host-triple>/lib in this checkout."
-echo "  Override with ARCADIA_TIO_CAPI_LIB_DIR=/path/to/lib if needed."
+echo "  Tasks use ARCADIA_TIO_CAPI_LIB_DIR when set, otherwise native/<rustc-host-triple>/lib."
+echo "  The native/ directory is local-only and ignored; do not commit native libraries."
 '''
 
 [tasks.native-info]
@@ -39,6 +45,7 @@ if [ -d "$LIB_DIR" ]; then
   ls -l "$LIB_DIR"
 else
   echo "native library directory is missing" >&2
+  echo "Copy libarcadia_tio_capi into native/$TARGET_TRIPLE/lib or set ARCADIA_TIO_CAPI_LIB_DIR." >&2
   exit 1
 fi
 '''
@@ -50,18 +57,7 @@ script_runner = "@shell"
 script = '''
 set -e
 ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
-TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
-LIB_DIR="${ARCADIA_TIO_CAPI_LIB_DIR:-$ROOT_DIR/native/$TARGET_TRIPLE/lib}"
-if [ ! -d "$LIB_DIR" ]; then
-  echo "Native library directory not found: $LIB_DIR" >&2
-  echo "Copy libarcadia_tio_capi into native/$TARGET_TRIPLE/lib or set ARCADIA_TIO_CAPI_LIB_DIR." >&2
-  exit 1
-fi
-export ARCADIA_TIO_CAPI_LIB_DIR="$LIB_DIR"
-export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export DYLD_LIBRARY_PATH="$LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-export PATH="$LIB_DIR:$PATH"
-cargo build --all-features
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo build --workspace --all-features
 '''
 
 [tasks.check]
@@ -71,40 +67,72 @@ script_runner = "@shell"
 script = '''
 set -e
 ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
-TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
-LIB_DIR="${ARCADIA_TIO_CAPI_LIB_DIR:-$ROOT_DIR/native/$TARGET_TRIPLE/lib}"
-if [ ! -d "$LIB_DIR" ]; then
-  echo "Native library directory not found: $LIB_DIR" >&2
-  echo "Copy libarcadia_tio_capi into native/$TARGET_TRIPLE/lib or set ARCADIA_TIO_CAPI_LIB_DIR." >&2
-  exit 1
-fi
-export ARCADIA_TIO_CAPI_LIB_DIR="$LIB_DIR"
-export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export DYLD_LIBRARY_PATH="$LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-export PATH="$LIB_DIR:$PATH"
-cargo check --all-features
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo check --workspace --all-features
 '''
 
 [tasks.test]
 clear = true
-description = "Run all tests with all features and the local native library"
+description = "Run all-feature workspace tests with the local native library"
 script_runner = "@shell"
 script = '''
 set -e
 ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
-TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
-LIB_DIR="${ARCADIA_TIO_CAPI_LIB_DIR:-$ROOT_DIR/native/$TARGET_TRIPLE/lib}"
-if [ ! -d "$LIB_DIR" ]; then
-  echo "Native library directory not found: $LIB_DIR" >&2
-  echo "Copy libarcadia_tio_capi into native/$TARGET_TRIPLE/lib or set ARCADIA_TIO_CAPI_LIB_DIR." >&2
-  exit 1
-fi
-export ARCADIA_TIO_CAPI_LIB_DIR="$LIB_DIR"
-export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export DYLD_LIBRARY_PATH="$LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-export PATH="$LIB_DIR:$PATH"
-cargo test --all-features
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test --workspace --all-features
 '''
+
+[tasks.test-default]
+clear = true
+description = "Run arcadia-tio-rs tests with default features"
+script_runner = "@shell"
+script = '''
+set -e
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs
+'''
+
+[tasks.test-no-default]
+clear = true
+description = "Run arcadia-tio-rs tests with --no-default-features"
+script_runner = "@shell"
+script = '''
+set -e
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --no-default-features
+'''
+
+[tasks.test-arrow-ndarray]
+clear = true
+description = "Run arcadia-tio-rs tests with arrow and ndarray features"
+script_runner = "@shell"
+script = '''
+set -e
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --no-default-features --features arrow,ndarray
+'''
+
+[tasks.test-csv-parquet]
+clear = true
+description = "Run arcadia-tio-rs tests with csv and parquet features"
+script_runner = "@shell"
+script = '''
+set -e
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --no-default-features --features csv,parquet
+'''
+
+[tasks.test-all-features]
+clear = true
+description = "Run arcadia-tio-rs tests with --all-features"
+script_runner = "@shell"
+script = '''
+set -e
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --all-features
+'''
+
+[tasks.test-matrix]
+description = "Run public Rust wrapper feature matrix"
+dependencies = ["test-default", "test-no-default", "test-arrow-ndarray", "test-csv-parquet", "test-all-features"]
 
 [tasks.fmt]
 clear = true
@@ -113,5 +141,5 @@ command = "cargo"
 args = ["fmt", "--all", "--", "--check"]
 
 [tasks.ci]
-description = "Run fmt, check, and tests"
-dependencies = ["fmt", "check", "test"]
+description = "Run fmt, all-feature check, and the feature test matrix"
+dependencies = ["fmt", "check", "test-matrix"]

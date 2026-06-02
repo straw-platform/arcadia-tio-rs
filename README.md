@@ -17,10 +17,12 @@ create/open metadata, policy and inferred create helpers, inline numeric
 coordinate metadata/lookup/read conveniences, bounded source-visible Coordinate
 v2 create/metadata/value/dictionary/lookup/append wrappers for implemented
 private-storage domains, bulk f32/f64/i32/i64 append/read helpers, owned
-in-memory tensor operations, optional owned Arrow RecordBatch/IPC and Rust
-ndarray conversion features, bounded exact-integer sparse-intent analysis and
-append helpers, universe-aware authoring, current and historical read options
-and shape policies, write-forward compression controls, scoped f32/f64
+in-memory tensor operations and typed tensor wrappers, optional owned Arrow
+RecordBatch/IPC, Rust ndarray, and CSV/Parquet companion conversion features,
+bounded exact-integer
+sparse-intent analysis and append helpers, universe-aware authoring, current and
+historical read options and shape policies, write-forward compression controls,
+scoped f32/f64
 rewrite/clear-block mutation helpers, scoped reform/compaction workflows, and V4
 diagnostics/precise-accounting reports. External value resolution, arbitrary
 dereference, zero-copy native views, coordinate-index acceleration,
@@ -34,7 +36,7 @@ Before using the public Rust wrapper in an application build:
 
 1. Build or obtain the operator-approved `arcadia_tio_capi` native library for the target platform.
 2. Set `ARCADIA_TIO_CAPI_LIB_DIR` for link discovery and configure the platform runtime loader separately (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, rpath/install-name, `PATH`, or DLL colocation as appropriate).
-3. Run `cargo test --workspace` and `bash examples/tutorials/run/run_rust.sh` against that native library. A committed Cargo target runner automatically adds `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` to the runtime loader path for common Linux/macOS `cargo run` and `cargo test` invocations.
+3. Run `cargo make ci` (format, all-feature check, and the default/no-default/optional/all-feature test matrix) plus `bash examples/tutorials/run/run_rust.sh` against that native library. A committed Cargo target runner automatically adds `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` to the runtime loader path for common Linux/macOS `cargo run` and `cargo test` invocations.
 4. Keep generated `.tio` files, native libraries, package archives, and local `native/` copies out of source control unless a separate release task approves them.
 5. Treat Coordinate external references as metadata/status summaries only; this wrapper does not add dereference, variable-length string, broad calendar/session, lookup-acceleration, or release/performance claims.
 
@@ -59,14 +61,16 @@ only when needed:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { path = "../arcadia-tio-rs/crates/arcadia-tio-rs", features = ["arrow", "ndarray"] }
+arcadia-tio-rs = { path = "../arcadia-tio-rs/crates/arcadia-tio-rs", features = ["arrow", "ndarray", "csv", "parquet"] }
 ```
 
 `arrow` provides owned `Tensor` conversions to/from Arrow `RecordBatch` and IPC
 bytes; it is separate from native Arrow C Data `read_values_arrow()` ownership.
 `ndarray` provides owned `ndarray::ArrayD<T>` conversions for dense
 f32/f64/i32/i64 tensor payloads and does not add NumPy, PyO3, or Python
-bindings.
+bindings. `csv` and `parquet` provide companion owned `Tensor` conversions with
+explicit dtype/shape/order metadata; they are not native `.tio` storage formats
+or file-to-file native conversion shortcuts.
 
 The Rust wrapper links to the native C ABI library, so the consuming build must
 also provide `libarcadia_tio_capi`/`arcadia_tio_capi`. Point link discovery and
@@ -111,15 +115,22 @@ Supply a locally built native C ABI library, either by setting
 ```sh
 export ARCADIA_TIO_CAPI_LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
 export LD_LIBRARY_PATH="$ARCADIA_TIO_CAPI_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-cargo test --workspace
+cargo make native-info
+cargo make ci
+cargo make test-matrix
 bash examples/tutorials/run/run_rust.sh
 cargo run -p arcadia-tio-rs --example tutorial_01_quickstart_create_append_read
-cargo run -p arcadia-tio-rs --features arrow,ndarray --example tutorial_09_tensor_ops_conversions
+cargo run -p arcadia-tio-rs --features arrow,ndarray,csv,parquet --example tutorial_09_tensor_ops_conversions
+cargo make test-csv-parquet
 ```
 
-The feature-gated tensor ops/conversions tutorial uses owned Arrow RecordBatch/IPC
-and ndarray conversions with tiny deterministic data; it is not performance,
-storage, zero-copy, or NumPy/Python integration evidence.
+The public cargo-make matrix runs `test-default`, explicit `test-no-default`,
+`test-arrow-ndarray`, `test-csv-parquet`, and `test-all-features`; `ci` runs
+`fmt`, all-feature `check`, and that matrix. The feature-gated tensor
+ops/conversions tutorial uses owned tensor ops, typed wrappers, owned Arrow
+RecordBatch/IPC, ndarray, and CSV/Parquet companion conversions with tiny
+deterministic data. These examples are not performance, storage, zero-copy,
+native `.tio` file-conversion, or NumPy/Python integration evidence.
 
 The native library path is local-only. The committed Cargo target runner mirrors
 `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` into the runtime loader path

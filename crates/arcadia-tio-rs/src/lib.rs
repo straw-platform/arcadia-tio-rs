@@ -598,6 +598,66 @@ impl Tensor {
         Self::from_arrow_record_batch(&batches.remove(0))
     }
 
+    /// Serialize this owned tensor to the companion CSV text format using the `csv` feature.
+    ///
+    /// The CSV payload is an owned-copy in-memory tensor interchange format with explicit dtype,
+    /// shape, row-major order, and flat-index metadata. It is not a native `.tio` storage format or
+    /// file-to-file conversion shortcut.
+    #[cfg(feature = "csv")]
+    pub fn to_csv_string(&self) -> Result<String> {
+        tensor_to_csv_string(self)
+    }
+
+    /// Serialize this owned tensor to UTF-8 CSV bytes using the `csv` feature.
+    #[cfg(feature = "csv")]
+    pub fn to_csv_bytes(&self) -> Result<Vec<u8>> {
+        Ok(self.to_csv_string()?.into_bytes())
+    }
+
+    /// Decode an owned tensor from the companion CSV text format using the `csv` feature.
+    #[cfg(feature = "csv")]
+    pub fn from_csv_str(text: &str) -> Result<Self> {
+        tensor_from_csv_bytes(text.as_bytes())
+    }
+
+    /// Decode an owned tensor from UTF-8 CSV bytes using the `csv` feature.
+    #[cfg(feature = "csv")]
+    pub fn from_csv_bytes(bytes: &[u8]) -> Result<Self> {
+        tensor_from_csv_bytes(bytes)
+    }
+
+    /// Serialize this owned tensor to companion Parquet bytes using the `parquet` feature.
+    ///
+    /// The Parquet payload is an owned-copy in-memory tensor interchange format with explicit
+    /// Arcadia TIO key/value metadata for dtype, shape, and row-major order. It is not a native
+    /// `.tio` storage format or file-to-file conversion shortcut.
+    #[cfg(feature = "parquet")]
+    pub fn to_parquet_bytes(&self) -> Result<Vec<u8>> {
+        tensor_to_parquet_bytes(self)
+    }
+
+    /// Write this owned tensor to a companion Parquet file using the `parquet` feature.
+    ///
+    /// This writes the same owned-copy companion format as [`Tensor::to_parquet_bytes`]; it does
+    /// not convert a native `.tio` file path or expose native storage internals.
+    #[cfg(feature = "parquet")]
+    pub fn to_parquet_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        std::fs::write(path, self.to_parquet_bytes()?).map_err(parquet_io_err)
+    }
+
+    /// Decode an owned tensor from companion Parquet bytes using the `parquet` feature.
+    #[cfg(feature = "parquet")]
+    pub fn from_parquet_bytes(bytes: &[u8]) -> Result<Self> {
+        tensor_from_parquet_bytes(bytes)
+    }
+
+    /// Decode an owned tensor from a companion Parquet file using the `parquet` feature.
+    #[cfg(feature = "parquet")]
+    pub fn from_parquet_file(path: impl AsRef<Path>) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(parquet_io_err)?;
+        Self::from_parquet_bytes(&bytes)
+    }
+
     /// Convert this owned tensor into an owned row-major [`ndarray::ArrayD<f32>`].
     ///
     /// This opt-in `ndarray` feature API validates that the tensor dtype is [`DType::F32`], that
@@ -705,6 +765,158 @@ impl Tensor {
         Ok(())
     }
 }
+
+/// Scalar element types supported by public owned typed tensor wrappers.
+pub trait TensorElement: Copy + 'static {
+    /// Tensor dtype associated with this Rust scalar type.
+    const DTYPE: DType;
+
+    /// Convert this Rust scalar into the public scalar enum used by [`ops`].
+    fn into_scalar(self) -> Scalar;
+
+    /// Build an untyped public tensor from dense row-major values of this scalar type.
+    fn tensor_from_dense(shape: Vec<u64>, values: Vec<Self>) -> Result<Tensor>;
+
+    /// Borrow a public tensor payload as this scalar type.
+    fn values(data: &TensorData) -> Result<&[Self]>;
+}
+
+macro_rules! impl_tensor_element {
+    ($ty:ty, $dtype:ident, $scalar:ident, $from_dense:ident, $values:ident) => {
+        impl TensorElement for $ty {
+            const DTYPE: DType = DType::$dtype;
+
+            fn into_scalar(self) -> Scalar {
+                Scalar::$scalar(self)
+            }
+
+            fn tensor_from_dense(shape: Vec<u64>, values: Vec<Self>) -> Result<Tensor> {
+                Tensor::$from_dense(shape, values)
+            }
+
+            fn values(data: &TensorData) -> Result<&[Self]> {
+                data.$values()
+            }
+        }
+    };
+}
+
+impl_tensor_element!(f32, F32, F32, from_dense_f32, as_f32);
+impl_tensor_element!(f64, F64, F64, from_dense_f64, as_f64);
+impl_tensor_element!(i32, I32, I32, from_dense_i32, as_i32);
+impl_tensor_element!(i64, I64, I64, from_dense_i64, as_i64);
+
+/// Owned dtype-specific wrapper around the public [`Tensor`] model.
+///
+/// `TypedTensor<T>` keeps the same owned, row-major, dense-payload contract as [`Tensor`] while
+/// validating that the wrapped dtype matches the Rust scalar type `T`. It is a convenience wrapper
+/// for public Rust callers and does not borrow native buffers or depend on the private core crate's
+/// typed tensor implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedTensor<T: TensorElement> {
+    inner: Tensor,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: TensorElement> TypedTensor<T> {
+    /// Build a typed tensor from dense row-major values, validating shape and dtype.
+    pub fn from_dense(shape: Vec<u64>, values: Vec<T>) -> Result<Self> {
+        Self::try_from_tensor(T::tensor_from_dense(shape, values)?)
+    }
+
+    /// Wrap an existing public tensor after validating its dtype, shape, and payload.
+    pub fn try_from_tensor(inner: Tensor) -> Result<Self> {
+        inner.validate()?;
+        if inner.dtype != T::DTYPE {
+            return Err(TioError::invalid_argument(format!(
+                "tensor dtype {:?} does not match typed wrapper dtype {:?}",
+                inner.dtype,
+                T::DTYPE
+            )));
+        }
+        T::values(&inner.data)?;
+        Ok(Self {
+            inner,
+            _marker: std::marker::PhantomData,
+        })
+    }
+
+    /// Return the dtype enforced by this typed wrapper.
+    pub fn dtype(&self) -> DType {
+        T::DTYPE
+    }
+
+    /// Borrow the tensor shape.
+    pub fn shape(&self) -> &[u64] {
+        &self.inner.shape
+    }
+
+    /// Borrow the typed dense values.
+    pub fn values(&self) -> Result<&[T]> {
+        self.inner.validate()?;
+        T::values(&self.inner.data)
+    }
+
+    /// Return the element count implied by the tensor shape.
+    pub fn element_len(&self) -> Result<usize> {
+        self.inner.element_len()
+    }
+
+    /// Validate that dtype, shape, and payload length agree.
+    pub fn validate(&self) -> Result<()> {
+        self.inner.validate()
+    }
+
+    /// Borrow the untyped public tensor for APIs that still operate on [`Tensor`].
+    pub fn as_tensor(&self) -> &Tensor {
+        &self.inner
+    }
+
+    /// Borrow the untyped public tensor.
+    pub fn inner(&self) -> &Tensor {
+        self.as_tensor()
+    }
+
+    /// Consume the wrapper and return the underlying public tensor.
+    pub fn into_tensor(self) -> Tensor {
+        self.inner
+    }
+}
+
+impl<T: TensorElement> TryFrom<Tensor> for TypedTensor<T> {
+    type Error = TioError;
+
+    fn try_from(value: Tensor) -> Result<Self> {
+        Self::try_from_tensor(value)
+    }
+}
+
+impl<T: TensorElement> From<TypedTensor<T>> for Tensor {
+    fn from(value: TypedTensor<T>) -> Self {
+        value.into_tensor()
+    }
+}
+
+impl<T: TensorElement> AsRef<Tensor> for TypedTensor<T> {
+    fn as_ref(&self) -> &Tensor {
+        self.as_tensor()
+    }
+}
+
+impl<T: TensorElement> std::borrow::Borrow<Tensor> for TypedTensor<T> {
+    fn borrow(&self) -> &Tensor {
+        self.as_tensor()
+    }
+}
+
+/// Owned f32 tensor wrapper.
+pub type TensorF32 = TypedTensor<f32>;
+/// Owned f64 tensor wrapper.
+pub type TensorF64 = TypedTensor<f64>;
+/// Owned i32 tensor wrapper.
+pub type TensorI32 = TypedTensor<i32>;
+/// Owned i64 tensor wrapper.
+pub type TensorI64 = TypedTensor<i64>;
 
 #[cfg(feature = "arrow")]
 const ARROW_META_DIM_LENS: &str = "arcadia_tio_dim_lens";
@@ -981,6 +1193,788 @@ fn arrow_err<E: std::fmt::Display>(err: E) -> TioError {
     }
 }
 
+#[cfg(feature = "csv")]
+const CSV_HEADER: [&str; 6] = ["record", "dtype", "shape", "order", "flat_index", "value"];
+#[cfg(feature = "csv")]
+const CSV_RECORD_METADATA: &str = "metadata";
+#[cfg(feature = "csv")]
+const CSV_RECORD_VALUE: &str = "value";
+#[cfg(any(feature = "csv", feature = "parquet"))]
+const TENSOR_ORDER_ROW_MAJOR: &str = "row-major";
+
+#[cfg(feature = "csv")]
+fn tensor_to_csv_string(tensor: &Tensor) -> Result<String> {
+    tensor.validate()?;
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(Vec::new());
+    writer.write_record(CSV_HEADER).map_err(csv_err)?;
+    let dtype = tensor_dtype_name(tensor.dtype);
+    let shape = tensor_shape_string(&tensor.shape)?;
+    writer
+        .write_record([
+            CSV_RECORD_METADATA,
+            dtype,
+            shape.as_str(),
+            TENSOR_ORDER_ROW_MAJOR,
+            "",
+            "",
+        ])
+        .map_err(csv_err)?;
+    match &tensor.data {
+        TensorData::F32(values) => csv_write_value_rows(&mut writer, values)?,
+        TensorData::F64(values) => csv_write_value_rows(&mut writer, values)?,
+        TensorData::I32(values) => csv_write_value_rows(&mut writer, values)?,
+        TensorData::I64(values) => csv_write_value_rows(&mut writer, values)?,
+    }
+    writer.flush().map_err(csv_err)?;
+    let bytes = writer
+        .into_inner()
+        .map_err(|err| csv_err(err.into_error()))?;
+    String::from_utf8(bytes).map_err(csv_err)
+}
+
+#[cfg(feature = "csv")]
+fn csv_write_value_rows<T: ToString>(
+    writer: &mut csv::Writer<Vec<u8>>,
+    values: &[T],
+) -> Result<()> {
+    for (flat_index, value) in values.iter().enumerate() {
+        writer
+            .write_record([
+                String::from(CSV_RECORD_VALUE),
+                String::new(),
+                String::new(),
+                String::new(),
+                flat_index.to_string(),
+                value.to_string(),
+            ])
+            .map_err(csv_err)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "csv")]
+fn tensor_from_csv_bytes(bytes: &[u8]) -> Result<Tensor> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(bytes);
+    let headers = reader.headers().map_err(csv_err)?.clone();
+    if headers.len() != CSV_HEADER.len()
+        || headers
+            .iter()
+            .zip(CSV_HEADER.iter())
+            .any(|(actual, expected)| actual != *expected)
+    {
+        return Err(TioError::invalid_argument(
+            "invalid Arcadia TIO tensor CSV header",
+        ));
+    }
+
+    let mut records = reader.records();
+    let metadata = records
+        .next()
+        .ok_or_else(|| TioError::invalid_argument("missing Arcadia TIO tensor CSV metadata"))?
+        .map_err(csv_err)?;
+    csv_expect_record_len(&metadata)?;
+    if csv_field(&metadata, 0)? != CSV_RECORD_METADATA {
+        return Err(TioError::invalid_argument(
+            "first Arcadia TIO tensor CSV record must be metadata",
+        ));
+    }
+    let dtype = tensor_dtype_from_name(csv_field(&metadata, 1)?)?;
+    let shape = tensor_shape_from_string(csv_field(&metadata, 2)?)?;
+    if csv_field(&metadata, 3)? != TENSOR_ORDER_ROW_MAJOR {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor CSV order must be row-major",
+        ));
+    }
+    if !csv_field(&metadata, 4)?.is_empty() || !csv_field(&metadata, 5)?.is_empty() {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor CSV metadata row must not contain value fields",
+        ));
+    }
+
+    let expected_len = shape_element_len(&shape)?;
+    let mut f32_values = Vec::new();
+    let mut f64_values = Vec::new();
+    let mut i32_values = Vec::new();
+    let mut i64_values = Vec::new();
+    let mut count = 0usize;
+    for record in records {
+        let record = record.map_err(csv_err)?;
+        csv_expect_record_len(&record)?;
+        if csv_field(&record, 0)? != CSV_RECORD_VALUE {
+            return Err(TioError::invalid_argument(
+                "Arcadia TIO tensor CSV data records must be value records",
+            ));
+        }
+        if !csv_field(&record, 1)?.is_empty()
+            || !csv_field(&record, 2)?.is_empty()
+            || !csv_field(&record, 3)?.is_empty()
+        {
+            return Err(TioError::invalid_argument(
+                "Arcadia TIO tensor CSV value rows must leave metadata fields empty",
+            ));
+        }
+        let flat_index = csv_field(&record, 4)?
+            .parse::<usize>()
+            .map_err(|_| TioError::invalid_argument("invalid Arcadia TIO tensor CSV flat index"))?;
+        if flat_index != count {
+            return Err(TioError::invalid_argument(
+                "Arcadia TIO tensor CSV flat indices must be contiguous and ordered",
+            ));
+        }
+        let value = csv_field(&record, 5)?;
+        match dtype {
+            DType::F32 => f32_values.push(csv_parse_scalar::<f32>(value)?),
+            DType::F64 => f64_values.push(csv_parse_scalar::<f64>(value)?),
+            DType::I32 => i32_values.push(csv_parse_scalar::<i32>(value)?),
+            DType::I64 => i64_values.push(csv_parse_scalar::<i64>(value)?),
+        }
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| TioError::invalid_argument("CSV value count overflow"))?;
+    }
+    if count != expected_len {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor CSV value count does not match shape",
+        ));
+    }
+
+    match dtype {
+        DType::F32 => Tensor::from_dense_f32(shape, f32_values),
+        DType::F64 => Tensor::from_dense_f64(shape, f64_values),
+        DType::I32 => Tensor::from_dense_i32(shape, i32_values),
+        DType::I64 => Tensor::from_dense_i64(shape, i64_values),
+    }
+}
+
+#[cfg(feature = "csv")]
+fn csv_expect_record_len(record: &csv::StringRecord) -> Result<()> {
+    if record.len() != CSV_HEADER.len() {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor CSV records must have six fields",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "csv")]
+fn csv_field(record: &csv::StringRecord, index: usize) -> Result<&str> {
+    record
+        .get(index)
+        .ok_or_else(|| TioError::invalid_argument("missing Arcadia TIO tensor CSV field"))
+}
+
+#[cfg(feature = "csv")]
+fn csv_parse_scalar<T>(value: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+{
+    value
+        .parse::<T>()
+        .map_err(|_| TioError::invalid_argument("invalid Arcadia TIO tensor CSV scalar value"))
+}
+
+#[cfg(any(feature = "csv", feature = "parquet"))]
+fn tensor_dtype_name(dtype: DType) -> &'static str {
+    match dtype {
+        DType::F32 => "f32",
+        DType::F64 => "f64",
+        DType::I32 => "i32",
+        DType::I64 => "i64",
+    }
+}
+
+#[cfg(any(feature = "csv", feature = "parquet"))]
+fn tensor_dtype_from_name(value: &str) -> Result<DType> {
+    match value {
+        "f32" => Ok(DType::F32),
+        "f64" => Ok(DType::F64),
+        "i32" => Ok(DType::I32),
+        "i64" => Ok(DType::I64),
+        _ => Err(TioError::invalid_argument(
+            "unsupported Arcadia TIO tensor dtype",
+        )),
+    }
+}
+
+#[cfg(any(feature = "csv", feature = "parquet"))]
+fn tensor_shape_string(shape: &[u64]) -> Result<String> {
+    if shape.is_empty() {
+        return Err(TioError::invalid_argument("tensor rank must be >= 1"));
+    }
+    Ok(shape
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join("x"))
+}
+
+#[cfg(any(feature = "csv", feature = "parquet"))]
+fn tensor_shape_from_string(value: &str) -> Result<Vec<u64>> {
+    if value.is_empty() {
+        return Err(TioError::invalid_argument("tensor shape metadata is empty"));
+    }
+    value
+        .split('x')
+        .map(|part| {
+            if part.is_empty() {
+                return Err(TioError::invalid_argument("invalid tensor shape metadata"));
+            }
+            part.parse::<u64>()
+                .map_err(|_| TioError::invalid_argument("invalid tensor shape metadata"))
+        })
+        .collect()
+}
+
+#[cfg(feature = "csv")]
+fn csv_err<E: std::fmt::Display>(err: E) -> TioError {
+    TioError::invalid_argument(err.to_string())
+}
+
+#[cfg(feature = "parquet")]
+const PARQUET_TENSOR_FORMAT_KEY: &str = "arcadia_tio_format";
+#[cfg(feature = "parquet")]
+const PARQUET_TENSOR_FORMAT_VALUE: &str = "arcadia_tio_tensor_parquet_v1";
+#[cfg(feature = "parquet")]
+const PARQUET_TENSOR_DTYPE_KEY: &str = "arcadia_tio_dtype";
+#[cfg(feature = "parquet")]
+const PARQUET_TENSOR_SHAPE_KEY: &str = "arcadia_tio_shape";
+#[cfg(feature = "parquet")]
+const PARQUET_TENSOR_ORDER_KEY: &str = "arcadia_tio_order";
+#[cfg(feature = "parquet")]
+const PARQUET_COLUMN_FLAT_INDEX: &str = "flat_index";
+#[cfg(feature = "parquet")]
+const PARQUET_COLUMN_VALUE: &str = "value";
+
+#[cfg(feature = "parquet")]
+fn tensor_to_parquet_bytes(tensor: &Tensor) -> Result<Vec<u8>> {
+    use parquet::file::writer::SerializedFileWriter;
+
+    tensor.validate()?;
+    let value_len = tensor.element_len()?;
+    let flat_indices = parquet_flat_indices(value_len)?;
+    let schema = parquet_tensor_schema(tensor.dtype)?;
+    let properties = parquet_writer_properties(tensor)?;
+    let mut out = Vec::new();
+    {
+        let mut writer =
+            SerializedFileWriter::new(&mut out, schema, properties).map_err(parquet_err)?;
+        let mut row_group = writer.next_row_group().map_err(parquet_err)?;
+        let flat_column = row_group
+            .next_column()
+            .map_err(parquet_err)?
+            .ok_or_else(|| {
+                TioError::invalid_argument("missing Parquet flat_index column writer")
+            })?;
+        parquet_write_i64_column(flat_column, &flat_indices)?;
+        let value_column = row_group
+            .next_column()
+            .map_err(parquet_err)?
+            .ok_or_else(|| TioError::invalid_argument("missing Parquet value column writer"))?;
+        match &tensor.data {
+            TensorData::F32(values) => parquet_write_f32_column(value_column, values)?,
+            TensorData::F64(values) => parquet_write_f64_column(value_column, values)?,
+            TensorData::I32(values) => parquet_write_i32_column(value_column, values)?,
+            TensorData::I64(values) => parquet_write_i64_column(value_column, values)?,
+        }
+        if row_group.next_column().map_err(parquet_err)?.is_some() {
+            return Err(TioError::invalid_argument(
+                "unexpected extra Parquet tensor column writer",
+            ));
+        }
+        row_group.close().map_err(parquet_err)?;
+        writer.close().map_err(parquet_err)?;
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "parquet")]
+fn tensor_from_parquet_bytes(input: &[u8]) -> Result<Tensor> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    let reader =
+        SerializedFileReader::new(bytes::Bytes::copy_from_slice(input)).map_err(parquet_err)?;
+    let file_metadata = reader.metadata().file_metadata();
+    let (dtype, shape) = parquet_tensor_metadata(file_metadata)?;
+    parquet_validate_schema(file_metadata.schema_descr(), dtype)?;
+    let expected_len = shape_element_len(&shape)?;
+    let num_rows = parquet_i64_to_usize(
+        file_metadata.num_rows(),
+        "Arcadia TIO tensor Parquet file row count",
+    )?;
+    if num_rows != expected_len {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet row count does not match shape",
+        ));
+    }
+
+    match dtype {
+        DType::F32 => Tensor::from_dense_f32(
+            shape,
+            parquet_read_tensor_column_values(&reader, expected_len, |row_group, row_count| {
+                parquet_read_f32_column(row_group, 1, row_count)
+            })?,
+        ),
+        DType::F64 => Tensor::from_dense_f64(
+            shape,
+            parquet_read_tensor_column_values(&reader, expected_len, |row_group, row_count| {
+                parquet_read_f64_column(row_group, 1, row_count)
+            })?,
+        ),
+        DType::I32 => Tensor::from_dense_i32(
+            shape,
+            parquet_read_tensor_column_values(&reader, expected_len, |row_group, row_count| {
+                parquet_read_i32_column(row_group, 1, row_count)
+            })?,
+        ),
+        DType::I64 => Tensor::from_dense_i64(
+            shape,
+            parquet_read_tensor_column_values(&reader, expected_len, |row_group, row_count| {
+                parquet_read_i64_column(row_group, 1, row_count)
+            })?,
+        ),
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_tensor_schema(dtype: DType) -> Result<std::sync::Arc<parquet::schema::types::Type>> {
+    let value_type = parquet_value_type_name(dtype);
+    let message_type = format!(
+        "message arcadia_tio_tensor {{ REQUIRED INT64 {PARQUET_COLUMN_FLAT_INDEX}; REQUIRED {value_type} {PARQUET_COLUMN_VALUE}; }}"
+    );
+    parquet::schema::parser::parse_message_type(&message_type)
+        .map(std::sync::Arc::new)
+        .map_err(parquet_err)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_writer_properties(
+    tensor: &Tensor,
+) -> Result<std::sync::Arc<parquet::file::properties::WriterProperties>> {
+    let dtype = tensor_dtype_name(tensor.dtype);
+    let shape = tensor_shape_string(&tensor.shape)?;
+    let metadata = vec![
+        parquet::file::metadata::KeyValue::new(
+            PARQUET_TENSOR_FORMAT_KEY.to_string(),
+            PARQUET_TENSOR_FORMAT_VALUE.to_string(),
+        ),
+        parquet::file::metadata::KeyValue::new(
+            PARQUET_TENSOR_DTYPE_KEY.to_string(),
+            dtype.to_string(),
+        ),
+        parquet::file::metadata::KeyValue::new(PARQUET_TENSOR_SHAPE_KEY.to_string(), shape),
+        parquet::file::metadata::KeyValue::new(
+            PARQUET_TENSOR_ORDER_KEY.to_string(),
+            TENSOR_ORDER_ROW_MAJOR.to_string(),
+        ),
+    ];
+    Ok(std::sync::Arc::new(
+        parquet::file::properties::WriterProperties::builder()
+            .set_key_value_metadata(Some(metadata))
+            .build(),
+    ))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_value_type_name(dtype: DType) -> &'static str {
+    match dtype {
+        DType::F32 => "FLOAT",
+        DType::F64 => "DOUBLE",
+        DType::I32 => "INT32",
+        DType::I64 => "INT64",
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_physical_type(dtype: DType) -> parquet::basic::Type {
+    match dtype {
+        DType::F32 => parquet::basic::Type::FLOAT,
+        DType::F64 => parquet::basic::Type::DOUBLE,
+        DType::I32 => parquet::basic::Type::INT32,
+        DType::I64 => parquet::basic::Type::INT64,
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_flat_indices(len: usize) -> Result<Vec<i64>> {
+    (0..len)
+        .map(|idx| {
+            i64::try_from(idx).map_err(|_| {
+                TioError::invalid_argument("Arcadia TIO tensor Parquet flat index exceeds i64")
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_write_f32_column(
+    mut column: parquet::file::writer::SerializedColumnWriter<'_>,
+    values: &[f32],
+) -> Result<()> {
+    let written = column
+        .typed::<parquet::data_type::FloatType>()
+        .write_batch(values, None, None)
+        .map_err(parquet_err)?;
+    parquet_validate_written_column(PARQUET_COLUMN_VALUE, values.len(), written)?;
+    column.close().map_err(parquet_err)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_write_f64_column(
+    mut column: parquet::file::writer::SerializedColumnWriter<'_>,
+    values: &[f64],
+) -> Result<()> {
+    let written = column
+        .typed::<parquet::data_type::DoubleType>()
+        .write_batch(values, None, None)
+        .map_err(parquet_err)?;
+    parquet_validate_written_column(PARQUET_COLUMN_VALUE, values.len(), written)?;
+    column.close().map_err(parquet_err)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_write_i32_column(
+    mut column: parquet::file::writer::SerializedColumnWriter<'_>,
+    values: &[i32],
+) -> Result<()> {
+    let written = column
+        .typed::<parquet::data_type::Int32Type>()
+        .write_batch(values, None, None)
+        .map_err(parquet_err)?;
+    parquet_validate_written_column(PARQUET_COLUMN_VALUE, values.len(), written)?;
+    column.close().map_err(parquet_err)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_write_i64_column(
+    mut column: parquet::file::writer::SerializedColumnWriter<'_>,
+    values: &[i64],
+) -> Result<()> {
+    let written = column
+        .typed::<parquet::data_type::Int64Type>()
+        .write_batch(values, None, None)
+        .map_err(parquet_err)?;
+    parquet_validate_written_column(PARQUET_COLUMN_VALUE, values.len(), written)?;
+    column.close().map_err(parquet_err)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_validate_written_column(column: &str, expected: usize, written: usize) -> Result<()> {
+    if written != expected {
+        return Err(TioError::invalid_argument(format!(
+            "Arcadia TIO tensor Parquet column {column} wrote {written} values, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_tensor_metadata(
+    metadata: &parquet::file::metadata::FileMetaData,
+) -> Result<(DType, Vec<u64>)> {
+    if parquet_metadata_value(metadata, PARQUET_TENSOR_FORMAT_KEY)? != PARQUET_TENSOR_FORMAT_VALUE {
+        return Err(TioError::invalid_argument(
+            "unsupported Arcadia TIO tensor Parquet format marker",
+        ));
+    }
+    let dtype =
+        tensor_dtype_from_name(parquet_metadata_value(metadata, PARQUET_TENSOR_DTYPE_KEY)?)?;
+    let shape =
+        tensor_shape_from_string(parquet_metadata_value(metadata, PARQUET_TENSOR_SHAPE_KEY)?)?;
+    if parquet_metadata_value(metadata, PARQUET_TENSOR_ORDER_KEY)? != TENSOR_ORDER_ROW_MAJOR {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet order must be row-major",
+        ));
+    }
+    Ok((dtype, shape))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_metadata_value<'a>(
+    metadata: &'a parquet::file::metadata::FileMetaData,
+    key: &str,
+) -> Result<&'a str> {
+    let values = metadata
+        .key_value_metadata()
+        .ok_or_else(|| TioError::invalid_argument("missing Arcadia TIO tensor Parquet metadata"))?;
+    let entry = values
+        .iter()
+        .find(|entry| entry.key == key)
+        .ok_or_else(|| {
+            TioError::invalid_argument(format!(
+                "missing Arcadia TIO tensor Parquet metadata key {key}"
+            ))
+        })?;
+    entry.value.as_deref().ok_or_else(|| {
+        TioError::invalid_argument(format!(
+            "missing Arcadia TIO tensor Parquet metadata value {key}"
+        ))
+    })
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_validate_schema(
+    schema: &parquet::schema::types::SchemaDescriptor,
+    dtype: DType,
+) -> Result<()> {
+    if schema.num_columns() != 2 {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet schema must have two columns",
+        ));
+    }
+    let flat_index = schema.column(0);
+    if flat_index.name() != PARQUET_COLUMN_FLAT_INDEX
+        || flat_index.physical_type() != parquet::basic::Type::INT64
+        || flat_index.max_def_level() != 0
+        || flat_index.max_rep_level() != 0
+    {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet flat_index column must be required INT64",
+        ));
+    }
+    let value = schema.column(1);
+    if value.name() != PARQUET_COLUMN_VALUE
+        || value.physical_type() != parquet_physical_type(dtype)
+        || value.max_def_level() != 0
+        || value.max_rep_level() != 0
+    {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet value column type does not match metadata dtype",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_read_tensor_column_values<R, T, F>(
+    reader: &parquet::file::reader::SerializedFileReader<R>,
+    expected_len: usize,
+    mut read_column: F,
+) -> Result<Vec<T>>
+where
+    R: 'static + parquet::file::reader::ChunkReader,
+    F: FnMut(&dyn parquet::file::reader::RowGroupReader, usize) -> Result<Vec<T>>,
+{
+    use parquet::file::reader::FileReader;
+
+    let mut expected_flat_index = 0usize;
+    let mut values = Vec::with_capacity(expected_len);
+    for row_group_index in 0..reader.num_row_groups() {
+        let row_group = reader.get_row_group(row_group_index).map_err(parquet_err)?;
+        let row_count = parquet_i64_to_usize(
+            row_group.metadata().num_rows(),
+            "Arcadia TIO tensor Parquet row group row count",
+        )?;
+        let flat_indices = parquet_read_i64_column(row_group.as_ref(), 0, row_count)?;
+        parquet_validate_flat_indices(&flat_indices, &mut expected_flat_index)?;
+        values.extend(read_column(row_group.as_ref(), row_count)?);
+    }
+    if expected_flat_index != expected_len || values.len() != expected_len {
+        return Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet value count does not match shape",
+        ));
+    }
+    Ok(values)
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_read_f32_column(
+    row_group: &dyn parquet::file::reader::RowGroupReader,
+    column_index: usize,
+    expected_len: usize,
+) -> Result<Vec<f32>> {
+    if expected_len == 0 {
+        return Ok(Vec::new());
+    }
+    match row_group
+        .get_column_reader(column_index)
+        .map_err(parquet_err)?
+    {
+        parquet::column::reader::ColumnReader::FloatColumnReader(mut reader) => {
+            let mut values = Vec::with_capacity(expected_len);
+            let (records_read, values_read, levels_read) = reader
+                .read_records(expected_len, None, None, &mut values)
+                .map_err(parquet_err)?;
+            parquet_validate_read_column(
+                PARQUET_COLUMN_VALUE,
+                expected_len,
+                records_read,
+                values_read,
+                levels_read,
+                values.len(),
+            )?;
+            Ok(values)
+        }
+        _ => Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet column has unexpected physical type",
+        )),
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_read_f64_column(
+    row_group: &dyn parquet::file::reader::RowGroupReader,
+    column_index: usize,
+    expected_len: usize,
+) -> Result<Vec<f64>> {
+    if expected_len == 0 {
+        return Ok(Vec::new());
+    }
+    match row_group
+        .get_column_reader(column_index)
+        .map_err(parquet_err)?
+    {
+        parquet::column::reader::ColumnReader::DoubleColumnReader(mut reader) => {
+            let mut values = Vec::with_capacity(expected_len);
+            let (records_read, values_read, levels_read) = reader
+                .read_records(expected_len, None, None, &mut values)
+                .map_err(parquet_err)?;
+            parquet_validate_read_column(
+                PARQUET_COLUMN_VALUE,
+                expected_len,
+                records_read,
+                values_read,
+                levels_read,
+                values.len(),
+            )?;
+            Ok(values)
+        }
+        _ => Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet column has unexpected physical type",
+        )),
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_read_i32_column(
+    row_group: &dyn parquet::file::reader::RowGroupReader,
+    column_index: usize,
+    expected_len: usize,
+) -> Result<Vec<i32>> {
+    if expected_len == 0 {
+        return Ok(Vec::new());
+    }
+    match row_group
+        .get_column_reader(column_index)
+        .map_err(parquet_err)?
+    {
+        parquet::column::reader::ColumnReader::Int32ColumnReader(mut reader) => {
+            let mut values = Vec::with_capacity(expected_len);
+            let (records_read, values_read, levels_read) = reader
+                .read_records(expected_len, None, None, &mut values)
+                .map_err(parquet_err)?;
+            parquet_validate_read_column(
+                PARQUET_COLUMN_VALUE,
+                expected_len,
+                records_read,
+                values_read,
+                levels_read,
+                values.len(),
+            )?;
+            Ok(values)
+        }
+        _ => Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet column has unexpected physical type",
+        )),
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_read_i64_column(
+    row_group: &dyn parquet::file::reader::RowGroupReader,
+    column_index: usize,
+    expected_len: usize,
+) -> Result<Vec<i64>> {
+    if expected_len == 0 {
+        return Ok(Vec::new());
+    }
+    match row_group
+        .get_column_reader(column_index)
+        .map_err(parquet_err)?
+    {
+        parquet::column::reader::ColumnReader::Int64ColumnReader(mut reader) => {
+            let mut values = Vec::with_capacity(expected_len);
+            let (records_read, values_read, levels_read) = reader
+                .read_records(expected_len, None, None, &mut values)
+                .map_err(parquet_err)?;
+            parquet_validate_read_column(
+                PARQUET_COLUMN_FLAT_INDEX,
+                expected_len,
+                records_read,
+                values_read,
+                levels_read,
+                values.len(),
+            )?;
+            Ok(values)
+        }
+        _ => Err(TioError::invalid_argument(
+            "Arcadia TIO tensor Parquet column has unexpected physical type",
+        )),
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_validate_read_column(
+    column: &str,
+    expected: usize,
+    records_read: usize,
+    values_read: usize,
+    levels_read: usize,
+    actual_len: usize,
+) -> Result<()> {
+    if records_read != expected
+        || values_read != expected
+        || levels_read != expected
+        || actual_len != expected
+    {
+        return Err(TioError::invalid_argument(format!(
+            "Arcadia TIO tensor Parquet column {column} read {actual_len} values, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_validate_flat_indices(indices: &[i64], expected_flat_index: &mut usize) -> Result<()> {
+    for &flat_index in indices {
+        let flat_index = usize::try_from(flat_index).map_err(|_| {
+            TioError::invalid_argument(
+                "Arcadia TIO tensor Parquet flat index is negative or too large",
+            )
+        })?;
+        if flat_index != *expected_flat_index {
+            return Err(TioError::invalid_argument(
+                "Arcadia TIO tensor Parquet flat indices must be contiguous and ordered",
+            ));
+        }
+        *expected_flat_index = expected_flat_index.checked_add(1).ok_or_else(|| {
+            TioError::invalid_argument("Arcadia TIO tensor Parquet flat index count overflow")
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_i64_to_usize(value: i64, label: &str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| TioError::invalid_argument(format!("{label} exceeds usize")))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_err<E: std::fmt::Display>(err: E) -> TioError {
+    TioError::invalid_argument(format!("Arcadia TIO tensor Parquet error: {err}"))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_io_err<E: std::fmt::Display>(err: E) -> TioError {
+    TioError {
+        code: ErrorCode::Io,
+        message: format!("Arcadia TIO tensor Parquet I/O error: {err}"),
+    }
+}
+
 #[cfg(feature = "ndarray")]
 fn tensor_to_ndarray<T: Clone>(shape: &[u64], values: &[T]) -> Result<ndarray::ArrayD<T>> {
     let shape = ndarray_shape_to_usize(shape)?;
@@ -1029,7 +2023,8 @@ fn ndarray_err<E: std::fmt::Display>(err: E) -> TioError {
 ///
 /// - row-major shape helpers such as reshape, flatten/ravel aliases, expand/squeeze, axis
 ///   permutation, transpose, move-axis, and broadcast materialization;
-/// - indexing helpers for half-open slices, stepped slices, explicit takes, and single-index takes;
+/// - indexing and assembly helpers for half-open slices, stepped slices, explicit takes,
+///   concat/stack/split/unstack, repeat/tile, flip, and roll;
 /// - scalar and binary elementwise arithmetic with exact dtype matching and binary broadcasting;
 /// - reductions for sum/mean/min/max over selected axes where the owned dense dtype can represent
 ///   the result.
@@ -1288,6 +2283,285 @@ pub mod ops {
         take_axis(tensor, axis, &[index])
     }
 
+    macro_rules! concat_variant_data {
+        ($tensors:expr, $shapes:expr, $axis:expr, $out_shape:expr, $variant:ident, $ty:ty) => {{
+            let mut inputs: Vec<DenseInput<'_, $ty>> =
+                fallible_vec_with_capacity($tensors.len(), "tensor concat metadata")?;
+            for (&tensor, shape) in $tensors.iter().zip($shapes.iter()) {
+                match &tensor.data {
+                    TensorData::$variant(values) => inputs.push(DenseInput { shape, values }),
+                    _ => return Err(TioError::invalid_argument("tensor payload dtype mismatch")),
+                }
+            }
+            Ok(TensorData::$variant(concat_values(
+                &inputs,
+                $axis,
+                &$out_shape,
+            )?))
+        }};
+    }
+
+    macro_rules! stack_variant_data {
+        ($tensors:expr, $shapes:expr, $axis:expr, $out_shape:expr, $variant:ident, $ty:ty) => {{
+            let mut inputs: Vec<DenseInput<'_, $ty>> =
+                fallible_vec_with_capacity($tensors.len(), "tensor stack metadata")?;
+            for (&tensor, shape) in $tensors.iter().zip($shapes.iter()) {
+                match &tensor.data {
+                    TensorData::$variant(values) => inputs.push(DenseInput { shape, values }),
+                    _ => return Err(TioError::invalid_argument("tensor payload dtype mismatch")),
+                }
+            }
+            Ok(TensorData::$variant(stack_values(
+                &inputs,
+                $axis,
+                &$out_shape,
+            )?))
+        }};
+    }
+
+    /// Concatenate tensors along one existing axis and materialize an owned row-major output.
+    pub fn concat(tensors: &[&Tensor], axis: isize) -> Result<Tensor> {
+        let first = tensors
+            .first()
+            .copied()
+            .ok_or_else(|| TioError::invalid_argument("concat requires at least one tensor"))?;
+        let first_shape = validated_shape(first)?;
+        let rank = first_shape.len();
+        let axis = normalize_axis(axis, rank)?;
+        let dtype = first.dtype;
+
+        let mut shapes: Vec<Vec<usize>> =
+            fallible_vec_with_capacity(tensors.len(), "tensor concat metadata")?;
+        let mut out_shape_usize = first_shape.clone();
+        out_shape_usize[axis] = 0;
+
+        for &tensor in tensors {
+            let shape = validated_shape(tensor)?;
+            if tensor.dtype != dtype {
+                return Err(TioError::invalid_argument("tensor dtype mismatch"));
+            }
+            if shape.len() != rank {
+                return Err(TioError::invalid_argument("concat rank mismatch"));
+            }
+            for dim_axis in 0..rank {
+                if dim_axis != axis && shape[dim_axis] != first_shape[dim_axis] {
+                    return Err(TioError::invalid_argument("concat shapes mismatch"));
+                }
+            }
+            out_shape_usize[axis] = out_shape_usize[axis]
+                .checked_add(shape[axis])
+                .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?;
+            shapes.push(shape);
+        }
+
+        let out_shape = shape_usize_to_u64(&out_shape_usize)?;
+        let data = match dtype {
+            DType::F32 => concat_variant_data!(tensors, shapes, axis, out_shape_usize, F32, f32),
+            DType::F64 => concat_variant_data!(tensors, shapes, axis, out_shape_usize, F64, f64),
+            DType::I32 => concat_variant_data!(tensors, shapes, axis, out_shape_usize, I32, i32),
+            DType::I64 => concat_variant_data!(tensors, shapes, axis, out_shape_usize, I64, i64),
+        }?;
+        tensor_from_data(dtype, out_shape, data)
+    }
+
+    /// Stack tensors along a new axis and materialize an owned row-major output.
+    pub fn stack(tensors: &[&Tensor], axis: isize) -> Result<Tensor> {
+        let first = tensors
+            .first()
+            .copied()
+            .ok_or_else(|| TioError::invalid_argument("stack requires at least one tensor"))?;
+        let first_shape = validated_shape(first)?;
+        let rank = first_shape.len();
+        let insert_axis = normalize_insert_axis(axis, rank)?;
+        let dtype = first.dtype;
+
+        let mut shapes: Vec<Vec<usize>> =
+            fallible_vec_with_capacity(tensors.len(), "tensor stack metadata")?;
+        for &tensor in tensors {
+            let shape = validated_shape(tensor)?;
+            if tensor.dtype != dtype {
+                return Err(TioError::invalid_argument("tensor dtype mismatch"));
+            }
+            if shape != first_shape {
+                return Err(TioError::invalid_argument("stack shapes mismatch"));
+            }
+            shapes.push(shape);
+        }
+
+        let mut out_shape_usize = first_shape.clone();
+        out_shape_usize.insert(insert_axis, tensors.len());
+        let out_shape = shape_usize_to_u64(&out_shape_usize)?;
+        let data = match dtype {
+            DType::F32 => {
+                stack_variant_data!(tensors, shapes, insert_axis, out_shape_usize, F32, f32)
+            }
+            DType::F64 => {
+                stack_variant_data!(tensors, shapes, insert_axis, out_shape_usize, F64, f64)
+            }
+            DType::I32 => {
+                stack_variant_data!(tensors, shapes, insert_axis, out_shape_usize, I32, i32)
+            }
+            DType::I64 => {
+                stack_variant_data!(tensors, shapes, insert_axis, out_shape_usize, I64, i64)
+            }
+        }?;
+        tensor_from_data(dtype, out_shape, data)
+    }
+
+    /// Split one axis into explicit section lengths.
+    pub fn split(tensor: &Tensor, axis: isize, sections: &[usize]) -> Result<Vec<Tensor>> {
+        if sections.is_empty() {
+            return Err(TioError::invalid_argument("split sections cannot be empty"));
+        }
+        let shape = validated_shape(tensor)?;
+        let axis = normalize_axis(axis, shape.len())?;
+        let total = sections.iter().try_fold(0usize, |acc, &value| {
+            acc.checked_add(value)
+                .ok_or_else(|| TioError::invalid_argument("shape product overflow"))
+        })?;
+        if total != shape[axis] {
+            return Err(TioError::invalid_argument(
+                "split sections must sum to axis length",
+            ));
+        }
+
+        let mut out: Vec<Tensor> =
+            fallible_vec_with_capacity(sections.len(), "tensor split outputs")?;
+        let mut start = 0usize;
+        for &len in sections {
+            let end = start
+                .checked_add(len)
+                .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?;
+            out.push(slice_axis_range_normalized(
+                tensor, &shape, axis, start, end,
+            )?);
+            start = end;
+        }
+        Ok(out)
+    }
+
+    /// Split a tensor into one tensor per index along an axis.
+    pub fn unstack(tensor: &Tensor, axis: isize) -> Result<Vec<Tensor>> {
+        let shape = validated_shape(tensor)?;
+        if shape.len() == 1 {
+            return Err(TioError::invalid_argument(
+                "unstack rank-1 tensor would produce rank-0 outputs",
+            ));
+        }
+        let axis = normalize_axis(axis, shape.len())?;
+        let mut out: Vec<Tensor> =
+            fallible_vec_with_capacity(shape[axis], "tensor unstack outputs")?;
+        for index in 0..shape[axis] {
+            let indexed = take_axis_normalized(tensor, &shape, axis, &[index])?;
+            out.push(squeeze_axis(&indexed, axis as isize)?);
+        }
+        Ok(out)
+    }
+
+    /// Repeat each element along one axis.
+    pub fn repeat(tensor: &Tensor, axis: isize, repeats: usize) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let axis = normalize_axis(axis, shape.len())?;
+        let mut out_shape_usize = shape.clone();
+        out_shape_usize[axis] = out_shape_usize[axis]
+            .checked_mul(repeats)
+            .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?;
+        let out_shape = shape_usize_to_u64(&out_shape_usize)?;
+        let data = match &tensor.data {
+            TensorData::F32(values) => TensorData::F32(repeat_values(
+                values,
+                &shape,
+                &out_shape_usize,
+                axis,
+                repeats,
+            )?),
+            TensorData::F64(values) => TensorData::F64(repeat_values(
+                values,
+                &shape,
+                &out_shape_usize,
+                axis,
+                repeats,
+            )?),
+            TensorData::I32(values) => TensorData::I32(repeat_values(
+                values,
+                &shape,
+                &out_shape_usize,
+                axis,
+                repeats,
+            )?),
+            TensorData::I64(values) => TensorData::I64(repeat_values(
+                values,
+                &shape,
+                &out_shape_usize,
+                axis,
+                repeats,
+            )?),
+        };
+        tensor_from_data(tensor.dtype, out_shape, data)
+    }
+
+    /// Tile a tensor by repeat factors on each axis.
+    pub fn tile(tensor: &Tensor, reps: &[usize]) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        if reps.len() != shape.len() {
+            return Err(TioError::invalid_argument(
+                "tile reps length must equal tensor rank",
+            ));
+        }
+        let mut out_shape_usize: Vec<usize> =
+            fallible_vec_with_capacity(reps.len(), "tensor tile shape")?;
+        for (&dim, &rep) in shape.iter().zip(reps) {
+            out_shape_usize.push(
+                dim.checked_mul(rep)
+                    .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?,
+            );
+        }
+        let out_shape = shape_usize_to_u64(&out_shape_usize)?;
+        let data = match &tensor.data {
+            TensorData::F32(values) => {
+                TensorData::F32(tile_values(values, &shape, &out_shape_usize)?)
+            }
+            TensorData::F64(values) => {
+                TensorData::F64(tile_values(values, &shape, &out_shape_usize)?)
+            }
+            TensorData::I32(values) => {
+                TensorData::I32(tile_values(values, &shape, &out_shape_usize)?)
+            }
+            TensorData::I64(values) => {
+                TensorData::I64(tile_values(values, &shape, &out_shape_usize)?)
+            }
+        };
+        tensor_from_data(tensor.dtype, out_shape, data)
+    }
+
+    /// Reverse one axis and materialize an owned row-major output.
+    pub fn flip(tensor: &Tensor, axis: isize) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let axis = normalize_axis(axis, shape.len())?;
+        let out_shape = tensor.shape.clone();
+        let data = match &tensor.data {
+            TensorData::F32(values) => TensorData::F32(flip_values(values, &shape, axis)?),
+            TensorData::F64(values) => TensorData::F64(flip_values(values, &shape, axis)?),
+            TensorData::I32(values) => TensorData::I32(flip_values(values, &shape, axis)?),
+            TensorData::I64(values) => TensorData::I64(flip_values(values, &shape, axis)?),
+        };
+        tensor_from_data(tensor.dtype, out_shape, data)
+    }
+
+    /// Circularly shift indices along one axis and materialize an owned row-major output.
+    pub fn roll(tensor: &Tensor, axis: isize, shift: isize) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let axis = normalize_axis(axis, shape.len())?;
+        let out_shape = tensor.shape.clone();
+        let data = match &tensor.data {
+            TensorData::F32(values) => TensorData::F32(roll_values(values, &shape, axis, shift)?),
+            TensorData::F64(values) => TensorData::F64(roll_values(values, &shape, axis, shift)?),
+            TensorData::I32(values) => TensorData::I32(roll_values(values, &shape, axis, shift)?),
+            TensorData::I64(values) => TensorData::I64(roll_values(values, &shape, axis, shift)?),
+        };
+        tensor_from_data(tensor.dtype, out_shape, data)
+    }
+
     /// Add a scalar to every tensor element. The scalar dtype must match the tensor dtype.
     pub fn add_scalar(tensor: &Tensor, rhs: impl Into<Scalar>) -> Result<Tensor> {
         scalar_op(tensor, rhs.into(), ScalarOp::Add)
@@ -1465,6 +2739,80 @@ pub mod ops {
         tensor_from_data(tensor.dtype, out_shape, data)
     }
 
+    /// Zero-based argmin indices across selected axes.
+    ///
+    /// Output values are `i64` row-major offsets within the reduced subspace. `axes = None`
+    /// selects all axes. Because public [`Tensor`] values always have rank >= 1, all-axis
+    /// reductions must use `keepdims = true`.
+    pub fn argmin(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
+        arg_reduce(tensor, axes, keepdims, false)
+    }
+
+    /// Zero-based argmax indices across selected axes.
+    ///
+    /// Output values are `i64` row-major offsets within the reduced subspace. `axes = None`
+    /// selects all axes. Because public [`Tensor`] values always have rank >= 1, all-axis
+    /// reductions must use `keepdims = true`.
+    pub fn argmax(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
+        arg_reduce(tensor, axes, keepdims, true)
+    }
+
+    /// Cumulative sum along one axis, or over the flattened tensor when `axis = None`.
+    pub fn cumsum(tensor: &Tensor, axis: Option<isize>) -> Result<Tensor> {
+        cumulative_op(tensor, axis, CumulativeOp::Sum)
+    }
+
+    /// Cumulative product along one axis, or over the flattened tensor when `axis = None`.
+    pub fn cumprod(tensor: &Tensor, axis: Option<isize>) -> Result<Tensor> {
+        cumulative_op(tensor, axis, CumulativeOp::Product)
+    }
+
+    /// Population variance (`ddof = 0`) across selected axes.
+    ///
+    /// Integer inputs promote to `f64`. `axes = None` selects all axes. Because public [`Tensor`]
+    /// values always have rank >= 1, all-axis reductions must use `keepdims = true`.
+    pub fn var(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let plan = ReductionPlan::new(&shape, axes, keepdims)?;
+        if plan.reduced_elems == 0 && plan.out_elems > 0 {
+            return Err(TioError::invalid_argument("variance of an empty reduction"));
+        }
+        let out_shape = shape_usize_to_u64(&plan.out_shape)?;
+        match &tensor.data {
+            TensorData::F32(values) => {
+                Tensor::from_dense_f32(out_shape, reduce_variance_f32(values, &shape, &plan)?)
+            }
+            TensorData::F64(values) => {
+                Tensor::from_dense_f64(out_shape, reduce_variance_f64(values, &shape, &plan)?)
+            }
+            TensorData::I32(values) => {
+                Tensor::from_dense_f64(out_shape, reduce_variance_i32(values, &shape, &plan)?)
+            }
+            TensorData::I64(values) => {
+                Tensor::from_dense_f64(out_shape, reduce_variance_i64(values, &shape, &plan)?)
+            }
+        }
+    }
+
+    /// Population standard deviation (`ddof = 0`) across selected axes.
+    ///
+    /// Integer inputs promote to `f64`. `axes = None` selects all axes. Because public [`Tensor`]
+    /// values always have rank >= 1, all-axis reductions must use `keepdims = true`.
+    pub fn std(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
+        let variance = var(tensor, axes, keepdims)?;
+        match variance.data {
+            TensorData::F32(values) => {
+                Tensor::from_dense_f32(variance.shape, sqrt_f32_values(values)?)
+            }
+            TensorData::F64(values) => {
+                Tensor::from_dense_f64(variance.shape, sqrt_f64_values(values)?)
+            }
+            TensorData::I32(_) | TensorData::I64(_) => Err(TioError::invalid_argument(
+                "variance output payload dtype mismatch",
+            )),
+        }
+    }
+
     #[derive(Clone, Copy)]
     enum ScalarOp {
         Add,
@@ -1481,11 +2829,18 @@ pub mod ops {
         Div,
     }
 
+    #[derive(Clone, Copy)]
+    enum CumulativeOp {
+        Sum,
+        Product,
+    }
+
     struct ReductionPlan {
         reduce_mask: Vec<bool>,
         keepdims: bool,
         out_shape: Vec<usize>,
         out_strides: Vec<usize>,
+        reduced_strides: Vec<usize>,
         out_elems: usize,
         reduced_elems: usize,
     }
@@ -1505,11 +2860,13 @@ pub mod ops {
                     "reduction would produce a rank-0 tensor; set keepdims=true",
                 ));
             }
+            let mut reduced_strides = vec![0usize; shape.len()];
             let mut reduced_elems = 1usize;
-            for (axis, &dim) in shape.iter().enumerate() {
+            for axis in (0..shape.len()).rev() {
                 if reduce_mask[axis] {
+                    reduced_strides[axis] = reduced_elems;
                     reduced_elems = reduced_elems
-                        .checked_mul(dim)
+                        .checked_mul(shape[axis])
                         .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?;
                 }
             }
@@ -1535,6 +2892,7 @@ pub mod ops {
                 keepdims,
                 out_shape,
                 out_strides,
+                reduced_strides,
                 out_elems,
                 reduced_elems,
             })
@@ -1570,6 +2928,22 @@ pub mod ops {
                 out_axis += 1;
             }
             Ok(out_linear)
+        }
+
+        fn reduced_index(&self, in_indices: &[usize]) -> Result<usize> {
+            let mut reduced_linear = 0usize;
+            for (axis, &in_index) in in_indices.iter().enumerate() {
+                if !self.reduce_mask[axis] {
+                    continue;
+                }
+                let term = in_index
+                    .checked_mul(self.reduced_strides[axis])
+                    .ok_or_else(|| TioError::invalid_argument("index overflow"))?;
+                reduced_linear = reduced_linear
+                    .checked_add(term)
+                    .ok_or_else(|| TioError::invalid_argument("index overflow"))?;
+            }
+            Ok(reduced_linear)
         }
     }
 
@@ -1802,6 +3176,11 @@ pub mod ops {
         Ok(out)
     }
 
+    struct DenseInput<'a, T> {
+        shape: &'a [usize],
+        values: &'a [T],
+    }
+
     fn take_axis_normalized(
         tensor: &Tensor,
         shape: &[usize],
@@ -1871,6 +3250,290 @@ pub mod ops {
                     .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
             );
             increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn slice_axis_range_normalized(
+        tensor: &Tensor,
+        shape: &[usize],
+        axis: usize,
+        start: usize,
+        end: usize,
+    ) -> Result<Tensor> {
+        if start > end || end > shape[axis] {
+            return Err(TioError::invalid_argument("slice out of bounds"));
+        }
+        let mut out_shape_usize = shape.to_vec();
+        out_shape_usize[axis] = end - start;
+        let out_shape = shape_usize_to_u64(&out_shape_usize)?;
+        let data = match &tensor.data {
+            TensorData::F32(values) => TensorData::F32(slice_axis_range_values(
+                values,
+                shape,
+                axis,
+                start,
+                &out_shape_usize,
+            )?),
+            TensorData::F64(values) => TensorData::F64(slice_axis_range_values(
+                values,
+                shape,
+                axis,
+                start,
+                &out_shape_usize,
+            )?),
+            TensorData::I32(values) => TensorData::I32(slice_axis_range_values(
+                values,
+                shape,
+                axis,
+                start,
+                &out_shape_usize,
+            )?),
+            TensorData::I64(values) => TensorData::I64(slice_axis_range_values(
+                values,
+                shape,
+                axis,
+                start,
+                &out_shape_usize,
+            )?),
+        };
+        tensor_from_data(tensor.dtype, out_shape, data)
+    }
+
+    fn slice_axis_range_values<T: Copy>(
+        values: &[T],
+        input_shape: &[usize],
+        axis: usize,
+        start: usize,
+        out_shape: &[usize],
+    ) -> Result<Vec<T>> {
+        let out_elems = shape_product_usize(out_shape)?;
+        let in_strides = row_major_strides(input_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor slice")?;
+        let mut out_indices = vec![0usize; out_shape.len()];
+        for _ in 0..out_elems {
+            let mut in_indices = out_indices.clone();
+            in_indices[axis] = start
+                .checked_add(out_indices[axis])
+                .ok_or_else(|| TioError::invalid_argument("index overflow"))?;
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn concat_values<T: Copy>(
+        inputs: &[DenseInput<'_, T>],
+        axis: usize,
+        out_shape: &[usize],
+    ) -> Result<Vec<T>> {
+        let mut prepared: Vec<(&[usize], Vec<usize>, &[T])> =
+            fallible_vec_with_capacity(inputs.len(), "tensor concat metadata")?;
+        let mut axis_prefix =
+            fallible_vec_with_capacity(inputs.len() + 1, "tensor concat metadata")?;
+        axis_prefix.push(0usize);
+
+        for input in inputs {
+            let strides = row_major_strides(input.shape)?;
+            let next = axis_prefix
+                .last()
+                .copied()
+                .unwrap_or(0)
+                .checked_add(input.shape[axis])
+                .ok_or_else(|| TioError::invalid_argument("shape product overflow"))?;
+            axis_prefix.push(next);
+            prepared.push((input.shape, strides, input.values));
+        }
+
+        let out_elems = shape_product_usize(out_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor concat")?;
+        if out_elems == 0 {
+            return Ok(out);
+        }
+
+        let mut out_indices = vec![0usize; out_shape.len()];
+        for _ in 0..out_elems {
+            let axis_index = out_indices[axis];
+            let input_idx = axis_prefix
+                .windows(2)
+                .position(|window| axis_index >= window[0] && axis_index < window[1])
+                .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?;
+            let (shape, strides, values) = &prepared[input_idx];
+            let local_axis = axis_index - axis_prefix[input_idx];
+            let mut in_indices = out_indices.clone();
+            in_indices[axis] = local_axis;
+            let in_linear = linear_from_indices(&in_indices, strides, shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn stack_values<T: Copy>(
+        inputs: &[DenseInput<'_, T>],
+        axis: usize,
+        out_shape: &[usize],
+    ) -> Result<Vec<T>> {
+        let input_shape = inputs
+            .first()
+            .map(|input| input.shape)
+            .ok_or_else(|| TioError::invalid_argument("stack requires at least one tensor"))?;
+        let in_strides = row_major_strides(input_shape)?;
+        let out_elems = shape_product_usize(out_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor stack")?;
+        if out_elems == 0 {
+            return Ok(out);
+        }
+
+        let mut out_indices = vec![0usize; out_shape.len()];
+        let mut in_indices = vec![0usize; input_shape.len()];
+        for _ in 0..out_elems {
+            let input_index = out_indices[axis];
+            let input = inputs
+                .get(input_index)
+                .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?;
+            let mut in_axis = 0usize;
+            for (out_axis, &out_index) in out_indices.iter().enumerate() {
+                if out_axis == axis {
+                    continue;
+                }
+                in_indices[in_axis] = out_index;
+                in_axis += 1;
+            }
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *input
+                    .values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn repeat_values<T: Copy>(
+        values: &[T],
+        input_shape: &[usize],
+        out_shape: &[usize],
+        axis: usize,
+        repeats: usize,
+    ) -> Result<Vec<T>> {
+        let out_elems = shape_product_usize(out_shape)?;
+        let in_strides = row_major_strides(input_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor repeat")?;
+        if out_elems == 0 {
+            return Ok(out);
+        }
+
+        let mut out_indices = vec![0usize; out_shape.len()];
+        for _ in 0..out_elems {
+            let mut in_indices = out_indices.clone();
+            in_indices[axis] = out_indices[axis] / repeats;
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn tile_values<T: Copy>(
+        values: &[T],
+        input_shape: &[usize],
+        out_shape: &[usize],
+    ) -> Result<Vec<T>> {
+        let out_elems = shape_product_usize(out_shape)?;
+        let in_strides = row_major_strides(input_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor tile")?;
+        if out_elems == 0 {
+            return Ok(out);
+        }
+
+        let mut out_indices = vec![0usize; out_shape.len()];
+        let mut in_indices = vec![0usize; input_shape.len()];
+        for _ in 0..out_elems {
+            for axis in 0..input_shape.len() {
+                in_indices[axis] = out_indices[axis] % input_shape[axis];
+            }
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, out_shape);
+        }
+        Ok(out)
+    }
+
+    fn flip_values<T: Copy>(values: &[T], input_shape: &[usize], axis: usize) -> Result<Vec<T>> {
+        let out_elems = shape_product_usize(input_shape)?;
+        let in_strides = row_major_strides(input_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor flip")?;
+        if out_elems == 0 {
+            return Ok(out);
+        }
+
+        let mut out_indices = vec![0usize; input_shape.len()];
+        for _ in 0..out_elems {
+            let mut in_indices = out_indices.clone();
+            in_indices[axis] = input_shape[axis]
+                .checked_sub(1)
+                .and_then(|value| value.checked_sub(out_indices[axis]))
+                .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?;
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, input_shape);
+        }
+        Ok(out)
+    }
+
+    fn roll_values<T: Copy>(
+        values: &[T],
+        input_shape: &[usize],
+        axis: usize,
+        shift: isize,
+    ) -> Result<Vec<T>> {
+        let out_elems = shape_product_usize(input_shape)?;
+        let in_strides = row_major_strides(input_shape)?;
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor roll")?;
+        if out_elems == 0 || input_shape[axis] == 0 {
+            return Ok(out);
+        }
+        let axis_len = isize::try_from(input_shape[axis])
+            .map_err(|_| TioError::invalid_argument("axis length overflow"))?;
+        let shift_norm = usize::try_from(shift.rem_euclid(axis_len))
+            .map_err(|_| TioError::invalid_argument("shift overflow"))?;
+
+        let mut out_indices = vec![0usize; input_shape.len()];
+        for _ in 0..out_elems {
+            let mut in_indices = out_indices.clone();
+            in_indices[axis] =
+                (out_indices[axis] + input_shape[axis] - shift_norm) % input_shape[axis];
+            let in_linear = linear_from_indices(&in_indices, &in_strides, input_shape)?;
+            out.push(
+                *values
+                    .get(in_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?,
+            );
+            increment_indices(&mut out_indices, input_shape);
         }
         Ok(out)
     }
@@ -2240,12 +3903,653 @@ pub mod ops {
             .collect()
     }
 
+    fn arg_reduce(
+        tensor: &Tensor,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+        take_max: bool,
+    ) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let plan = ReductionPlan::new(&shape, axes, keepdims)?;
+        let out_shape = shape_usize_to_u64(&plan.out_shape)?;
+        let out = match &tensor.data {
+            TensorData::F32(values) => arg_reduce_values(values, &shape, &plan, take_max)?,
+            TensorData::F64(values) => arg_reduce_values(values, &shape, &plan, take_max)?,
+            TensorData::I32(values) => arg_reduce_values(values, &shape, &plan, take_max)?,
+            TensorData::I64(values) => arg_reduce_values(values, &shape, &plan, take_max)?,
+        };
+        Tensor::from_dense_i64(out_shape, out)
+    }
+
+    fn arg_reduce_values<T: Copy + PartialOrd>(
+        values: &[T],
+        shape: &[usize],
+        plan: &ReductionPlan,
+        take_max: bool,
+    ) -> Result<Vec<i64>> {
+        if plan.reduced_elems == 0 && plan.out_elems > 0 {
+            return Err(TioError::invalid_argument("cannot reduce an empty axis"));
+        }
+        let mut out = fallible_filled_vec(plan.out_elems, None, "tensor arg reduction")?;
+        let mut in_indices = vec![0usize; shape.len()];
+        for &value in values {
+            let out_index = plan.out_index(&in_indices)?;
+            let reduced_index = i64::try_from(plan.reduced_index(&in_indices)?)
+                .map_err(|_| TioError::invalid_argument("arg reduction index exceeds i64"))?;
+            match &mut out[out_index] {
+                Some((current, current_index)) => {
+                    if (take_max && value > *current) || (!take_max && value < *current) {
+                        *current = value;
+                        *current_index = reduced_index;
+                    }
+                }
+                slot @ None => *slot = Some((value, reduced_index)),
+            }
+            increment_indices(&mut in_indices, shape);
+        }
+        let mut indices = fallible_vec_with_capacity(out.len(), "tensor arg reduction")?;
+        for value in out {
+            indices.push(
+                value
+                    .map(|(_, index)| index)
+                    .ok_or_else(|| TioError::invalid_argument("cannot reduce an empty axis"))?,
+            );
+        }
+        Ok(indices)
+    }
+
+    fn cumulative_op(tensor: &Tensor, axis: Option<isize>, op: CumulativeOp) -> Result<Tensor> {
+        let shape = validated_shape(tensor)?;
+        let out_shape = match axis {
+            Some(_) => tensor.shape.clone(),
+            None => vec![usize_to_u64(shape_product_usize(&shape)?)?],
+        };
+        match &tensor.data {
+            TensorData::F32(values) => Tensor::from_dense_f32(
+                out_shape,
+                cumulative_values(values, &shape, axis, |a, b| match op {
+                    CumulativeOp::Sum => Ok(a + b),
+                    CumulativeOp::Product => Ok(a * b),
+                })?,
+            ),
+            TensorData::F64(values) => Tensor::from_dense_f64(
+                out_shape,
+                cumulative_values(values, &shape, axis, |a, b| match op {
+                    CumulativeOp::Sum => Ok(a + b),
+                    CumulativeOp::Product => Ok(a * b),
+                })?,
+            ),
+            TensorData::I32(values) => Tensor::from_dense_i32(
+                out_shape,
+                cumulative_values(values, &shape, axis, |a, b| match op {
+                    CumulativeOp::Sum => {
+                        checked_i32(a.checked_add(b), "integer cumulative sum overflow")
+                    }
+                    CumulativeOp::Product => {
+                        checked_i32(a.checked_mul(b), "integer cumulative product overflow")
+                    }
+                })?,
+            ),
+            TensorData::I64(values) => Tensor::from_dense_i64(
+                out_shape,
+                cumulative_values(values, &shape, axis, |a, b| match op {
+                    CumulativeOp::Sum => {
+                        checked_i64(a.checked_add(b), "integer cumulative sum overflow")
+                    }
+                    CumulativeOp::Product => {
+                        checked_i64(a.checked_mul(b), "integer cumulative product overflow")
+                    }
+                })?,
+            ),
+        }
+    }
+
+    fn cumulative_values<T: Copy, F>(
+        values: &[T],
+        shape: &[usize],
+        axis: Option<isize>,
+        combine: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(T, T) -> Result<T>,
+    {
+        match axis {
+            Some(axis) => {
+                cumulative_axis_values(values, shape, normalize_axis(axis, shape.len())?, combine)
+            }
+            None => cumulative_flat_values(values, combine),
+        }
+    }
+
+    fn cumulative_flat_values<T: Copy, F>(values: &[T], mut combine: F) -> Result<Vec<T>>
+    where
+        F: FnMut(T, T) -> Result<T>,
+    {
+        let mut out = fallible_vec_with_capacity(values.len(), "tensor cumulative reduction")?;
+        let mut accumulator = None;
+        for &value in values {
+            let next = match accumulator {
+                Some(current) => combine(current, value)?,
+                None => value,
+            };
+            out.push(next);
+            accumulator = Some(next);
+        }
+        Ok(out)
+    }
+
+    fn cumulative_axis_values<T: Copy, F>(
+        values: &[T],
+        shape: &[usize],
+        axis: usize,
+        mut combine: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(T, T) -> Result<T>,
+    {
+        let strides = row_major_strides(shape)?;
+        let mut out = fallible_vec_with_capacity(values.len(), "tensor cumulative reduction")?;
+        let mut in_indices = vec![0usize; shape.len()];
+        for (linear, &value) in values.iter().enumerate() {
+            let next = if in_indices[axis] == 0 {
+                value
+            } else {
+                let previous_linear = linear
+                    .checked_sub(strides[axis])
+                    .ok_or_else(|| TioError::invalid_argument("index overflow"))?;
+                let previous = *out
+                    .get(previous_linear)
+                    .ok_or_else(|| TioError::invalid_argument("index out of bounds"))?;
+                combine(previous, value)?
+            };
+            out.push(next);
+            increment_indices(&mut in_indices, shape);
+        }
+        Ok(out)
+    }
+
+    fn sqrt_f32_values(values: Vec<f32>) -> Result<Vec<f32>> {
+        let mut out = fallible_vec_with_capacity(values.len(), "tensor standard deviation")?;
+        for value in values {
+            out.push(value.sqrt());
+        }
+        Ok(out)
+    }
+
+    fn sqrt_f64_values(values: Vec<f64>) -> Result<Vec<f64>> {
+        let mut out = fallible_vec_with_capacity(values.len(), "tensor standard deviation")?;
+        for value in values {
+            out.push(value.sqrt());
+        }
+        Ok(out)
+    }
+
+    fn reduce_variance_f32(
+        values: &[f32],
+        shape: &[usize],
+        plan: &ReductionPlan,
+    ) -> Result<Vec<f32>> {
+        let mut means = reduce_sum_values(values, shape, plan, 0.0_f32, |a, b| Ok(a + b))?;
+        let divisor = plan.reduced_elems as f32;
+        for mean in &mut means {
+            *mean /= divisor;
+        }
+        let mut out = fallible_filled_vec(plan.out_elems, 0.0_f32, "tensor variance")?;
+        let mut in_indices = vec![0usize; shape.len()];
+        for &value in values {
+            let out_index = plan.out_index(&in_indices)?;
+            let delta = value - means[out_index];
+            out[out_index] += delta * delta;
+            increment_indices(&mut in_indices, shape);
+        }
+        for value in &mut out {
+            *value /= divisor;
+        }
+        Ok(out)
+    }
+
+    fn reduce_variance_f64(
+        values: &[f64],
+        shape: &[usize],
+        plan: &ReductionPlan,
+    ) -> Result<Vec<f64>> {
+        let mut means = reduce_sum_values(values, shape, plan, 0.0_f64, |a, b| Ok(a + b))?;
+        let divisor = plan.reduced_elems as f64;
+        for mean in &mut means {
+            *mean /= divisor;
+        }
+        let mut out = fallible_filled_vec(plan.out_elems, 0.0_f64, "tensor variance")?;
+        let mut in_indices = vec![0usize; shape.len()];
+        for &value in values {
+            let out_index = plan.out_index(&in_indices)?;
+            let delta = value - means[out_index];
+            out[out_index] += delta * delta;
+            increment_indices(&mut in_indices, shape);
+        }
+        for value in &mut out {
+            *value /= divisor;
+        }
+        Ok(out)
+    }
+
+    fn reduce_variance_i32(
+        values: &[i32],
+        shape: &[usize],
+        plan: &ReductionPlan,
+    ) -> Result<Vec<f64>> {
+        reduce_variance_mapped(values, shape, plan, |value| f64::from(value))
+    }
+
+    fn reduce_variance_i64(
+        values: &[i64],
+        shape: &[usize],
+        plan: &ReductionPlan,
+    ) -> Result<Vec<f64>> {
+        reduce_variance_mapped(values, shape, plan, |value| value as f64)
+    }
+
+    fn reduce_variance_mapped<T: Copy, F>(
+        values: &[T],
+        shape: &[usize],
+        plan: &ReductionPlan,
+        mut as_f64: F,
+    ) -> Result<Vec<f64>>
+    where
+        F: FnMut(T) -> f64,
+    {
+        let mut means =
+            reduce_sum_mapped_values(values, shape, plan, 0.0_f64, |a, b| Ok(a + as_f64(b)))?;
+        let divisor = plan.reduced_elems as f64;
+        for mean in &mut means {
+            *mean /= divisor;
+        }
+        let mut out = fallible_filled_vec(plan.out_elems, 0.0_f64, "tensor variance")?;
+        let mut in_indices = vec![0usize; shape.len()];
+        for &value in values {
+            let out_index = plan.out_index(&in_indices)?;
+            let delta = as_f64(value) - means[out_index];
+            out[out_index] += delta * delta;
+            increment_indices(&mut in_indices, shape);
+        }
+        for value in &mut out {
+            *value /= divisor;
+        }
+        Ok(out)
+    }
+
     fn checked_i32(value: Option<i32>, message: &'static str) -> Result<i32> {
         value.ok_or_else(|| TioError::invalid_argument(message))
     }
 
     fn checked_i64(value: Option<i64>, message: &'static str) -> Result<i64> {
         value.ok_or_else(|| TioError::invalid_argument(message))
+    }
+}
+
+/// Typed owned tensor operations over [`TypedTensor`] values.
+///
+/// This module forwards to the public untyped [`ops`] implementation and then validates that each
+/// typed result has the expected dtype. The first slice intentionally covers dtype-preserving
+/// operations plus `argmin`/`argmax` returning [`TensorI64`]; dtype-promoting `mean`, `var`, and
+/// `std` remain available through [`ops`] on the untyped [`Tensor`] returned by
+/// [`TypedTensor::as_tensor`].
+pub mod typed_ops {
+    use super::{Result, Tensor, TensorElement, TensorI64, TypedTensor, ops};
+
+    fn typed_from_result<T: TensorElement>(result: Result<Tensor>) -> Result<TypedTensor<T>> {
+        TypedTensor::try_from_tensor(result?)
+    }
+
+    fn typed_vec_from_result<T: TensorElement>(
+        result: Result<Vec<Tensor>>,
+    ) -> Result<Vec<TypedTensor<T>>> {
+        let tensors = result?;
+        let mut out = Vec::with_capacity(tensors.len());
+        for tensor in tensors {
+            out.push(TypedTensor::try_from_tensor(tensor)?);
+        }
+        Ok(out)
+    }
+
+    fn tensor_refs<'a, T: TensorElement>(tensors: &'a [&'a TypedTensor<T>]) -> Vec<&'a Tensor> {
+        let mut refs = Vec::with_capacity(tensors.len());
+        for tensor in tensors {
+            refs.push(tensor.as_tensor());
+        }
+        refs
+    }
+
+    /// Reshape a typed tensor in row-major order.
+    pub fn reshape<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        shape: Vec<u64>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::reshape(tensor.as_tensor(), shape))
+    }
+
+    /// Flatten a typed tensor to one dimension.
+    pub fn flatten<T: TensorElement>(tensor: &TypedTensor<T>) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::flatten(tensor.as_tensor()))
+    }
+
+    /// Owned alias for [`flatten`].
+    pub fn ravel_view<T: TensorElement>(tensor: &TypedTensor<T>) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::ravel_view(tensor.as_tensor()))
+    }
+
+    /// Insert a length-1 axis.
+    pub fn expand_dims<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::expand_dims(tensor.as_tensor(), axis))
+    }
+
+    /// Remove all length-1 axes.
+    pub fn squeeze<T: TensorElement>(tensor: &TypedTensor<T>) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::squeeze(tensor.as_tensor()))
+    }
+
+    /// Remove one length-1 axis.
+    pub fn squeeze_axis<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::squeeze_axis(tensor.as_tensor(), axis))
+    }
+
+    /// Permute axes and materialize an owned typed tensor.
+    pub fn permute_axes<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: &[isize],
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::permute_axes(tensor.as_tensor(), axes))
+    }
+
+    /// Owned alias for [`permute_axes`].
+    pub fn permute_axes_view<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: &[isize],
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::permute_axes_view(tensor.as_tensor(), axes))
+    }
+
+    /// Swap two axes and materialize an owned typed tensor.
+    pub fn swap_axes<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis_a: isize,
+        axis_b: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::swap_axes(tensor.as_tensor(), axis_a, axis_b))
+    }
+
+    /// Owned alias for [`swap_axes`].
+    pub fn swap_axes_view<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis_a: isize,
+        axis_b: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::swap_axes_view(tensor.as_tensor(), axis_a, axis_b))
+    }
+
+    /// Transpose a rank-2 typed tensor.
+    pub fn transpose<T: TensorElement>(tensor: &TypedTensor<T>) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::transpose(tensor.as_tensor()))
+    }
+
+    /// Owned alias for [`transpose`].
+    pub fn transpose_view<T: TensorElement>(tensor: &TypedTensor<T>) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::transpose_view(tensor.as_tensor()))
+    }
+
+    /// Move one axis to a new position.
+    pub fn move_axis<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        source: isize,
+        destination: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::move_axis(tensor.as_tensor(), source, destination))
+    }
+
+    /// Owned alias for [`move_axis`].
+    pub fn move_axis_view<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        source: isize,
+        destination: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::move_axis_view(tensor.as_tensor(), source, destination))
+    }
+
+    /// Broadcast to a target shape and materialize an owned typed tensor.
+    pub fn broadcast_to<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        shape: Vec<u64>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::broadcast_to(tensor.as_tensor(), shape))
+    }
+
+    /// Slice one axis by a half-open range.
+    pub fn slice_axis<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        start: usize,
+        end: usize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::slice_axis(tensor.as_tensor(), axis, start, end))
+    }
+
+    /// Slice one axis by a stepped range.
+    pub fn slice_axis_step<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        start: isize,
+        end: isize,
+        step: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::slice_axis_step(
+            tensor.as_tensor(),
+            axis,
+            start,
+            end,
+            step,
+        ))
+    }
+
+    /// Take explicit indices along one axis.
+    pub fn take_axis<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        indices: &[usize],
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::take_axis(tensor.as_tensor(), axis, indices))
+    }
+
+    /// Select one index along an axis while retaining a length-1 axis.
+    pub fn index_axis<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        index: usize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::index_axis(tensor.as_tensor(), axis, index))
+    }
+
+    /// Concatenate typed tensors along one existing axis.
+    pub fn concat<T: TensorElement>(
+        tensors: &[&TypedTensor<T>],
+        axis: isize,
+    ) -> Result<TypedTensor<T>> {
+        let refs = tensor_refs(tensors);
+        typed_from_result(ops::concat(&refs, axis))
+    }
+
+    /// Stack typed tensors along a new axis.
+    pub fn stack<T: TensorElement>(
+        tensors: &[&TypedTensor<T>],
+        axis: isize,
+    ) -> Result<TypedTensor<T>> {
+        let refs = tensor_refs(tensors);
+        typed_from_result(ops::stack(&refs, axis))
+    }
+
+    /// Split a typed tensor into typed tensors along one axis.
+    pub fn split<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        sections: &[usize],
+    ) -> Result<Vec<TypedTensor<T>>> {
+        typed_vec_from_result(ops::split(tensor.as_tensor(), axis, sections))
+    }
+
+    /// Unstack a typed tensor along one axis.
+    pub fn unstack<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+    ) -> Result<Vec<TypedTensor<T>>> {
+        typed_vec_from_result(ops::unstack(tensor.as_tensor(), axis))
+    }
+
+    /// Repeat each element along one axis.
+    pub fn repeat<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        repeats: usize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::repeat(tensor.as_tensor(), axis, repeats))
+    }
+
+    /// Tile a typed tensor by per-axis repeat counts.
+    pub fn tile<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        reps: &[usize],
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::tile(tensor.as_tensor(), reps))
+    }
+
+    /// Reverse one axis.
+    pub fn flip<T: TensorElement>(tensor: &TypedTensor<T>, axis: isize) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::flip(tensor.as_tensor(), axis))
+    }
+
+    /// Roll one axis by a signed shift.
+    pub fn roll<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: isize,
+        shift: isize,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::roll(tensor.as_tensor(), axis, shift))
+    }
+
+    /// Add a scalar of the same dtype to every element.
+    pub fn add_scalar<T: TensorElement>(tensor: &TypedTensor<T>, rhs: T) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::add_scalar(tensor.as_tensor(), rhs.into_scalar()))
+    }
+
+    /// Subtract a scalar of the same dtype from every element.
+    pub fn sub_scalar<T: TensorElement>(tensor: &TypedTensor<T>, rhs: T) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::sub_scalar(tensor.as_tensor(), rhs.into_scalar()))
+    }
+
+    /// Multiply every element by a scalar of the same dtype.
+    pub fn mul_scalar<T: TensorElement>(tensor: &TypedTensor<T>, rhs: T) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::mul_scalar(tensor.as_tensor(), rhs.into_scalar()))
+    }
+
+    /// Divide every element by a scalar of the same dtype.
+    pub fn div_scalar<T: TensorElement>(tensor: &TypedTensor<T>, rhs: T) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::div_scalar(tensor.as_tensor(), rhs.into_scalar()))
+    }
+
+    /// Add typed tensors with exact dtype matching and broadcasting.
+    pub fn add<T: TensorElement>(
+        lhs: &TypedTensor<T>,
+        rhs: &TypedTensor<T>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::add(lhs.as_tensor(), rhs.as_tensor()))
+    }
+
+    /// Subtract typed tensors with exact dtype matching and broadcasting.
+    pub fn sub<T: TensorElement>(
+        lhs: &TypedTensor<T>,
+        rhs: &TypedTensor<T>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::sub(lhs.as_tensor(), rhs.as_tensor()))
+    }
+
+    /// Multiply typed tensors with exact dtype matching and broadcasting.
+    pub fn mul<T: TensorElement>(
+        lhs: &TypedTensor<T>,
+        rhs: &TypedTensor<T>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::mul(lhs.as_tensor(), rhs.as_tensor()))
+    }
+
+    /// Divide typed tensors with exact dtype matching and broadcasting.
+    pub fn div<T: TensorElement>(
+        lhs: &TypedTensor<T>,
+        rhs: &TypedTensor<T>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::div(lhs.as_tensor(), rhs.as_tensor()))
+    }
+
+    /// Sum values across selected axes while preserving dtype.
+    pub fn sum<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::sum(tensor.as_tensor(), axes, keepdims))
+    }
+
+    /// Minimum values across selected axes while preserving dtype.
+    pub fn min<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::min(tensor.as_tensor(), axes, keepdims))
+    }
+
+    /// Maximum values across selected axes while preserving dtype.
+    pub fn max<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::max(tensor.as_tensor(), axes, keepdims))
+    }
+
+    /// Zero-based argmin offsets across selected axes.
+    pub fn argmin<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+    ) -> Result<TensorI64> {
+        typed_from_result(ops::argmin(tensor.as_tensor(), axes, keepdims))
+    }
+
+    /// Zero-based argmax offsets across selected axes.
+    pub fn argmax<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axes: Option<&[isize]>,
+        keepdims: bool,
+    ) -> Result<TensorI64> {
+        typed_from_result(ops::argmax(tensor.as_tensor(), axes, keepdims))
+    }
+
+    /// Cumulative sum along one axis, or over the flattened tensor when `axis = None`.
+    pub fn cumsum<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: Option<isize>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::cumsum(tensor.as_tensor(), axis))
+    }
+
+    /// Cumulative product along one axis, or over the flattened tensor when `axis = None`.
+    pub fn cumprod<T: TensorElement>(
+        tensor: &TypedTensor<T>,
+        axis: Option<isize>,
+    ) -> Result<TypedTensor<T>> {
+        typed_from_result(ops::cumprod(tensor.as_tensor(), axis))
     }
 }
 
@@ -4386,12 +6690,81 @@ impl CreateOptions {
     }
 }
 
+/// Write-time compression mode for future appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionMode {
+    /// Force uncompressed writes.
+    ForceOff,
+    /// Let the native writer choose according to the configured codec and threshold.
+    Auto,
+    /// Force the configured codec for future writes.
+    ForceOn,
+}
+
+impl CompressionMode {
+    /// Converts this safe mode to the raw C ABI mode value.
+    pub fn to_raw(self) -> sys::ArcadiaTioCompressionMode {
+        match self {
+            Self::ForceOff => sys::ARCADIA_TIO_COMPRESSION_FORCE_OFF,
+            Self::Auto => sys::ARCADIA_TIO_COMPRESSION_AUTO,
+            Self::ForceOn => sys::ARCADIA_TIO_COMPRESSION_FORCE_ON,
+        }
+    }
+
+    /// Converts a raw C ABI mode value into a safe mode.
+    pub fn from_raw(value: sys::ArcadiaTioCompressionMode) -> Result<Self> {
+        match value {
+            sys::ARCADIA_TIO_COMPRESSION_FORCE_OFF => Ok(Self::ForceOff),
+            sys::ARCADIA_TIO_COMPRESSION_AUTO => Ok(Self::Auto),
+            sys::ARCADIA_TIO_COMPRESSION_FORCE_ON => Ok(Self::ForceOn),
+            other => Err(TioError::invalid_argument(format!(
+                "unknown compression mode {other}"
+            ))),
+        }
+    }
+}
+
+/// Write-time compression codec for future appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionCodec {
+    /// Zstandard payload compression.
+    Zstd,
+}
+
+impl CompressionCodec {
+    /// Converts this safe codec to the raw C ABI codec value.
+    pub fn to_raw(self) -> sys::ArcadiaTioCompressionCodec {
+        match self {
+            Self::Zstd => sys::ARCADIA_TIO_COMPRESSION_CODEC_ZSTD,
+        }
+    }
+
+    /// Converts a raw C ABI codec value into a safe codec.
+    pub fn from_raw(value: sys::ArcadiaTioCompressionCodec) -> Result<Self> {
+        match value {
+            sys::ARCADIA_TIO_COMPRESSION_CODEC_ZSTD => Ok(Self::Zstd),
+            sys::ARCADIA_TIO_COMPRESSION_CODEC_LZ4 => Err(TioError::unimplemented(
+                "LZ4 V4 payload compression is not supported yet",
+            )),
+            other => Err(TioError::invalid_argument(format!(
+                "unknown compression codec {other}"
+            ))),
+        }
+    }
+}
+
 /// Write-time compression policy for future appends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompressionConfig {
     /// Native compression mode.
+    ///
+    /// Prefer [`CompressionMode`] builders/accessors for ordinary code. This raw
+    /// field remains public as a low-level compatibility escape hatch.
     pub mode: sys::ArcadiaTioCompressionMode,
     /// Native compression codec.
+    ///
+    /// Prefer [`CompressionCodec`] builders/accessors for ordinary code. This
+    /// raw field remains public as a low-level compatibility escape hatch.
     pub codec: sys::ArcadiaTioCompressionCodec,
     /// Auto-mode minimum raw payload bytes.
     pub min_payload_bytes: u32,
@@ -4400,57 +6773,192 @@ pub struct CompressionConfig {
 }
 
 impl CompressionConfig {
+    /// Minimum accepted zstd level.
+    pub const ZSTD_MIN_LEVEL: i32 = -7;
+    /// Maximum accepted zstd level.
+    pub const ZSTD_MAX_LEVEL: i32 = 22;
+    /// Default zstd level used by wrapper constructors.
+    pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+    /// Native default Auto/Zstd minimum raw payload threshold in bytes.
+    pub const DEFAULT_MIN_PAYLOAD_BYTES: u32 = 256;
+
     /// Explicit uncompressed writes.
     pub fn uncompressed() -> Self {
         Self {
-            mode: sys::ARCADIA_TIO_COMPRESSION_FORCE_OFF,
-            codec: sys::ARCADIA_TIO_COMPRESSION_CODEC_ZSTD,
+            mode: CompressionMode::ForceOff.to_raw(),
+            codec: CompressionCodec::Zstd.to_raw(),
             min_payload_bytes: 0,
-            zstd_level: 3,
+            zstd_level: Self::DEFAULT_ZSTD_LEVEL,
+        }
+    }
+
+    /// Native Auto/Zstd writes with the native/default threshold.
+    pub fn auto_zstd() -> Self {
+        Self::auto_zstd_min_payload(Self::DEFAULT_MIN_PAYLOAD_BYTES)
+    }
+
+    /// Native Auto/Zstd writes with an explicit minimum raw payload threshold.
+    pub fn auto_zstd_min_payload(min_payload_bytes: u32) -> Self {
+        Self {
+            mode: CompressionMode::Auto.to_raw(),
+            codec: CompressionCodec::Zstd.to_raw(),
+            min_payload_bytes,
+            zstd_level: Self::DEFAULT_ZSTD_LEVEL,
         }
     }
 
     /// Explicit zstd writes at the requested level.
+    ///
+    /// This constructor preserves the historical source-compatible behavior of
+    /// returning a config directly; call [`Self::try_zstd_level`] when the level
+    /// should be checked before the config reaches a file operation.
     pub fn zstd_level(level: i32) -> Self {
         Self {
-            mode: sys::ARCADIA_TIO_COMPRESSION_FORCE_ON,
-            codec: sys::ARCADIA_TIO_COMPRESSION_CODEC_ZSTD,
+            mode: CompressionMode::ForceOn.to_raw(),
+            codec: CompressionCodec::Zstd.to_raw(),
             min_payload_bytes: 0,
             zstd_level: level,
         }
     }
 
-    fn validate(self) -> Result<Self> {
-        if !matches!(
-            self.mode,
-            sys::ARCADIA_TIO_COMPRESSION_FORCE_OFF
-                | sys::ARCADIA_TIO_COMPRESSION_AUTO
-                | sys::ARCADIA_TIO_COMPRESSION_FORCE_ON
-        ) {
-            return Err(TioError::invalid_argument("unknown compression mode"));
-        }
-        if self.codec != sys::ARCADIA_TIO_COMPRESSION_CODEC_ZSTD {
-            return Err(TioError::unimplemented(
-                "LZ4 V4 payload compression is not supported yet",
-            ));
-        }
-        if !(-7..=22).contains(&self.zstd_level) {
-            return Err(TioError::invalid_argument(
-                "zstd_level must be within [-7, 22]",
-            ));
+    /// Explicit zstd writes with early level validation.
+    pub fn try_zstd_level(level: i32) -> Result<Self> {
+        Self::zstd_level(level).validate()
+    }
+
+    /// Returns this config with a safe compression mode.
+    pub fn with_mode(mut self, mode: CompressionMode) -> Self {
+        self.mode = mode.to_raw();
+        self
+    }
+
+    /// Returns this config with a safe compression codec.
+    pub fn with_codec(mut self, codec: CompressionCodec) -> Self {
+        self.codec = codec.to_raw();
+        self
+    }
+
+    /// Returns this config with an Auto-mode payload threshold.
+    pub fn with_min_payload_bytes(mut self, min_payload_bytes: u32) -> Self {
+        self.min_payload_bytes = min_payload_bytes;
+        self
+    }
+
+    /// Returns this config with a zstd level without changing historical late-validation behavior.
+    pub fn with_zstd_level(mut self, level: i32) -> Self {
+        self.zstd_level = level;
+        self
+    }
+
+    /// Returns this config with a zstd level, validating the resulting policy immediately.
+    pub fn try_with_zstd_level(self, level: i32) -> Result<Self> {
+        self.with_zstd_level(level).validate()
+    }
+
+    /// Returns the safe compression mode represented by the raw field.
+    pub fn mode(&self) -> Result<CompressionMode> {
+        CompressionMode::from_raw(self.mode)
+    }
+
+    /// Returns the safe compression codec represented by the raw field.
+    pub fn codec(&self) -> Result<CompressionCodec> {
+        CompressionCodec::from_raw(self.codec)
+    }
+
+    /// Validates raw compatibility fields before a native call.
+    pub fn validate(self) -> Result<Self> {
+        CompressionMode::from_raw(self.mode)?;
+        CompressionCodec::from_raw(self.codec)?;
+        if !(Self::ZSTD_MIN_LEVEL..=Self::ZSTD_MAX_LEVEL).contains(&self.zstd_level) {
+            return Err(TioError::invalid_argument(format!(
+                "zstd_level must be within [{}, {}]",
+                Self::ZSTD_MIN_LEVEL,
+                Self::ZSTD_MAX_LEVEL
+            )));
         }
         Ok(self)
     }
 
-    fn to_raw(self) -> sys::ArcadiaTioCompressionConfig {
+    /// Converts this policy to the raw C ABI config without validating raw compatibility fields.
+    pub fn to_raw(self) -> sys::ArcadiaTioCompressionConfig {
         sys::ArcadiaTioCompressionConfig {
             version: 1,
-            struct_size: std::mem::size_of::<sys::ArcadiaTioCompressionConfig>(),
+            struct_size: mem::size_of::<sys::ArcadiaTioCompressionConfig>(),
             mode: self.mode,
             codec: self.codec,
             min_payload_bytes: self.min_payload_bytes,
             zstd_level: self.zstd_level,
         }
+    }
+
+    /// Validates and converts this policy to the raw C ABI config.
+    pub fn try_to_raw(self) -> Result<sys::ArcadiaTioCompressionConfig> {
+        Ok(self.validate()?.to_raw())
+    }
+
+    /// Converts a raw C ABI compression config into a validated wrapper config.
+    pub fn from_raw(raw: sys::ArcadiaTioCompressionConfig) -> Result<Self> {
+        if raw.version != 1 {
+            return Err(TioError::invalid_argument(format!(
+                "unsupported compression config version {}",
+                raw.version
+            )));
+        }
+        let expected_size = mem::size_of::<sys::ArcadiaTioCompressionConfig>();
+        if raw.struct_size != expected_size {
+            return Err(TioError::invalid_argument(format!(
+                "compression config struct_size must be {expected_size}"
+            )));
+        }
+        Self {
+            mode: raw.mode,
+            codec: raw.codec,
+            min_payload_bytes: raw.min_payload_bytes,
+            zstd_level: raw.zstd_level,
+        }
+        .validate()
+    }
+}
+
+impl From<CompressionMode> for sys::ArcadiaTioCompressionMode {
+    fn from(value: CompressionMode) -> Self {
+        value.to_raw()
+    }
+}
+
+impl TryFrom<sys::ArcadiaTioCompressionMode> for CompressionMode {
+    type Error = TioError;
+
+    fn try_from(value: sys::ArcadiaTioCompressionMode) -> Result<Self> {
+        Self::from_raw(value)
+    }
+}
+
+impl From<CompressionCodec> for sys::ArcadiaTioCompressionCodec {
+    fn from(value: CompressionCodec) -> Self {
+        value.to_raw()
+    }
+}
+
+impl TryFrom<sys::ArcadiaTioCompressionCodec> for CompressionCodec {
+    type Error = TioError;
+
+    fn try_from(value: sys::ArcadiaTioCompressionCodec) -> Result<Self> {
+        Self::from_raw(value)
+    }
+}
+
+impl From<CompressionConfig> for sys::ArcadiaTioCompressionConfig {
+    fn from(value: CompressionConfig) -> Self {
+        value.to_raw()
+    }
+}
+
+impl TryFrom<sys::ArcadiaTioCompressionConfig> for CompressionConfig {
+    type Error = TioError;
+
+    fn try_from(value: sys::ArcadiaTioCompressionConfig) -> Result<Self> {
+        Self::from_raw(value)
     }
 }
 
@@ -13088,6 +15596,26 @@ fn coordinate_input(
 mod tests {
     use super::*;
 
+    fn assert_f32_close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (*actual - *expected).abs() <= 1.0e-6,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    fn assert_f64_close(actual: &[f64], expected: &[f64]) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (*actual - *expected).abs() <= 1.0e-12,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
+
     #[test]
     fn tensor_constructors_validate_shape_and_accessors() {
         let tensor =
@@ -13158,6 +15686,204 @@ mod tests {
     }
 
     #[test]
+    fn tensor_ops_assembly_helpers_success() {
+        let rows_a = Tensor::from_dense_f64(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).expect("rows a");
+        let rows_b = Tensor::from_dense_f64(vec![1, 2], vec![5.0, 6.0]).expect("rows b");
+        let concatenated_rows = ops::concat(&[&rows_a, &rows_b], 0).expect("concat rows");
+        assert_eq!(concatenated_rows.shape, vec![3, 2]);
+        assert_eq!(
+            concatenated_rows.data,
+            TensorData::F64(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
+
+        let cols_b = Tensor::from_dense_f64(vec![2, 1], vec![7.0, 8.0]).expect("cols b");
+        let concatenated_cols = ops::concat(&[&rows_a, &cols_b], -1).expect("concat cols");
+        assert_eq!(concatenated_cols.shape, vec![2, 3]);
+        assert_eq!(
+            concatenated_cols.data,
+            TensorData::F64(vec![1.0, 2.0, 7.0, 3.0, 4.0, 8.0])
+        );
+
+        let left = Tensor::from_dense_i32(vec![2], vec![1, 2]).expect("stack left");
+        let right = Tensor::from_dense_i32(vec![2], vec![3, 4]).expect("stack right");
+        let stacked_axis0 = ops::stack(&[&left, &right], 0).expect("stack axis 0");
+        assert_eq!(stacked_axis0.shape, vec![2, 2]);
+        assert_eq!(stacked_axis0.data, TensorData::I32(vec![1, 2, 3, 4]));
+        let stacked_last = ops::stack(&[&left, &right], -1).expect("stack last axis");
+        assert_eq!(stacked_last.shape, vec![2, 2]);
+        assert_eq!(stacked_last.data, TensorData::I32(vec![1, 3, 2, 4]));
+
+        let split_input = Tensor::from_dense_f32(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .expect("split input");
+        let split = ops::split(&split_input, -1, &[1, 2]).expect("split last axis");
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].shape, vec![2, 1]);
+        assert_eq!(split[0].data, TensorData::F32(vec![1.0, 4.0]));
+        assert_eq!(split[1].shape, vec![2, 2]);
+        assert_eq!(split[1].data, TensorData::F32(vec![2.0, 3.0, 5.0, 6.0]));
+
+        let unstacked = ops::unstack(&rows_a, -1).expect("unstack last axis");
+        assert_eq!(unstacked.len(), 2);
+        assert_eq!(unstacked[0].shape, vec![2]);
+        assert_eq!(unstacked[0].data, TensorData::F64(vec![1.0, 3.0]));
+        assert_eq!(unstacked[1].shape, vec![2]);
+        assert_eq!(unstacked[1].data, TensorData::F64(vec![2.0, 4.0]));
+
+        let repeated = ops::repeat(&split_input, -1, 2).expect("repeat last axis");
+        assert_eq!(repeated.shape, vec![2, 6]);
+        assert_eq!(
+            repeated.data,
+            TensorData::F32(vec![
+                1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 5.0, 6.0, 6.0
+            ])
+        );
+
+        let tiled = ops::tile(
+            &Tensor::from_dense_i64(vec![2, 1], vec![5, 6]).expect("tile input"),
+            &[1, 3],
+        )
+        .expect("tile cols");
+        assert_eq!(tiled.shape, vec![2, 3]);
+        assert_eq!(tiled.data, TensorData::I64(vec![5, 5, 5, 6, 6, 6]));
+
+        let reorder =
+            Tensor::from_dense_i32(vec![2, 3], vec![1, 2, 3, 4, 5, 6]).expect("reorder input");
+        let flipped = ops::flip(&reorder, -1).expect("flip last axis");
+        assert_eq!(flipped.shape, vec![2, 3]);
+        assert_eq!(flipped.data, TensorData::I32(vec![3, 2, 1, 6, 5, 4]));
+        let rolled = ops::roll(&reorder, 1, 1).expect("roll axis 1");
+        assert_eq!(rolled.shape, vec![2, 3]);
+        assert_eq!(rolled.data, TensorData::I32(vec![3, 1, 2, 6, 4, 5]));
+    }
+
+    #[test]
+    fn tensor_ops_assembly_validation_failures_are_reported() {
+        let f32_tensor = Tensor::from_dense_f32(vec![2], vec![1.0, 2.0]).expect("f32 tensor");
+        let f64_tensor = Tensor::from_dense_f64(vec![2], vec![1.0, 2.0]).expect("f64 tensor");
+        let rank2 = Tensor::from_dense_f32(vec![1, 2], vec![1.0, 2.0]).expect("rank-2 tensor");
+        let mismatched_cols =
+            Tensor::from_dense_f32(vec![1, 3], vec![1.0, 2.0, 3.0]).expect("cols mismatch");
+
+        assert_eq!(
+            ops::concat(&[], 0)
+                .expect_err("empty concat rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::stack(&[], 0).expect_err("empty stack rejects").code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::concat(&[&f32_tensor, &f64_tensor], 0)
+                .expect_err("concat dtype mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::concat(&[&f32_tensor, &rank2], 0)
+                .expect_err("concat rank mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::concat(&[&rank2, &mismatched_cols], 0)
+                .expect_err("concat shape mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::stack(&[&f32_tensor, &f64_tensor], 0)
+                .expect_err("stack dtype mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::stack(&[&rank2, &mismatched_cols], 0)
+                .expect_err("stack shape mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::split(&rank2, 1, &[])
+                .expect_err("empty split sections reject")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::split(&rank2, -1, &[1])
+                .expect_err("split section sum mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::unstack(&f32_tensor, 0)
+                .expect_err("rank-1 unstack rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::repeat(&f32_tensor, 1, 2)
+                .expect_err("repeat axis out of bounds rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::tile(&rank2, &[2])
+                .expect_err("tile reps rank mismatch rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::flip(&rank2, -3)
+                .expect_err("flip axis out of bounds rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::roll(&rank2, 2, 1)
+                .expect_err("roll axis out of bounds rejects")
+                .code(),
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn tensor_ops_assembly_empty_and_huge_outputs_return_errors() {
+        let tensor = Tensor::from_dense_i32(vec![2, 2], vec![1, 2, 3, 4]).expect("tensor");
+        let repeated_zero = ops::repeat(&tensor, 0, 0).expect("zero repeat");
+        assert_eq!(repeated_zero.shape, vec![0, 2]);
+        assert_eq!(repeated_zero.data, TensorData::I32(Vec::new()));
+
+        let tiled_zero = ops::tile(&tensor, &[2, 0]).expect("zero tile");
+        assert_eq!(tiled_zero.shape, vec![4, 0]);
+        assert_eq!(tiled_zero.data, TensorData::I32(Vec::new()));
+
+        let empty = Tensor::from_dense_i64(vec![0, 2], Vec::new()).expect("empty tensor");
+        let flipped_empty = ops::flip(&empty, 0).expect("flip empty axis");
+        assert_eq!(flipped_empty.shape, vec![0, 2]);
+        assert_eq!(flipped_empty.data, TensorData::I64(Vec::new()));
+        let rolled_empty = ops::roll(&empty, -1, -3).expect("roll empty tensor");
+        assert_eq!(rolled_empty.shape, vec![0, 2]);
+        assert_eq!(rolled_empty.data, TensorData::I64(Vec::new()));
+
+        let split_empty = ops::split(&empty, 0, &[0]).expect("split empty axis");
+        assert_eq!(split_empty.len(), 1);
+        assert_eq!(split_empty[0].shape, vec![0, 2]);
+        assert_eq!(split_empty[0].data, TensorData::I64(Vec::new()));
+        let unstack_empty = ops::unstack(&empty, 0).expect("unstack empty axis");
+        assert!(unstack_empty.is_empty());
+
+        let scalar_like = Tensor::from_dense_i32(vec![1], vec![7]).expect("scalar-like tensor");
+        let err = ops::repeat(&scalar_like, 0, usize::MAX)
+            .expect_err("huge repeat should not allocate or panic");
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        let err = ops::tile(&scalar_like, &[usize::MAX])
+            .expect_err("huge tile should not allocate or panic");
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
     fn tensor_ops_math_and_reductions_cover_public_dtypes() {
         let lhs =
             Tensor::from_dense_f64(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).expect("lhs");
@@ -13207,6 +15933,198 @@ mod tests {
         let all_axis_min = ops::min(&floats, None, true).expect("all-axis keepdims min");
         assert_eq!(all_axis_min.shape, vec![1, 1]);
         assert_eq!(all_axis_min.data, TensorData::F32(vec![1.0]));
+    }
+
+    #[test]
+    fn tensor_ops_arg_and_cumulative_reductions_cover_public_dtypes() {
+        let floats = Tensor::from_dense_f32(vec![2, 3], vec![3.0, 1.0, 2.0, 6.0, 5.0, 4.0])
+            .expect("f32 tensor");
+        let argmin_rows = ops::argmin(&floats, Some(&[1]), false).expect("argmin rows");
+        assert_eq!(argmin_rows.dtype, DType::I64);
+        assert_eq!(argmin_rows.shape, vec![2]);
+        assert_eq!(argmin_rows.data, TensorData::I64(vec![1, 2]));
+        let argmax_rows_keep = ops::argmax(&floats, Some(&[-1]), true).expect("argmax rows");
+        assert_eq!(argmax_rows_keep.shape, vec![2, 1]);
+        assert_eq!(argmax_rows_keep.data, TensorData::I64(vec![0, 0]));
+        let argmin_all = ops::argmin(&floats, None, true).expect("argmin all axes");
+        assert_eq!(argmin_all.shape, vec![1, 1]);
+        assert_eq!(argmin_all.data, TensorData::I64(vec![1]));
+        let argmax_empty_axes = ops::argmax(&floats, Some(&[]), false).expect("argmax no axes");
+        assert_eq!(argmax_empty_axes.shape, vec![2, 3]);
+        assert_eq!(argmax_empty_axes.data, TensorData::I64(vec![0; 6]));
+
+        let f64_values =
+            Tensor::from_dense_f64(vec![2, 2], vec![1.0, 4.0, 3.0, 2.0]).expect("f64 tensor");
+        assert_eq!(
+            ops::argmax(&f64_values, Some(&[0]), false)
+                .expect("f64 argmax")
+                .data,
+            TensorData::I64(vec![1, 0])
+        );
+        let i32_values =
+            Tensor::from_dense_i32(vec![2, 3], vec![3, 1, 2, 6, 5, 4]).expect("i32 tensor");
+        assert_eq!(
+            ops::argmin(&i32_values, Some(&[1]), false)
+                .expect("i32 argmin")
+                .data,
+            TensorData::I64(vec![1, 2])
+        );
+        let i64_values = Tensor::from_dense_i64(vec![2, 2], vec![9, 7, 8, 6]).expect("i64 tensor");
+        assert_eq!(
+            ops::argmax(&i64_values, Some(&[0]), true)
+                .expect("i64 argmax")
+                .data,
+            TensorData::I64(vec![0, 0])
+        );
+
+        let cumsum_f32 = ops::cumsum(&floats, Some(-1)).expect("f32 cumsum");
+        assert_eq!(cumsum_f32.shape, vec![2, 3]);
+        assert_eq!(
+            cumsum_f32.data,
+            TensorData::F32(vec![3.0, 4.0, 6.0, 6.0, 11.0, 15.0])
+        );
+        let cumsum_f64 = ops::cumsum(&f64_values, None).expect("f64 flat cumsum");
+        assert_eq!(cumsum_f64.shape, vec![4]);
+        assert_eq!(cumsum_f64.data, TensorData::F64(vec![1.0, 5.0, 8.0, 10.0]));
+        let cumprod_i32 = ops::cumprod(&i32_values, Some(1)).expect("i32 cumprod");
+        assert_eq!(cumprod_i32.data, TensorData::I32(vec![3, 3, 6, 6, 30, 120]));
+        let cumsum_i64 = ops::cumsum(&i64_values, None).expect("i64 flat cumsum");
+        assert_eq!(cumsum_i64.shape, vec![4]);
+        assert_eq!(cumsum_i64.data, TensorData::I64(vec![9, 16, 24, 30]));
+    }
+
+    #[test]
+    fn tensor_ops_var_std_cover_dtype_promotion_and_keepdims() {
+        let f32_tensor = Tensor::from_dense_f32(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .expect("f32 tensor");
+        let f32_var = ops::var(&f32_tensor, Some(&[1]), false).expect("f32 var");
+        assert_eq!(f32_var.dtype, DType::F32);
+        assert_eq!(f32_var.shape, vec![2]);
+        match f32_var.data {
+            TensorData::F32(values) => assert_f32_close(&values, &[2.0 / 3.0, 2.0 / 3.0]),
+            other => panic!("unexpected payload {other:?}"),
+        }
+        let f32_std = ops::std(&f32_tensor, Some(&[1]), true).expect("f32 std keepdims");
+        assert_eq!(f32_std.shape, vec![2, 1]);
+        match f32_std.data {
+            TensorData::F32(values) => {
+                let expected = (2.0_f32 / 3.0).sqrt();
+                assert_f32_close(&values, &[expected, expected]);
+            }
+            other => panic!("unexpected payload {other:?}"),
+        }
+
+        let f64_var = ops::var(
+            &Tensor::from_dense_f64(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+                .expect("f64 tensor"),
+            Some(&[0]),
+            true,
+        )
+        .expect("f64 var keepdims");
+        assert_eq!(f64_var.dtype, DType::F64);
+        assert_eq!(f64_var.shape, vec![1, 3]);
+        match f64_var.data {
+            TensorData::F64(values) => assert_f64_close(&values, &[2.25, 2.25, 2.25]),
+            other => panic!("unexpected payload {other:?}"),
+        }
+
+        let i32_var = ops::var(
+            &Tensor::from_dense_i32(vec![2, 2], vec![1, 2, 3, 4]).expect("i32 tensor"),
+            Some(&[0]),
+            false,
+        )
+        .expect("i32 var promotes");
+        assert_eq!(i32_var.dtype, DType::F64);
+        assert_eq!(i32_var.shape, vec![2]);
+        assert_eq!(i32_var.data, TensorData::F64(vec![1.0, 1.0]));
+
+        let i64_std_empty_axes = ops::std(
+            &Tensor::from_dense_i64(vec![2, 2], vec![1, 2, 3, 4]).expect("i64 tensor"),
+            Some(&[]),
+            false,
+        )
+        .expect("i64 std over no axes");
+        assert_eq!(i64_std_empty_axes.dtype, DType::F64);
+        assert_eq!(i64_std_empty_axes.shape, vec![2, 2]);
+        assert_eq!(i64_std_empty_axes.data, TensorData::F64(vec![0.0; 4]));
+    }
+
+    #[test]
+    fn tensor_ops_reduction_edge_cases_and_nan_policy_are_explicit() {
+        let nan_tensor = Tensor::from_dense_f32(vec![2, 2], vec![f32::NAN, 1.0, 2.0, f32::NAN])
+            .expect("nan tensor");
+        match ops::min(&nan_tensor, Some(&[1]), false)
+            .expect("nan min")
+            .data
+        {
+            TensorData::F32(values) => {
+                assert!(values[0].is_nan());
+                assert_eq!(values[1], 2.0);
+            }
+            other => panic!("unexpected payload {other:?}"),
+        }
+        assert_eq!(
+            ops::argmin(&nan_tensor, Some(&[1]), false)
+                .expect("nan argmin")
+                .data,
+            TensorData::I64(vec![0, 0])
+        );
+        assert_eq!(
+            ops::argmax(&nan_tensor, Some(&[1]), false)
+                .expect("nan argmax")
+                .data,
+            TensorData::I64(vec![0, 0])
+        );
+
+        let empty = Tensor::from_dense_i32(vec![0, 3], Vec::new()).expect("empty tensor");
+        assert!(ops::argmin(&empty, Some(&[0]), false).is_err());
+        assert!(ops::var(&empty, Some(&[0]), false).is_err());
+        let empty_cumsum = ops::cumsum(&empty, Some(1)).expect("empty cumsum");
+        assert_eq!(empty_cumsum.shape, vec![0, 3]);
+        assert_eq!(empty_cumsum.data, TensorData::I32(Vec::new()));
+        let zero_output_empty =
+            Tensor::from_dense_i32(vec![0, 0], Vec::new()).expect("zero-output empty tensor");
+        let empty_var = ops::var(&zero_output_empty, Some(&[0]), false)
+            .expect("zero-output variance should not require a value");
+        assert_eq!(empty_var.shape, vec![0]);
+        assert_eq!(empty_var.data, TensorData::F64(Vec::new()));
+        let empty_std = ops::std(&zero_output_empty, Some(&[0]), false)
+            .expect("zero-output std should not require a value");
+        assert_eq!(empty_std.shape, vec![0]);
+        assert_eq!(empty_std.data, TensorData::F64(Vec::new()));
+
+        let f32_tensor = Tensor::from_dense_f32(vec![2], vec![1.0, 2.0]).expect("f32 tensor");
+        assert!(ops::argmax(&f32_tensor, Some(&[0, 0]), true).is_err());
+        assert!(ops::argmin(&f32_tensor, None, false).is_err());
+        assert!(ops::std(&f32_tensor, None, false).is_err());
+        assert!(ops::cumsum(&f32_tensor, Some(1)).is_err());
+        assert_eq!(
+            ops::cumsum(
+                &Tensor::from_dense_i32(vec![2], vec![i32::MAX, 1]).expect("i32 overflow"),
+                None,
+            )
+            .expect_err("cumsum overflow rejects")
+            .code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ops::cumprod(
+                &Tensor::from_dense_i64(vec![2], vec![i64::MAX, 2]).expect("i64 overflow"),
+                None,
+            )
+            .expect_err("cumprod overflow rejects")
+            .code(),
+            ErrorCode::InvalidArgument
+        );
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            let empty_wide = Tensor::from_dense_i32(vec![0, u64::MAX], Vec::new())
+                .expect("zero-element huge-shape tensor");
+            let err = ops::argmax(&empty_wide, Some(&[0]), false)
+                .expect_err("huge arg output should not allocate or panic");
+            assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        }
     }
 
     #[test]
@@ -13302,6 +16220,27 @@ mod tests {
             Err(err) => err,
         };
         assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn unsupported_raw_compression_codec_rejects_before_native_create() {
+        let mut options =
+            CreateOptions::streaming(DType::F64, vec![DimSpec::new(AxisKind::Time, 0)], 0);
+        options.compression = Some(CompressionConfig {
+            mode: sys::ARCADIA_TIO_COMPRESSION_FORCE_ON,
+            codec: sys::ARCADIA_TIO_COMPRESSION_CODEC_LZ4,
+            min_payload_bytes: 0,
+            zstd_level: 3,
+        });
+        let path =
+            std::env::temp_dir().join("arcadia_tio_wrapper_unsupported_compression_codec.tio");
+        let _ = std::fs::remove_file(&path);
+        let err = match TensorFile::create(&path, options) {
+            Ok(_) => panic!("unsupported codec unexpectedly succeeded"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code(), ErrorCode::Unimplemented);
         assert!(!path.exists());
     }
 

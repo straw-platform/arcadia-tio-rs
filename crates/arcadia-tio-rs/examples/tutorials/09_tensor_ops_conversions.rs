@@ -1,14 +1,15 @@
 //! Public Rust owned tensor operations and optional conversion tutorial.
 //!
 //! This example uses the safe `arcadia-tio-rs` wrapper's Rust-owned `Tensor`
-//! values. The tensor-operation helpers and optional Arrow/ndarray conversions
-//! copy data into new owned values; this is API shape and interoperability
-//! coverage only, not performance, storage, or zero-copy evidence.
+//! and `TypedTensor<T>` values. The tensor-operation helpers and optional
+//! Arrow/ndarray/CSV/Parquet conversions copy data into new owned values; this
+//! is API shape and interoperability coverage only, not performance, native
+//! storage-format, or zero-copy evidence.
 //!
 //! Run with the non-default conversion features enabled, for example:
 //!
 //! ```sh
-//! cargo run --features arrow,ndarray --example tutorial_09_tensor_ops_conversions
+//! cargo run --features arrow,ndarray,csv,parquet --example tutorial_09_tensor_ops_conversions
 //! ```
 
 use std::fs;
@@ -16,22 +17,25 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arcadia_tio_rs::{Tensor, TensorData, ops};
+use arcadia_tio_rs::{DType, Tensor, TensorData, TensorF64, TensorI32, ops, typed_ops};
 use ndarray::IxDyn;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Step 1: create an isolated temporary workspace for the Arrow IPC payload.
+    // Step 1: create an isolated temporary workspace for generated companion payloads.
     let temp = TutorialTempDir::new("tensor_ops_conversions")?;
     let ipc_path = temp.path().join("owned_tensor.arrow");
+    let parquet_path = temp.path().join("owned_tensor.parquet");
 
     // Step 2: start from a tiny deterministic Rust-owned dense tensor.
     let tensor = Tensor::from_dense_f64(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])?;
 
     demonstrate_tensor_ops(&tensor)?;
+    demonstrate_typed_wrappers(&tensor)?;
     demonstrate_arrow_and_ndarray_conversions(&tensor, &ipc_path)?;
+    demonstrate_csv_and_parquet_conversions(&tensor, &parquet_path)?;
 
     println!(
-        "tensor ops/conversions ok: temporary IPC payload written under {}",
+        "tensor ops/conversions ok: temporary companion payloads written under {}",
         temp.path().display()
     );
     Ok(())
@@ -61,6 +65,19 @@ fn demonstrate_tensor_ops(tensor: &Tensor) -> arcadia_tio_rs::Result<()> {
         TensorData::F64(vec![1.0, 3.0, 4.0, 6.0])
     );
 
+    // Assembly and reordering helpers validate shape/dtype compatibility before copying.
+    let split_rows = ops::split(tensor, 0, &[1, 1])?;
+    assert_eq!(split_rows.len(), 2);
+    let rejoined = ops::concat(&[&split_rows[0], &split_rows[1]], 0)?;
+    assert_eq!(rejoined, *tensor);
+
+    let rolled_columns = ops::roll(tensor, 1, 1)?;
+    assert_eq!(rolled_columns.shape, vec![2, 3]);
+    assert_eq!(
+        rolled_columns.data,
+        TensorData::F64(vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0])
+    );
+
     // Math helpers validate dtype/shape consistency and materialize new tensors.
     let shifted = ops::add_scalar(tensor, 10.0_f64)?;
     assert_eq!(shifted.values_f64()?, &[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]);
@@ -73,10 +90,53 @@ fn demonstrate_tensor_ops(tensor: &Tensor) -> arcadia_tio_rs::Result<()> {
         TensorData::F64(vec![101.0, 202.0, 303.0, 104.0, 205.0, 306.0])
     );
 
-    // Reductions keep the requested public dtype where the result can represent it.
+    // Reductions return owned tensors with explicit dtype behavior.
     let row_sums = ops::sum(tensor, Some(&[1]), false)?;
     assert_eq!(row_sums.shape, vec![2]);
     assert_eq!(row_sums.data, TensorData::F64(vec![6.0, 15.0]));
+
+    let row_argmax = ops::argmax(tensor, Some(&[1]), false)?;
+    assert_eq!(row_argmax.data, TensorData::I64(vec![2, 2]));
+
+    let cumulative = ops::cumsum(tensor, Some(-1))?;
+    assert_eq!(
+        cumulative.data,
+        TensorData::F64(vec![1.0, 3.0, 6.0, 4.0, 9.0, 15.0])
+    );
+
+    let row_var = ops::var(tensor, Some(&[1]), false)?;
+    assert_eq!(row_var.data, TensorData::F64(vec![2.0 / 3.0, 2.0 / 3.0]));
+
+    Ok(())
+}
+
+fn demonstrate_typed_wrappers(tensor: &Tensor) -> arcadia_tio_rs::Result<()> {
+    // Typed wrappers enforce the expected dtype over the same owned public Tensor model.
+    let typed = TensorF64::try_from(tensor.clone())?;
+    assert_eq!(typed.dtype(), DType::F64);
+    assert_eq!(typed.shape(), &[2, 3]);
+    assert_eq!(typed.values()?, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+    let typed_shifted = typed_ops::add_scalar(&typed, 0.5)?;
+    assert_eq!(typed_shifted.values()?, &[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+
+    let typed_row_sums = typed_ops::sum(&typed, Some(&[1]), false)?;
+    assert_eq!(typed_row_sums.values()?, &[6.0, 15.0]);
+
+    let typed_argmax = typed_ops::argmax(&typed, Some(&[1]), false)?;
+    assert_eq!(typed_argmax.values()?, &[2, 2]);
+
+    let pieces = typed_ops::split(&typed, 0, &[1, 1])?;
+    let stacked = typed_ops::stack(&[&pieces[0], &pieces[1]], 0)?;
+    assert_eq!(stacked.shape(), &[2, 1, 3]);
+
+    let raw: Tensor = typed_row_sums.clone().into();
+    let rebuilt = TensorF64::try_from(raw)?;
+    assert_eq!(rebuilt, typed_row_sums);
+
+    let ints = TensorI32::from_dense(vec![2, 2], vec![1, 2, 3, 4])?;
+    let cumulative = typed_ops::cumsum(&ints, Some(1))?;
+    assert_eq!(cumulative.values()?, &[1, 3, 3, 7]);
 
     Ok(())
 }
@@ -120,6 +180,30 @@ fn demonstrate_arrow_and_ndarray_conversions(
         from_array.data,
         TensorData::F64(vec![10.0, 20.0, 30.0, 40.0])
     );
+
+    Ok(())
+}
+
+fn demonstrate_csv_and_parquet_conversions(
+    tensor: &Tensor,
+    parquet_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // CSV is a UTF-8 companion layout with dtype, shape, row-major order, and flat indices.
+    let csv_text = tensor.to_csv_string()?;
+    assert!(
+        csv_text
+            .starts_with("record,dtype,shape,order,flat_index,value\nmetadata,f64,2x3,row-major,,")
+    );
+    assert_eq!(Tensor::from_csv_str(&csv_text)?, *tensor);
+    assert_eq!(Tensor::from_csv_bytes(&tensor.to_csv_bytes()?)?, *tensor);
+
+    // Parquet uses a companion two-column flat-index/value schema plus tensor metadata.
+    let parquet_bytes = tensor.to_parquet_bytes()?;
+    assert!(!parquet_bytes.is_empty());
+    assert_eq!(Tensor::from_parquet_bytes(&parquet_bytes)?, *tensor);
+
+    tensor.to_parquet_file(parquet_path)?;
+    assert_eq!(Tensor::from_parquet_file(parquet_path)?, *tensor);
 
     Ok(())
 }
