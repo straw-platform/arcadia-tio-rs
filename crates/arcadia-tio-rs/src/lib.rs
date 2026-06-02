@@ -1328,7 +1328,11 @@ pub mod ops {
         binary_op(lhs, rhs, BinaryOp::Div)
     }
 
-    /// Sum values across selected axes. `axes = None` reduces all axes.
+    /// Sum values across selected axes.
+    ///
+    /// `axes = None` selects all axes. Because public [`Tensor`] values always have rank >= 1,
+    /// all-axis reductions must use `keepdims = true`; otherwise the operation would produce an
+    /// unsupported rank-0 scalar and returns an error.
     pub fn sum(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
         let shape = validated_shape(tensor)?;
         let plan = ReductionPlan::new(&shape, axes, keepdims)?;
@@ -1363,6 +1367,9 @@ pub mod ops {
     }
 
     /// Mean values across selected axes. Integer means return an `f64` tensor.
+    ///
+    /// `axes = None` selects all axes. Because public [`Tensor`] values always have rank >= 1,
+    /// all-axis reductions must use `keepdims = true`.
     pub fn mean(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
         let shape = validated_shape(tensor)?;
         let plan = ReductionPlan::new(&shape, axes, keepdims)?;
@@ -1409,6 +1416,9 @@ pub mod ops {
     }
 
     /// Minimum values across selected axes.
+    ///
+    /// `axes = None` selects all axes. Because public [`Tensor`] values always have rank >= 1,
+    /// all-axis reductions must use `keepdims = true`.
     pub fn min(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
         let shape = validated_shape(tensor)?;
         let plan = ReductionPlan::new(&shape, axes, keepdims)?;
@@ -1431,6 +1441,9 @@ pub mod ops {
     }
 
     /// Maximum values across selected axes.
+    ///
+    /// `axes = None` selects all axes. Because public [`Tensor`] values always have rank >= 1,
+    /// all-axis reductions must use `keepdims = true`.
     pub fn max(tensor: &Tensor, axes: Option<&[isize]>, keepdims: bool) -> Result<Tensor> {
         let shape = validated_shape(tensor)?;
         let plan = ReductionPlan::new(&shape, axes, keepdims)?;
@@ -1686,6 +1699,24 @@ pub mod ops {
         Ok(out)
     }
 
+    fn fallible_vec_with_capacity<T>(len: usize, context: &'static str) -> Result<Vec<T>> {
+        let mut out = Vec::new();
+        out.try_reserve(len).map_err(|err| {
+            TioError::invalid_argument(format!("{context} allocation failed: {err}"))
+        })?;
+        Ok(out)
+    }
+
+    fn fallible_filled_vec<T: Clone>(
+        len: usize,
+        value: T,
+        context: &'static str,
+    ) -> Result<Vec<T>> {
+        let mut out = fallible_vec_with_capacity(len, context)?;
+        out.resize(len, value);
+        Ok(out)
+    }
+
     fn linear_from_indices(indices: &[usize], strides: &[usize], shape: &[usize]) -> Result<usize> {
         if indices.len() != strides.len() || indices.len() != shape.len() {
             return Err(TioError::invalid_argument("indices rank mismatch"));
@@ -1723,7 +1754,7 @@ pub mod ops {
     ) -> Result<Vec<T>> {
         let out_elems = shape_product_usize(out_shape)?;
         let in_strides = row_major_strides(input_shape)?;
-        let mut out = Vec::with_capacity(out_elems);
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor permutation")?;
         let mut out_indices = vec![0usize; out_shape.len()];
         let mut in_indices = vec![0usize; input_shape.len()];
         for _ in 0..out_elems {
@@ -1752,7 +1783,7 @@ pub mod ops {
             .len()
             .checked_sub(input_shape.len())
             .ok_or_else(|| TioError::invalid_argument("broadcast rank mismatch"))?;
-        let mut out = Vec::with_capacity(out_elems);
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor broadcast")?;
         let mut out_indices = vec![0usize; out_shape.len()];
         for _ in 0..out_elems {
             let mut in_indices = vec![0usize; input_shape.len()];
@@ -1827,7 +1858,7 @@ pub mod ops {
     ) -> Result<Vec<T>> {
         let out_elems = shape_product_usize(out_shape)?;
         let in_strides = row_major_strides(input_shape)?;
-        let mut out = Vec::with_capacity(out_elems);
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor take")?;
         let mut out_indices = vec![0usize; out_shape.len()];
         for _ in 0..out_elems {
             let mut in_indices = out_indices.clone();
@@ -1845,6 +1876,9 @@ pub mod ops {
     }
 
     fn strided_indices(len: usize, start: isize, end: isize, step: isize) -> Result<Vec<usize>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
         let len =
             isize::try_from(len).map_err(|_| TioError::invalid_argument("axis length overflow"))?;
         let mut out = Vec::new();
@@ -2094,7 +2128,7 @@ pub mod ops {
             .len()
             .checked_sub(rhs_shape.len())
             .ok_or_else(|| TioError::invalid_argument("broadcast rank mismatch"))?;
-        let mut out = Vec::with_capacity(out_elems);
+        let mut out = fallible_vec_with_capacity(out_elems, "tensor binary operation")?;
         let mut out_indices = vec![0usize; out_shape.len()];
         for _ in 0..out_elems {
             let lhs_linear =
@@ -2146,7 +2180,7 @@ pub mod ops {
     where
         F: FnMut(T, T) -> Result<T>,
     {
-        let mut out = vec![zero; plan.out_elems];
+        let mut out = fallible_filled_vec(plan.out_elems, zero, "tensor reduction")?;
         let mut in_indices = vec![0usize; shape.len()];
         for &value in values {
             let out_index = plan.out_index(&in_indices)?;
@@ -2166,7 +2200,7 @@ pub mod ops {
     where
         F: FnMut(O, I) -> Result<O>,
     {
-        let mut out = vec![zero; plan.out_elems];
+        let mut out = fallible_filled_vec(plan.out_elems, zero, "tensor reduction")?;
         let mut in_indices = vec![0usize; shape.len()];
         for &value in values {
             let out_index = plan.out_index(&in_indices)?;
@@ -2185,7 +2219,7 @@ pub mod ops {
         if plan.reduced_elems == 0 && plan.out_elems > 0 {
             return Err(TioError::invalid_argument("cannot reduce an empty axis"));
         }
-        let mut out = vec![None; plan.out_elems];
+        let mut out = fallible_filled_vec(plan.out_elems, None, "tensor reduction")?;
         let mut in_indices = vec![0usize; shape.len()];
         for &value in values {
             let out_index = plan.out_index(&in_indices)?;
@@ -13165,6 +13199,14 @@ mod tests {
             ops::max(&floats, Some(&[0]), false).expect("f32 max").data,
             TensorData::F32(vec![4.0, 2.0])
         );
+
+        let all_axis_sum = ops::sum(&ints, None, true).expect("all-axis keepdims sum");
+        assert_eq!(all_axis_sum.shape, vec![1, 1]);
+        assert_eq!(all_axis_sum.data, TensorData::I64(vec![21]));
+
+        let all_axis_min = ops::min(&floats, None, true).expect("all-axis keepdims min");
+        assert_eq!(all_axis_min.shape, vec![1, 1]);
+        assert_eq!(all_axis_min.data, TensorData::F32(vec![1.0]));
     }
 
     #[test]
@@ -13202,6 +13244,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn tensor_ops_huge_materializations_return_errors() {
+        let scalar = Tensor::from_dense_i32(vec![1], vec![7]).expect("scalar-like tensor");
+        let err = ops::broadcast_to(&scalar, vec![u64::MAX])
+            .expect_err("huge broadcast should not allocate or panic");
+        assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            let empty_wide = Tensor::from_dense_i32(vec![0, u64::MAX], Vec::new())
+                .expect("zero-element huge-shape tensor");
+            let err = ops::sum(&empty_wide, Some(&[0]), false)
+                .expect_err("huge reduction output should not allocate or panic");
+            assert_eq!(err.code(), ErrorCode::InvalidArgument);
+        }
+    }
+
+    #[test]
+    fn tensor_ops_empty_axis_stepped_slice_is_empty() {
+        let empty = Tensor::from_dense_i32(vec![0], Vec::new()).expect("empty tensor");
+        let sliced = ops::slice_axis_step(&empty, 0, 10, -10, -1)
+            .expect("empty stepped slice should stay empty");
+        assert_eq!(sliced.shape, vec![0]);
+        assert_eq!(sliced.data, TensorData::I32(Vec::new()));
     }
 
     #[test]

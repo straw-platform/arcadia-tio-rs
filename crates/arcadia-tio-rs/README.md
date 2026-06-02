@@ -132,12 +132,14 @@ assert_eq!(row_sums.data, TensorData::F64(vec![6.0, 15.0]));
 ```
 
 These helpers validate dtype/shape/payload consistency before operating and
-materialize new owned row-major tensors. They do not propagate dense validity
-masks, null bitmaps, Arrow arrays, borrowed native buffers, or private view
-semantics. Binary operations require exact dtype matching; integer arithmetic is
-checked; integer division by zero returns an error; and integer `mean` returns an
-`f64` tensor because fractional results cannot be represented in the original
-integer dtype.
+materialize new owned row-major tensors with fallible allocation checks for large
+outputs. They do not propagate dense validity masks, null bitmaps, Arrow arrays,
+borrowed native buffers, or private view semantics. Binary operations require
+exact dtype matching; integer arithmetic is checked; integer division by zero
+returns an error; integer `mean` returns an `f64` tensor because fractional
+results cannot be represented in the original integer dtype; and all-axis
+reductions must use `keepdims = true` because public `Tensor` does not represent
+rank-0 scalar outputs.
 
 ## Optional Arrow and ndarray conversion features
 
@@ -150,9 +152,12 @@ arcadia-tio-rs = { path = "crates/arcadia-tio-rs", features = ["arrow", "ndarray
 ```
 
 The `arrow` feature converts owned dense `Tensor` values to a companion Arrow
-`RecordBatch` layout or Arrow IPC file bytes and back. This is separate from
-`TensorFile::read_values_arrow()`, which exports native Arrow C Data pointers
-with RAII release callbacks tied to the returned owner.
+`RecordBatch` layout or Arrow IPC file bytes and back. The companion layout uses
+one `time_id` column plus one positive-width fixed-size-list `values` column, so
+zero-sized inner dimensions such as shape `[N, 0]` are rejected instead of being
+encoded. This is separate from `TensorFile::read_values_arrow()`, which exports
+native Arrow C Data pointers with RAII release callbacks tied to the returned
+owner.
 
 ```rust,no_run
 # use arcadia_tio_rs::{Tensor, TensorData};

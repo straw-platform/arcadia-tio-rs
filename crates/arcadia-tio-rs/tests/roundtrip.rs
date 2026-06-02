@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(any(feature = "arrow", feature = "ndarray"))]
+use arcadia_tio_rs::Tensor;
 use arcadia_tio_rs::{
     AppendCoordinateBatch, AppendCoordinateEntry, AppendWithUniverseOptions, AutoCompactionConfig,
     AxisCoordinateInput, AxisIdentityInput, AxisKind, CompactionMode, CompactionOptions,
@@ -18,7 +20,7 @@ use arcadia_tio_rs::{
     HistoricalReadWithShapePolicyOptions, QueryTraceContext, ReadIndexItem, ReadIndexLoweringKind,
     ReadShapePolicy, ReadWithOptions, ReadWithShapePolicyOptions, ReformOptions,
     SlotUniverseBindings, SparseAppendOutcome, SparseAppendReason, SparseRule,
-    SparseValuePredicate, StorageAccessKind, Tensor, TensorData, TensorFile, UniverseBinding,
+    SparseValuePredicate, StorageAccessKind, TensorData, TensorFile, UniverseBinding,
     V4CompactionAnalysisPolicy, V4PreciseAccountingField, V4PreciseAccountingOptions,
     V4ReportStatus, V4RetainedHistoryCompactionOptions,
 };
@@ -1419,6 +1421,16 @@ fn tensor_arrow_record_batch_rejects_shape_metadata_mismatch() {
     .expect("valid record batch with intentionally mismatched metadata");
 
     let err = Tensor::from_arrow_record_batch(&batch).expect_err("metadata mismatch rejects");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+}
+
+#[cfg(feature = "arrow")]
+#[test]
+fn tensor_arrow_record_batch_rejects_zero_width_inner_shape() {
+    let tensor = Tensor::from_dense_f32(vec![2, 0], Vec::new()).expect("zero-width tensor");
+    let err = tensor
+        .to_arrow_record_batch()
+        .expect_err("Arrow FixedSizeList companion layout requires positive row width");
     assert_eq!(err.code(), ErrorCode::InvalidArgument);
 }
 
