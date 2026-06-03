@@ -124,6 +124,10 @@ cargo run -p arcadia-tio-rs --features arrow,ndarray,csv,parquet --example tutor
 cargo make test-csv-parquet
 ```
 
+`cargo make native-info` validates that an expected local native library file is
+present and prints its resolved path, size, and SHA-256 checksum for local
+freshness checks.
+
 The public cargo-make matrix runs `test-default`, explicit `test-no-default`,
 `test-arrow-ndarray`, `test-csv-parquet`, and `test-all-features`; `ci` runs
 `fmt`, all-feature `check`, and that matrix. The feature-gated tensor

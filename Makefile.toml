@@ -24,7 +24,7 @@ echo "  cargo make test-csv-parquet   # run safe wrapper tests with csv,parquet"
 echo "  cargo make test-all-features  # run safe wrapper tests with --all-features"
 echo "  cargo make fmt                # verify rustfmt"
 echo "  cargo make ci                 # fmt + all-feature check + feature test matrix"
-echo "  cargo make native-info        # print detected local native library path"
+echo "  cargo make native-info        # print detected native library path, size, and checksum"
 echo ""
 echo "Native library:"
 echo "  Tasks use ARCADIA_TIO_CAPI_LIB_DIR when set, otherwise native/<rustc-host-triple>/lib."
@@ -38,16 +38,57 @@ script = '''
 set -e
 ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
-LIB_DIR="${ARCADIA_TIO_CAPI_LIB_DIR:-$ROOT_DIR/native/$TARGET_TRIPLE/lib}"
-echo "target_triple=$TARGET_TRIPLE"
-echo "native_lib_dir=$LIB_DIR"
-if [ -d "$LIB_DIR" ]; then
-  ls -l "$LIB_DIR"
+LINK_KIND="${ARCADIA_TIO_CAPI_LINK_KIND:-dylib}"
+LIB_DIR="${ARCADIA_TIO_CAPI_LIB_DIR:-${ARCADIA_TIO_NATIVE_LIB_DIR:-$ROOT_DIR/native/$TARGET_TRIPLE/lib}}"
+if [ -n "${ARCADIA_TIO_CAPI_INCLUDE_DIR:-}" ]; then
+  INCLUDE_DIR="$ARCADIA_TIO_CAPI_INCLUDE_DIR"
+elif [ -z "${ARCADIA_TIO_CAPI_LIB_DIR:-}" ] && [ -z "${ARCADIA_TIO_NATIVE_LIB_DIR:-}" ]; then
+  INCLUDE_DIR="$ROOT_DIR/native/$TARGET_TRIPLE/include"
 else
+  INCLUDE_DIR=""
+fi
+echo "target_triple=$TARGET_TRIPLE"
+echo "link_kind=$LINK_KIND"
+echo "native_lib_dir=$LIB_DIR"
+if [ ! -d "$LIB_DIR" ]; then
   echo "native library directory is missing" >&2
   echo "Copy libarcadia_tio_capi into native/$TARGET_TRIPLE/lib or set ARCADIA_TIO_CAPI_LIB_DIR." >&2
   exit 1
 fi
+case "$LINK_KIND:$TARGET_TRIPLE" in
+  static:*windows*) CANDIDATES="arcadia_tio_capi.lib libarcadia_tio_capi.a" ;;
+  static:*) CANDIDATES="libarcadia_tio_capi.a" ;;
+  dylib:*windows*) CANDIDATES="arcadia_tio_capi.dll arcadia_tio_capi.lib" ;;
+  dylib:*apple*|dylib:*darwin*) CANDIDATES="libarcadia_tio_capi.dylib" ;;
+  dylib:*) CANDIDATES="libarcadia_tio_capi.so" ;;
+  *) echo "ARCADIA_TIO_CAPI_LINK_KIND must be dylib or static, got: $LINK_KIND" >&2; exit 1 ;;
+esac
+FOUND_LIB=""
+for name in $CANDIDATES; do
+  if [ -f "$LIB_DIR/$name" ]; then
+    FOUND_LIB="$LIB_DIR/$name"
+    break
+  fi
+done
+if [ -z "$FOUND_LIB" ]; then
+  echo "expected native library not found in $LIB_DIR" >&2
+  echo "expected one of: $CANDIDATES" >&2
+  exit 1
+fi
+echo "native_lib_file=$FOUND_LIB"
+echo "native_lib_size_bytes=$(wc -c < "$FOUND_LIB" | tr -d ' ')"
+if command -v sha256sum >/dev/null 2>&1; then
+  echo "native_lib_sha256=$(sha256sum "$FOUND_LIB" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  echo "native_lib_sha256=$(shasum -a 256 "$FOUND_LIB" | awk '{ print $1 }')"
+else
+  echo "native_lib_sha256=<sha256sum-or-shasum-not-found>"
+fi
+if [ -d "$INCLUDE_DIR" ]; then
+  echo "native_include_dir=$INCLUDE_DIR"
+fi
+echo "native_lib_listing:"
+ls -l "$LIB_DIR"
 '''
 
 [tasks.build]

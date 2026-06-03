@@ -26,7 +26,7 @@ fn main() {
         checked.push(format!("explicit lib dir {}", lib_dir.display()));
         validate_dir("native library", &lib_dir);
         warn_if_expected_library_missing(&lib_dir, &target, &link_kind);
-        emit_link(&lib_dir, &link_kind);
+        emit_link(&lib_dir, &target, &link_kind);
         emit_include_dir();
         return;
     }
@@ -36,14 +36,10 @@ fn main() {
     checked.push(format!("vendored lib dir {}", vendored_lib.display()));
     if !no_vendor && vendored_lib.is_dir() {
         warn_if_expected_library_missing(&vendored_lib, &target, &link_kind);
-        emit_link(&vendored_lib, &link_kind);
+        emit_link(&vendored_lib, &target, &link_kind);
         let vendored_include = manifest_dir.join("native").join(&target).join("include");
         if vendored_include.is_dir() && env::var_os("ARCADIA_TIO_CAPI_INCLUDE_DIR").is_none() {
-            println!("cargo:metadata=include_dir={}", vendored_include.display());
-            println!(
-                "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_INCLUDE_DIR={}",
-                vendored_include.display()
-            );
+            emit_resolved_include_dir(&vendored_include);
         } else {
             emit_include_dir();
         }
@@ -61,7 +57,7 @@ fn main() {
         ));
         if !no_vendor && root_vendored_lib.is_dir() {
             warn_if_expected_library_missing(&root_vendored_lib, &target, &link_kind);
-            emit_link(&root_vendored_lib, &link_kind);
+            emit_link(&root_vendored_lib, &target, &link_kind);
             let root_vendored_include = root_vendored_lib
                 .parent()
                 .expect("native target dir should have a parent")
@@ -69,14 +65,7 @@ fn main() {
             if root_vendored_include.is_dir()
                 && env::var_os("ARCADIA_TIO_CAPI_INCLUDE_DIR").is_none()
             {
-                println!(
-                    "cargo:metadata=include_dir={}",
-                    root_vendored_include.display()
-                );
-                println!(
-                    "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_INCLUDE_DIR={}",
-                    root_vendored_include.display()
-                );
+                emit_resolved_include_dir(&root_vendored_include);
             } else {
                 emit_include_dir();
             }
@@ -130,11 +119,19 @@ fn validate_dir(label: &str, path: &Path) {
     }
 }
 
-fn emit_link(lib_dir: &Path, link_kind: &str) {
+fn emit_link(lib_dir: &Path, target: &str, link_kind: &str) {
+    emit_native_rerun_tracking(lib_dir, target, link_kind);
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib={}={}", link_kind, LINK_NAME);
     println!("cargo:metadata=lib_dir={}", lib_dir.display());
     println!("cargo:metadata=link_kind={link_kind}");
+    if let Some(lib_file) = expected_library_file(lib_dir, target, link_kind) {
+        println!("cargo:metadata=lib_file={}", lib_file.display());
+        println!(
+            "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_LIB_FILE={}",
+            lib_file.display()
+        );
+    }
     println!(
         "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_LIB_DIR={}",
         lib_dir.display()
@@ -144,11 +141,37 @@ fn emit_link(lib_dir: &Path, link_kind: &str) {
 fn emit_include_dir() {
     if let Some(include_dir) = env::var_os("ARCADIA_TIO_CAPI_INCLUDE_DIR").map(PathBuf::from) {
         validate_dir("include", &include_dir);
-        println!("cargo:metadata=include_dir={}", include_dir.display());
-        println!(
-            "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_INCLUDE_DIR={}",
-            include_dir.display()
-        );
+        emit_resolved_include_dir(&include_dir);
+    }
+}
+
+fn emit_resolved_include_dir(include_dir: &Path) {
+    println!("cargo:rerun-if-changed={}", include_dir.display());
+    println!("cargo:metadata=include_dir={}", include_dir.display());
+    println!(
+        "cargo:rustc-env=ARCADIA_TIO_CAPI_RESOLVED_INCLUDE_DIR={}",
+        include_dir.display()
+    );
+}
+
+fn emit_native_rerun_tracking(lib_dir: &Path, target: &str, link_kind: &str) {
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    for name in expected_library_file_names(target, link_kind) {
+        println!("cargo:rerun-if-changed={}", lib_dir.join(name).display());
+    }
+
+    if let Some(target_dir) = lib_dir.parent() {
+        for manifest_name in [
+            "manifest.json",
+            "native-manifest.json",
+            "arcadia-tio-native.json",
+            ".arcadia-tio-native.json",
+        ] {
+            println!(
+                "cargo:rerun-if-changed={}",
+                target_dir.join(manifest_name).display()
+            );
+        }
     }
 }
 
@@ -161,13 +184,24 @@ fn env_truthy(key: &str) -> bool {
 
 fn warn_if_expected_library_missing(lib_dir: &Path, target: &str, link_kind: &str) {
     let candidates = expected_library_file_names(target, link_kind);
-    if !candidates.iter().any(|name| lib_dir.join(name).is_file()) {
+    if expected_library_file_from_candidates(lib_dir, &candidates).is_none() {
         println!(
             "cargo:warning=arcadia-tio-sys did not find expected {link_kind} library names [{}] in {}; the platform linker may still resolve {LINK_NAME}",
             candidates.join(", "),
             lib_dir.display()
         );
     }
+}
+
+fn expected_library_file(lib_dir: &Path, target: &str, link_kind: &str) -> Option<PathBuf> {
+    expected_library_file_from_candidates(lib_dir, &expected_library_file_names(target, link_kind))
+}
+
+fn expected_library_file_from_candidates(lib_dir: &Path, candidates: &[String]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(|name| lib_dir.join(name))
+        .find(|path| path.is_file())
 }
 
 fn expected_library_file_names(target: &str, link_kind: &str) -> Vec<String> {
