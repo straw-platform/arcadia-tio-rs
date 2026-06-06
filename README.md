@@ -46,7 +46,7 @@ Add the safe wrapper as a path dependency when working from a local checkout:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { path = "../arcadia-tio-rs/crates/arcadia-tio-rs" }
+arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
 Or use a git dependency once the desired commit is pushed:
@@ -61,7 +61,7 @@ only when needed:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { path = "../arcadia-tio-rs/crates/arcadia-tio-rs", features = ["arrow", "ndarray", "csv", "parquet"] }
+arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs", features = ["arrow", "ndarray", "csv", "parquet"] }
 ```
 
 `arrow` provides owned `Tensor` conversions to/from Arrow `RecordBatch` and IPC
