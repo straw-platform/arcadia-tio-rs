@@ -36,6 +36,9 @@ pub type ArcadiaTioOcbErrorKind = c_int;
 /// OCB structured failure-cause value.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbFailureCause = c_int;
+/// OCB open validation selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbOpenValidation = c_int;
 /// OCB column physical type value.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbPhysicalType = c_int;
@@ -192,6 +195,10 @@ raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_UNSUPPORTED_FORMAT: ArcadiaTioOcbFai
 raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_CORRUPT_FILE: ArcadiaTioOcbFailureCause = 3);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_LOCK_UNAVAILABLE: ArcadiaTioOcbFailureCause = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH: ArcadiaTioOcbOpenValidation = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD: ArcadiaTioOcbOpenValidation = 1);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32: ArcadiaTioOcbPhysicalType = 0);
 #[cfg(feature = "format-ocb")]
@@ -491,6 +498,21 @@ pub struct ArcadiaTioOcbDictionaryDescriptor {
     pub entry_count: u32,
     /// Reserved words; callers set to zero.
     pub reserved: [u64; 3],
+}
+
+/// OCB open options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbOpenOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Open validation depth.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
 }
 
 /// OCB ordering-key descriptor returned in metadata.
@@ -2627,6 +2649,12 @@ unsafe extern "C" {
     /// Opens an appendable OCB file and binds the handle to the selected committed snapshot.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_open(path: *const c_char) -> *mut ArcadiaTioOcbFile;
+    /// Opens an appendable OCB file with explicit validation options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_open_with_options(
+        path: *const c_char,
+        options: *const ArcadiaTioOcbOpenOptions,
+    ) -> *mut ArcadiaTioOcbFile;
     /// Closes an OCB handle.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_close(file: *mut ArcadiaTioOcbFile);
@@ -2677,6 +2705,9 @@ unsafe extern "C" {
     /// Initializes an OCB read outcome.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_outcome_init(outcome: *mut ArcadiaTioOcbReadOutcome);
+    /// Initializes OCB open options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_open_options_init(options: *mut ArcadiaTioOcbOpenOptions);
     /// Initializes an OCB write column.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_write_column_init(column: *mut ArcadiaTioOcbWriteColumn);

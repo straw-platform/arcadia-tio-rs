@@ -15608,6 +15608,39 @@ pub mod ocb {
     /// Result type returned by OCB safe wrappers.
     pub type OcbResult<T> = std::result::Result<T, OcbError>;
 
+    /// OCB validation depth used while opening a selected snapshot.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OpenValidation {
+        /// Validate metadata graph and chunk headers; payload CRCs are checked when selected chunks are read.
+        MetadataGraph,
+        /// Validate every referenced payload before returning from open.
+        FullPayload,
+    }
+
+    impl OpenValidation {
+        fn to_raw(self) -> sys::ArcadiaTioOcbOpenValidation {
+            match self {
+                Self::MetadataGraph => sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH,
+                Self::FullPayload => sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD,
+            }
+        }
+    }
+
+    /// OCB open options.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct OpenOptions {
+        /// Validation depth applied before open returns.
+        pub validation: OpenValidation,
+    }
+
+    impl Default for OpenOptions {
+        fn default() -> Self {
+            Self {
+                validation: OpenValidation::MetadataGraph,
+            }
+        }
+    }
+
     /// Structured OCB error with the ordinary C ABI code plus OCB-specific metadata.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct OcbError {
@@ -16343,6 +16376,14 @@ pub mod ocb {
             open(path)
         }
 
+        /// Open an OCB file with explicit validation options.
+        pub fn open_with_options(
+            path: impl AsRef<Path>,
+            options: OpenOptions,
+        ) -> OcbResult<Self> {
+            open_with_options(path, options)
+        }
+
         /// Read metadata for the selected snapshot.
         pub fn metadata(&self) -> OcbResult<Metadata> {
             let mut raw = empty_metadata();
@@ -16394,8 +16435,24 @@ pub mod ocb {
 
     /// Open an OCB file and bind the returned handle to the selected committed snapshot.
     pub fn open(path: impl AsRef<Path>) -> OcbResult<ColumnBundleFile> {
+        open_with_options(path, OpenOptions::default())
+    }
+
+    /// Open an OCB file with explicit validation options.
+    pub fn open_with_options(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+    ) -> OcbResult<ColumnBundleFile> {
         let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
-        let raw = unsafe { sys::arcadia_tio_ocb_open(path.as_ptr()) };
+        let mut raw_options = sys::ArcadiaTioOcbOpenOptions {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbOpenOptions>(),
+            validation: options.validation.to_raw(),
+            reserved: [0; 4],
+        };
+        unsafe { sys::arcadia_tio_ocb_open_options_init(&mut raw_options) };
+        raw_options.validation = options.validation.to_raw();
+        let raw = unsafe { sys::arcadia_tio_ocb_open_with_options(path.as_ptr(), &raw_options) };
         NonNull::new(raw)
             .map(|raw| ColumnBundleFile { raw })
             .ok_or_else(|| OcbError::last("OCB open failed"))
