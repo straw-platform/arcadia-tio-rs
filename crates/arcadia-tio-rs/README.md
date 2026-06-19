@@ -601,6 +601,21 @@ rows before `ocb::create`, so keep `--row-limit` small for smoke tests; pass
 `--all-rows` only for small input days or after budgeting memory in the calling
 application.
 
+`l2_ocb_load` is the read-side companion for applications that consume OCB files
+directly. It opens the order/trade and market-data OCB files, projects the
+normalized columns, applies row-group predicates, and copies returned batches
+into application-owned structs:
+
+```sh
+cargo run --features format-ocb --example l2_ocb_load -- \
+  --input-dir target/l2-parquet-ocb-example \
+  --day-key YYYYMMDD \
+  --max-rows 20
+```
+
+Use `--channel` for order/trade row-group pruning and `--symbol-code` for
+market-data row-group pruning when loading large shards.
+
 ## Production integration checklist
 
 Before shipping an application that uses this crate:

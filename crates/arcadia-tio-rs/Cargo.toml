@@ -40,6 +40,11 @@ path = "examples/l2_parquet_to_ocb.rs"
 required-features = ["format-ocb", "parquet"]
 
 [[example]]
+name = "l2_ocb_load"
+path = "examples/l2_ocb_load.rs"
+required-features = ["format-ocb"]
+
+[[example]]
 name = "tutorial_01_quickstart_create_append_read"
 path = "examples/tutorials/01_quickstart_create_append_read.rs"
 

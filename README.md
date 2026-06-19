@@ -133,6 +133,7 @@ cargo run -p arcadia-tio-rs --features arrow,ndarray,csv,parquet --example tutor
 cargo test -p arcadia-tio-rs --features format-ocb --test ocb
 cargo run -p arcadia-tio-rs --features format-ocb --example ocb_roundtrip
 cargo check -p arcadia-tio-rs --features format-ocb,parquet --example l2_parquet_to_ocb
+cargo check -p arcadia-tio-rs --features format-ocb --example l2_ocb_load
 cargo make test-csv-parquet
 ```
 
@@ -169,6 +170,21 @@ cargo run -p arcadia-tio-rs --features format-ocb,parquet --example l2_parquet_t
 The example uses only the public safe OCB wrapper and materializes rows before
 `ocb::create`; keep it bounded for smoke tests unless the caller has budgeted
 memory.
+
+`l2_ocb_load` is the read-side companion for applications that consume OCB files
+directly. It opens the order/trade and market-data OCB files, projects the
+normalized columns, applies row-group predicates, and copies returned batches
+into application-owned structs:
+
+```sh
+cargo run -p arcadia-tio-rs --features format-ocb --example l2_ocb_load -- \
+  --input-dir target/l2-parquet-ocb-example \
+  --day-key YYYYMMDD \
+  --max-rows 20
+```
+
+Use `--channel` for order/trade row-group pruning and `--symbol-code` for
+market-data row-group pruning when loading large shards.
 
 The native library path is local-only. The committed Cargo target runner mirrors
 `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` into the runtime loader path

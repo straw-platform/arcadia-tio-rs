@@ -199,6 +199,7 @@ ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
 "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --no-default-features --features format-ocb --test ocb
 "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo run -p arcadia-tio-rs --no-default-features --features format-ocb --example ocb_roundtrip
 "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo check -p arcadia-tio-rs --no-default-features --features format-ocb,parquet --example l2_parquet_to_ocb
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo check -p arcadia-tio-rs --no-default-features --features format-ocb --example l2_ocb_load
 '''
 
 [tasks.test-all-features]
