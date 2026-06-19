@@ -582,6 +582,25 @@ string/bytes roundtrips stay in memory. Do not copy native libraries, Cargo
 build output, generated `.tio` data, or generated IPC/CSV/Parquet data into the
 tutorial tree or source-only public checkout.
 
+## L2 Parquet OCB conversion example
+
+`l2_parquet_to_ocb` is a bounded integration example for schema-compatible L2
+Parquet days. It reads `L2ORDER.journal` + `L2TRADE.journal` into one normalized
+order/trade event OCB and reads `L2MD.journal` into a separate market-data OCB:
+
+```sh
+cargo run --features format-ocb,parquet --example l2_parquet_to_ocb -- \
+  --day-dir /path/to/l2_parquet/YYYYMMDD \
+  --output-dir target/l2-parquet-ocb-example \
+  --row-limit 10000 \
+  --overwrite
+```
+
+The example intentionally uses only the public safe OCB wrapper. It materializes
+rows before `ocb::create`, so keep `--row-limit` small for smoke tests; pass
+`--all-rows` only for small input days or after budgeting memory in the calling
+application.
+
 ## Production integration checklist
 
 Before shipping an application that uses this crate:

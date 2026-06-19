@@ -17,7 +17,7 @@ format-ocb = ["arcadia-tio-sys/format-ocb"]
 arrow = ["dep:arrow-array", "dep:arrow-ipc", "dep:arrow-schema"]
 csv = ["dep:csv"]
 ndarray = ["dep:ndarray"]
-parquet = ["dep:bytes", "dep:parquet"]
+parquet = ["dep:bytes", "dep:parquet", "parquet/zstd"]
 
 [dependencies]
 arcadia-tio-sys = { path = "../arcadia-tio-sys", version = "0.1.0" }
@@ -33,6 +33,11 @@ parquet = { version = "57.2.0", optional = true, default-features = false }
 name = "ocb_roundtrip"
 path = "examples/ocb_roundtrip.rs"
 required-features = ["format-ocb"]
+
+[[example]]
+name = "l2_parquet_to_ocb"
+path = "examples/l2_parquet_to_ocb.rs"
+required-features = ["format-ocb", "parquet"]
 
 [[example]]
 name = "tutorial_01_quickstart_create_append_read"

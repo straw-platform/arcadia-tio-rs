@@ -132,6 +132,7 @@ cargo run -p arcadia-tio-rs --example tutorial_01_quickstart_create_append_read
 cargo run -p arcadia-tio-rs --features arrow,ndarray,csv,parquet --example tutorial_09_tensor_ops_conversions
 cargo test -p arcadia-tio-rs --features format-ocb --test ocb
 cargo run -p arcadia-tio-rs --features format-ocb --example ocb_roundtrip
+cargo check -p arcadia-tio-rs --features format-ocb,parquet --example l2_parquet_to_ocb
 cargo make test-csv-parquet
 ```
 
@@ -150,6 +151,24 @@ ops/conversions tutorial uses owned tensor ops, typed wrappers, owned Arrow
 RecordBatch/IPC, ndarray, and CSV/Parquet companion conversions with tiny
 deterministic data. These examples are not performance, storage, zero-copy,
 native `.tio` file-conversion, or NumPy/Python integration evidence.
+
+### L2 Parquet OCB conversion example
+
+`l2_parquet_to_ocb` is a bounded L2 order/trade and market-data Parquet conversion example.
+It reads `L2ORDER.journal` + `L2TRADE.journal` into one normalized order/trade
+OCB and `L2MD.journal` into a separate market-data OCB:
+
+```sh
+cargo run -p arcadia-tio-rs --features format-ocb,parquet --example l2_parquet_to_ocb -- \
+  --day-dir /path/to/l2_parquet/YYYYMMDD \
+  --output-dir target/l2-parquet-ocb-example \
+  --row-limit 10000 \
+  --overwrite
+```
+
+The example uses only the public safe OCB wrapper and materializes rows before
+`ocb::create`; keep it bounded for smoke tests unless the caller has budgeted
+memory.
 
 The native library path is local-only. The committed Cargo target runner mirrors
 `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` into the runtime loader path

@@ -21,7 +21,7 @@ echo "  cargo make test-default       # run safe wrapper tests with default feat
 echo "  cargo make test-no-default    # run safe wrapper tests with --no-default-features"
 echo "  cargo make test-arrow-ndarray # run safe wrapper tests with arrow,ndarray"
 echo "  cargo make test-csv-parquet   # run safe wrapper tests with csv,parquet"
-echo "  cargo make test-ocb           # run OCB feature tests and example"
+echo "  cargo make test-ocb           # run OCB feature tests and examples"
 echo "  cargo make test-all-features  # run safe wrapper tests with --all-features"
 echo "  cargo make fmt                # verify rustfmt"
 echo "  cargo make ci                 # fmt + all-feature check + feature test matrix"
@@ -191,13 +191,14 @@ ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
 
 [tasks.test-ocb]
 clear = true
-description = "Run arcadia-tio-rs OCB feature tests and example"
+description = "Run arcadia-tio-rs OCB feature tests and examples"
 script_runner = "@shell"
 script = '''
 set -e
 ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
 "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo test -p arcadia-tio-rs --no-default-features --features format-ocb --test ocb
 "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo run -p arcadia-tio-rs --no-default-features --features format-ocb --example ocb_roundtrip
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" cargo check -p arcadia-tio-rs --no-default-features --features format-ocb,parquet --example l2_parquet_to_ocb
 '''
 
 [tasks.test-all-features]
