@@ -15605,6 +15605,7 @@ pub mod ocb {
     use std::path::Path;
     use std::ptr::{self, NonNull};
     use std::slice;
+    use std::time::Instant;
 
     /// Result type returned by OCB safe wrappers.
     pub type OcbResult<T> = std::result::Result<T, OcbError>;
@@ -16326,6 +16327,38 @@ pub mod ocb {
         pub report: ReadReport,
     }
 
+    /// OCB read outcome with opt-in diagnostics.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct AttributedReadOutcome {
+        /// Returned column batches and ordinary read report.
+        pub outcome: ReadOutcome,
+        /// Diagnostic attribution counters. These are not benchmark claims.
+        pub attribution: ReadAttribution,
+    }
+
+    /// OCB read attribution diagnostics.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ReadAttribution {
+        pub plan_ns: u64,
+        pub execute_wall_ns: u64,
+        pub row_group_read_ns: u64,
+        pub read_io_ns: u64,
+        pub checksum_ns: u64,
+        pub decompression_ns: u64,
+        pub primitive_decode_ns: u64,
+        pub native_to_c_copy_ns: Option<u64>,
+        pub wrapper_copy_ns: Option<u64>,
+        pub bytes_read: u64,
+        pub compressed_bytes: u64,
+        pub uncompressed_bytes: u64,
+        pub requested_threads: usize,
+        pub effective_threads: usize,
+        pub selected_row_groups: usize,
+        pub pruned_row_groups: usize,
+        pub selected_column_chunks: usize,
+        pub fallback_reason: Option<String>,
+    }
+
     /// OCB read execution report.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ReadReport {
@@ -16439,6 +16472,37 @@ pub mod ocb {
                 return Err(OcbError::last("OCB read_batches failed"));
             }
             unsafe { read_outcome_from_raw(&guard.0) }
+        }
+
+        /// Read projected/pruned column batches and collect diagnostic attribution.
+        pub fn read_batches_with_attribution(
+            &self,
+            request: &ReadRequest,
+        ) -> OcbResult<AttributedReadOutcome> {
+            let raw_request = RawReadRequest::new(request)?;
+            let mut raw_outcome = empty_read_outcome();
+            let mut raw_attribution = empty_read_attribution();
+            let status = unsafe {
+                sys::arcadia_tio_ocb_read_batches_with_attribution(
+                    self.raw.as_ptr(),
+                    &raw_request.raw,
+                    &mut raw_outcome,
+                    &mut raw_attribution,
+                )
+            };
+            let outcome_guard = ReadOutcomeGuard(raw_outcome);
+            let attribution_guard = ReadAttributionGuard(raw_attribution);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB read_batches_with_attribution failed"));
+            }
+            let wrapper_started = Instant::now();
+            let outcome = unsafe { read_outcome_from_raw(&outcome_guard.0) }?;
+            let mut attribution = read_attribution_from_raw(&attribution_guard.0);
+            attribution.wrapper_copy_ns = Some(duration_to_ns(wrapper_started.elapsed()));
+            Ok(AttributedReadOutcome {
+                outcome,
+                attribution,
+            })
         }
 
         /// Plan a projected/pruned read without reading column payloads.
@@ -16905,6 +16969,34 @@ pub mod ocb {
         }
     }
 
+    fn empty_read_attribution() -> sys::ArcadiaTioOcbReadAttribution {
+        sys::ArcadiaTioOcbReadAttribution {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbReadAttribution>(),
+            plan_ns: 0,
+            execute_wall_ns: 0,
+            row_group_read_ns: 0,
+            read_io_ns: 0,
+            checksum_ns: 0,
+            decompression_ns: 0,
+            primitive_decode_ns: 0,
+            has_native_to_c_copy_ns: 0,
+            native_to_c_copy_ns: 0,
+            has_wrapper_copy_ns: 0,
+            wrapper_copy_ns: 0,
+            bytes_read: 0,
+            compressed_bytes: 0,
+            uncompressed_bytes: 0,
+            requested_threads: 0,
+            effective_threads: 0,
+            selected_row_groups: 0,
+            pruned_row_groups: 0,
+            selected_column_chunks: 0,
+            fallback_reason: ptr::null_mut(),
+            reserved: [0; 4],
+        }
+    }
+
     fn empty_read_outcome() -> sys::ArcadiaTioOcbReadOutcome {
         sys::ArcadiaTioOcbReadOutcome {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -16937,11 +17029,22 @@ pub mod ocb {
         }
     }
 
+    struct ReadAttributionGuard(sys::ArcadiaTioOcbReadAttribution);
+    impl Drop for ReadAttributionGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_read_attribution_free(&mut self.0) };
+        }
+    }
+
     struct ReadOutcomeGuard(sys::ArcadiaTioOcbReadOutcome);
     impl Drop for ReadOutcomeGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_read_outcome_free(&mut self.0) };
         }
+    }
+
+    fn duration_to_ns(duration: std::time::Duration) -> u64 {
+        duration.as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
     fn ensure_plan_belongs_to_file(
@@ -17125,6 +17228,30 @@ pub mod ocb {
 
     fn read_report_from_raw(raw: &sys::ArcadiaTioOcbReadReport) -> ReadReport {
         ReadReport {
+            requested_threads: raw.requested_threads,
+            effective_threads: raw.effective_threads,
+            selected_row_groups: raw.selected_row_groups,
+            pruned_row_groups: raw.pruned_row_groups,
+            selected_column_chunks: raw.selected_column_chunks,
+            fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
+        }
+    }
+
+    fn read_attribution_from_raw(raw: &sys::ArcadiaTioOcbReadAttribution) -> ReadAttribution {
+        ReadAttribution {
+            plan_ns: raw.plan_ns,
+            execute_wall_ns: raw.execute_wall_ns,
+            row_group_read_ns: raw.row_group_read_ns,
+            read_io_ns: raw.read_io_ns,
+            checksum_ns: raw.checksum_ns,
+            decompression_ns: raw.decompression_ns,
+            primitive_decode_ns: raw.primitive_decode_ns,
+            native_to_c_copy_ns: (raw.has_native_to_c_copy_ns != 0)
+                .then_some(raw.native_to_c_copy_ns),
+            wrapper_copy_ns: (raw.has_wrapper_copy_ns != 0).then_some(raw.wrapper_copy_ns),
+            bytes_read: raw.bytes_read,
+            compressed_bytes: raw.compressed_bytes,
+            uncompressed_bytes: raw.uncompressed_bytes,
             requested_threads: raw.requested_threads,
             effective_threads: raw.effective_threads,
             selected_row_groups: raw.selected_row_groups,

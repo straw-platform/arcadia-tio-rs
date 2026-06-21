@@ -50,8 +50,10 @@ freed. For callers that need scheduling control before payload reads,
 `plan_read` exposes snapshot-local projected column ids and row-group ids;
 `read_plan_batches` executes the whole plan, and `read_plan_row_groups` executes
 a duplicate/unknown-id-checked subset in deterministic plan order.
-`ocb::cleanup_orphan_tail` truncates orphan tail bytes after the latest valid
-root. `OcbError` preserves the
+`read_batches_with_attribution` additionally returns diagnostic-only timing and
+byte counters for planning, file reads, checksums, decompression, primitive
+conversion, native C conversion, and wrapper copying. `ocb::cleanup_orphan_tail`
+truncates orphan tail bytes after the latest valid root. `OcbError` preserves the
 ordinary C ABI error code plus OCB `ErrorKind` and optional `FailureCause` for
 machine-readable handling. Dictionary-coded reads return primitive codes; use
 `dictionary_values` for explicit decoded dictionary labels/bytes. OCB examples

@@ -88,6 +88,19 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         PrimitiveValues::F64(vec![3.5, 4.5])
     );
 
+    let attributed = file
+        .read_batches_with_attribution(&request)
+        .expect("attributed projected read");
+    assert_eq!(attributed.outcome.batches, outcome.batches);
+    assert_eq!(attributed.attribution.selected_row_groups, 2);
+    assert_eq!(attributed.attribution.selected_column_chunks, 4);
+    assert!(attributed.attribution.execute_wall_ns > 0);
+    assert!(attributed.attribution.row_group_read_ns > 0);
+    assert!(attributed.attribution.read_io_ns > 0);
+    assert!(attributed.attribution.bytes_read > 0);
+    assert!(attributed.attribution.native_to_c_copy_ns.is_some());
+    assert!(attributed.attribution.wrapper_copy_ns.is_some());
+
     let plan = file.plan_read(&request).expect("plan projected read");
     assert_eq!(plan.projected_column_ids, vec![0, 2]);
     assert_eq!(plan.row_group_ids, vec![0, 1]);

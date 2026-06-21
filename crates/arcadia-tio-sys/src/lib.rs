@@ -933,6 +933,59 @@ pub struct ArcadiaTioOcbReadReport {
     pub reserved: [u64; 4],
 }
 
+/// OCB read attribution diagnostics.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadAttribution {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Planning duration in nanoseconds.
+    pub plan_ns: u64,
+    /// Read execution wall duration in nanoseconds.
+    pub execute_wall_ns: u64,
+    /// Cumulative row-group read duration in nanoseconds.
+    pub row_group_read_ns: u64,
+    /// Cumulative file read duration in nanoseconds.
+    pub read_io_ns: u64,
+    /// Cumulative checksum duration in nanoseconds.
+    pub checksum_ns: u64,
+    /// Cumulative decompression duration in nanoseconds.
+    pub decompression_ns: u64,
+    /// Cumulative primitive decode duration in nanoseconds.
+    pub primitive_decode_ns: u64,
+    /// Nonzero when native_to_c_copy_ns is meaningful.
+    pub has_native_to_c_copy_ns: u8,
+    /// Native-to-C outcome conversion duration in nanoseconds.
+    pub native_to_c_copy_ns: u64,
+    /// Nonzero when wrapper_copy_ns is meaningful.
+    pub has_wrapper_copy_ns: u8,
+    /// Safe-wrapper copy duration in nanoseconds.
+    pub wrapper_copy_ns: u64,
+    /// Selected object bytes read.
+    pub bytes_read: u64,
+    /// Selected compressed column payload bytes.
+    pub compressed_bytes: u64,
+    /// Selected uncompressed column payload bytes.
+    pub uncompressed_bytes: u64,
+    /// Requested worker thread count.
+    pub requested_threads: usize,
+    /// Effective worker thread count.
+    pub effective_threads: usize,
+    /// Selected row groups.
+    pub selected_row_groups: usize,
+    /// Pruned row groups.
+    pub pruned_row_groups: usize,
+    /// Selected column chunks.
+    pub selected_column_chunks: usize,
+    /// Native-owned fallback reason string or NULL.
+    pub fallback_reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
 /// OCB read-result column array.
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -2691,6 +2744,14 @@ unsafe extern "C" {
         request: *const ArcadiaTioOcbReadRequest,
         out_outcome: *mut ArcadiaTioOcbReadOutcome,
     ) -> ArcadiaTioErrorCode;
+    /// Reads projected/pruned OCB batches and attribution diagnostics.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_batches_with_attribution(
+        file: *mut ArcadiaTioOcbFile,
+        request: *const ArcadiaTioOcbReadRequest,
+        out_outcome: *mut ArcadiaTioOcbReadOutcome,
+        out_attribution: *mut ArcadiaTioOcbReadAttribution,
+    ) -> ArcadiaTioErrorCode;
     /// Plans an OCB read without reading payload chunks.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_plan_read(
@@ -2732,6 +2793,9 @@ unsafe extern "C" {
     /// Frees owned fields inside an OCB read report.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_report_free(report: *mut ArcadiaTioOcbReadReport);
+    /// Frees owned fields inside an OCB read attribution result.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_attribution_free(attribution: *mut ArcadiaTioOcbReadAttribution);
     /// Frees an opaque OCB read plan.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_plan_free(plan: *mut ArcadiaTioOcbReadPlan);
@@ -2756,6 +2820,9 @@ unsafe extern "C" {
     /// Initializes an OCB read report.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_report_init(report: *mut ArcadiaTioOcbReadReport);
+    /// Initializes an OCB read attribution result.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_attribution_init(attribution: *mut ArcadiaTioOcbReadAttribution);
     /// Initializes an OCB read outcome.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_outcome_init(outcome: *mut ArcadiaTioOcbReadOutcome);
