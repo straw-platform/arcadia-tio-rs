@@ -64,6 +64,15 @@ pub type ArcadiaTioOcbNullOrder = c_int;
 /// OCB projection-kind selector.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbProjectionKind = c_int;
+/// OCB batch visitor callback.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbBatchVisitor = Option<
+    unsafe extern "C" fn(
+        user: *mut c_void,
+        batch: *const ArcadiaTioOcbColumnBatch,
+        out_continue: *mut u8,
+    ) -> ArcadiaTioErrorCode,
+>;
 /// Native payload dtype value.
 pub type ArcadiaTioDType = c_int;
 /// Compression mode value.
@@ -982,6 +991,44 @@ pub struct ArcadiaTioOcbReadAttribution {
     pub selected_column_chunks: usize,
     /// Native-owned fallback reason string or NULL.
     pub fallback_reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB read cursor/visitor options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadCursorOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum decoded row-group batches in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Nonzero to preserve deterministic row-group order.
+    pub ordered: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// OCB read cursor/visitor report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadCursorReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Base read planning/execution report.
+    pub base_report: ArcadiaTioOcbReadReport,
+    /// Batches yielded to the visitor.
+    pub batches_yielded: usize,
+    /// Rows yielded to the visitor.
+    pub rows_yielded: u64,
+    /// Nonzero when visitor stopped early.
+    pub cancelled: u8,
     /// Reserved words; callers set to zero.
     pub reserved: [u64; 4],
 }
@@ -2758,6 +2805,16 @@ unsafe extern "C" {
         out_outcome: *mut ArcadiaTioOcbReadOutcome,
         out_attribution: *mut ArcadiaTioOcbReadAttribution,
     ) -> ArcadiaTioErrorCode;
+    /// Visits projected/pruned OCB batches incrementally.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_visit_batches(
+        file: *mut ArcadiaTioOcbFile,
+        request: *const ArcadiaTioOcbReadRequest,
+        options: *const ArcadiaTioOcbReadCursorOptions,
+        visitor: ArcadiaTioOcbBatchVisitor,
+        user: *mut c_void,
+        out_report: *mut ArcadiaTioOcbReadCursorReport,
+    ) -> ArcadiaTioErrorCode;
     /// Plans an OCB read without reading payload chunks.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_plan_read(
@@ -2802,6 +2859,9 @@ unsafe extern "C" {
     /// Frees owned fields inside an OCB read attribution result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_attribution_free(attribution: *mut ArcadiaTioOcbReadAttribution);
+    /// Frees owned fields inside an OCB read cursor report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_cursor_report_free(report: *mut ArcadiaTioOcbReadCursorReport);
     /// Frees an opaque OCB read plan.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_plan_free(plan: *mut ArcadiaTioOcbReadPlan);
@@ -2829,6 +2889,12 @@ unsafe extern "C" {
     /// Initializes an OCB read attribution result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_attribution_init(attribution: *mut ArcadiaTioOcbReadAttribution);
+    /// Initializes OCB read cursor options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_cursor_options_init(options: *mut ArcadiaTioOcbReadCursorOptions);
+    /// Initializes an OCB read cursor report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_cursor_report_init(report: *mut ArcadiaTioOcbReadCursorReport);
     /// Initializes an OCB read outcome.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_outcome_init(outcome: *mut ArcadiaTioOcbReadOutcome);

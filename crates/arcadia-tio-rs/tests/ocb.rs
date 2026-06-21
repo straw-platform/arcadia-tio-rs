@@ -128,6 +128,43 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert!(duplicate_subset.message().contains("duplicate"));
     drop(plan);
 
+    let mut visited = Vec::new();
+    let cursor_report = file
+        .visit_batches(
+            &request,
+            arcadia_tio_rs::ocb::ReadCursorOptions {
+                max_in_flight_row_groups: 1,
+                ordered: true,
+            },
+            |batch| {
+                visited.push(batch.row_group_id);
+                Ok(arcadia_tio_rs::ocb::VisitControl::Continue)
+            },
+        )
+        .expect("visit projected batches");
+    assert_eq!(visited, vec![0, 1]);
+    assert_eq!(cursor_report.batches_yielded, 2);
+    assert_eq!(cursor_report.rows_yielded, 4);
+    assert!(!cursor_report.cancelled);
+
+    let mut visited = Vec::new();
+    let cursor_report = file
+        .visit_batches(
+            &request,
+            arcadia_tio_rs::ocb::ReadCursorOptions {
+                max_in_flight_row_groups: 2,
+                ordered: true,
+            },
+            |batch| {
+                visited.push(batch.row_group_id);
+                Ok(arcadia_tio_rs::ocb::VisitControl::Stop)
+            },
+        )
+        .expect("visit projected batches with stop");
+    assert_eq!(visited, vec![0]);
+    assert_eq!(cursor_report.batches_yielded, 1);
+    assert!(cursor_report.cancelled);
+
     let predicate_request = ReadRequest {
         projection: Projection::Names(vec!["category_code".to_string()]),
         predicates: vec![RowGroupPredicate {

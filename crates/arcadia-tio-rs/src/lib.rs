@@ -15602,6 +15602,7 @@ pub mod ocb {
     use std::marker::PhantomData;
     use std::mem;
     use std::os::raw::{c_char, c_void};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Path;
     use std::ptr::{self, NonNull};
     use std::slice;
@@ -16336,6 +16337,42 @@ pub mod ocb {
         pub attribution: ReadAttribution,
     }
 
+    /// Visitor return control for bounded OCB reads.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum VisitControl {
+        /// Continue visiting batches.
+        Continue,
+        /// Stop after the current batch.
+        Stop,
+    }
+
+    /// Options for bounded visitor-style OCB reads.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ReadCursorOptions {
+        /// Maximum decoded row-group batches in flight.
+        pub max_in_flight_row_groups: usize,
+        /// Preserve deterministic row-group order. Unordered mode is reserved.
+        pub ordered: bool,
+    }
+
+    impl Default for ReadCursorOptions {
+        fn default() -> Self {
+            Self {
+                max_in_flight_row_groups: 1,
+                ordered: true,
+            }
+        }
+    }
+
+    /// Report for visitor-style OCB reads.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ReadCursorReport {
+        pub base_report: ReadReport,
+        pub batches_yielded: usize,
+        pub rows_yielded: u64,
+        pub cancelled: bool,
+    }
+
     /// OCB read attribution diagnostics.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ReadAttribution {
@@ -16520,6 +16557,41 @@ pub mod ocb {
                 outcome,
                 attribution,
             })
+        }
+
+        /// Visit projected/pruned row-group batches incrementally.
+        ///
+        /// Each callback receives an owned Rust `ColumnBatch` copied from the
+        /// native callback view. Internal native materialization is bounded by
+        /// `options.max_in_flight_row_groups`.
+        pub fn visit_batches<F>(
+            &self,
+            request: &ReadRequest,
+            options: ReadCursorOptions,
+            mut visitor: F,
+        ) -> OcbResult<ReadCursorReport>
+        where
+            F: FnMut(ColumnBatch) -> OcbResult<VisitControl>,
+        {
+            let raw_request = RawReadRequest::new(request)?;
+            let raw_options = raw_read_cursor_options(options);
+            let mut raw_report = empty_read_cursor_report();
+            let mut callback = VisitCallback { visitor: &mut visitor };
+            let status = unsafe {
+                sys::arcadia_tio_ocb_visit_batches(
+                    self.raw.as_ptr(),
+                    &raw_request.raw,
+                    &raw_options,
+                    Some(visit_trampoline::<F>),
+                    (&mut callback as *mut VisitCallback<'_, F>).cast(),
+                    &mut raw_report,
+                )
+            };
+            let report_guard = ReadCursorReportGuard(raw_report);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB visit_batches failed"));
+            }
+            Ok(read_cursor_report_from_raw(&report_guard.0))
         }
 
         /// Plan a projected/pruned read without reading column payloads.
@@ -16995,6 +17067,28 @@ pub mod ocb {
         }
     }
 
+    fn raw_read_cursor_options(options: ReadCursorOptions) -> sys::ArcadiaTioOcbReadCursorOptions {
+        sys::ArcadiaTioOcbReadCursorOptions {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbReadCursorOptions>(),
+            max_in_flight_row_groups: options.max_in_flight_row_groups,
+            ordered: u8::from(options.ordered),
+            reserved: [0; 8],
+        }
+    }
+
+    fn empty_read_cursor_report() -> sys::ArcadiaTioOcbReadCursorReport {
+        sys::ArcadiaTioOcbReadCursorReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbReadCursorReport>(),
+            base_report: empty_read_report(),
+            batches_yielded: 0,
+            rows_yielded: 0,
+            cancelled: 0,
+            reserved: [0; 4],
+        }
+    }
+
     fn empty_read_attribution() -> sys::ArcadiaTioOcbReadAttribution {
         sys::ArcadiaTioOcbReadAttribution {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -17062,10 +17156,55 @@ pub mod ocb {
         }
     }
 
+    struct ReadCursorReportGuard(sys::ArcadiaTioOcbReadCursorReport);
+    impl Drop for ReadCursorReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_read_cursor_report_free(&mut self.0) };
+        }
+    }
+
     struct ReadOutcomeGuard(sys::ArcadiaTioOcbReadOutcome);
     impl Drop for ReadOutcomeGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_read_outcome_free(&mut self.0) };
+        }
+    }
+
+    struct VisitCallback<'a, F>
+    where
+        F: FnMut(ColumnBatch) -> OcbResult<VisitControl>,
+    {
+        visitor: &'a mut F,
+    }
+
+    unsafe extern "C" fn visit_trampoline<F>(
+        user: *mut c_void,
+        batch: *const sys::ArcadiaTioOcbColumnBatch,
+        out_continue: *mut u8,
+    ) -> sys::ArcadiaTioErrorCode
+    where
+        F: FnMut(ColumnBatch) -> OcbResult<VisitControl>,
+    {
+        if user.is_null() || batch.is_null() || out_continue.is_null() {
+            return sys::ARCADIA_TIO_ERROR_INVALID_ARGUMENT;
+        }
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let callback = unsafe { &mut *user.cast::<VisitCallback<'_, F>>() };
+            let batch = unsafe { column_batch_from_raw(&*batch) }?;
+            match (callback.visitor)(batch)? {
+                VisitControl::Continue => {
+                    unsafe { ptr::write(out_continue, 1) };
+                }
+                VisitControl::Stop => {
+                    unsafe { ptr::write(out_continue, 0) };
+                }
+            }
+            Ok::<(), OcbError>(())
+        }));
+        match result {
+            Ok(Ok(())) => sys::ARCADIA_TIO_ERROR_OK,
+            Ok(Err(err)) => err.code().as_raw(),
+            Err(_) => sys::ARCADIA_TIO_ERROR_INVALID_ARGUMENT,
         }
     }
 
@@ -17260,6 +17399,15 @@ pub mod ocb {
             pruned_row_groups: raw.pruned_row_groups,
             selected_column_chunks: raw.selected_column_chunks,
             fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
+        }
+    }
+
+    fn read_cursor_report_from_raw(raw: &sys::ArcadiaTioOcbReadCursorReport) -> ReadCursorReport {
+        ReadCursorReport {
+            base_report: read_report_from_raw(&raw.base_report),
+            batches_yielded: raw.batches_yielded,
+            rows_yielded: raw.rows_yielded,
+            cancelled: raw.cancelled != 0,
         }
     }
 

@@ -52,7 +52,10 @@ freed. For callers that need scheduling control before payload reads,
 a duplicate/unknown-id-checked subset in deterministic plan order.
 `read_batches_with_attribution` additionally returns diagnostic-only timing and
 byte counters for planning, file reads, checksums, decompression, primitive
-conversion, native C conversion, and wrapper copying. `clone_reader` cheaply
+conversion, native C conversion, and wrapper copying. `visit_batches` consumes
+row-group batches incrementally with `max_in_flight_row_groups` and callback
+cancellation while still copying each callback batch into owned Rust values.
+`clone_reader` cheaply
 creates another handle for the same immutable selected snapshot, and the safe
 wrapper marks `ColumnBundleFile` as `Send`/`Sync` for read-only multi-lane use.
 `ocb::cleanup_orphan_tail` truncates orphan tail bytes after the latest valid
