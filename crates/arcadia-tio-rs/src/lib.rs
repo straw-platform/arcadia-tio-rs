@@ -16560,9 +16560,8 @@ pub mod ocb {
         /// handle. Reopen the file path to observe later appends.
         pub fn clone_reader(&self) -> OcbResult<Self> {
             let mut raw_reader = ptr::null_mut();
-            let status = unsafe {
-                sys::arcadia_tio_ocb_reader_clone(self.raw.as_ptr(), &mut raw_reader)
-            };
+            let status =
+                unsafe { sys::arcadia_tio_ocb_reader_clone(self.raw.as_ptr(), &mut raw_reader) };
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB reader_clone failed"));
             }
@@ -16661,7 +16660,9 @@ pub mod ocb {
             let raw_request = RawReadRequest::new(request)?;
             let raw_options = raw_read_cursor_options(options);
             let mut raw_report = empty_read_cursor_report();
-            let mut callback = VisitCallback { visitor: &mut visitor };
+            let mut callback = VisitCallback {
+                visitor: &mut visitor,
+            };
             let status = unsafe {
                 sys::arcadia_tio_ocb_visit_batches(
                     self.raw.as_ptr(),
@@ -16709,11 +16710,7 @@ pub mod ocb {
             let raw_request = RawReadRequest::new(request)?;
             let mut raw_plan = ptr::null_mut();
             let status = unsafe {
-                sys::arcadia_tio_ocb_plan_read(
-                    self.raw.as_ptr(),
-                    &raw_request.raw,
-                    &mut raw_plan,
-                )
+                sys::arcadia_tio_ocb_plan_read(self.raw.as_ptr(), &raw_request.raw, &mut raw_plan)
             };
             let raw = NonNull::new(raw_plan);
             if status != sys::ARCADIA_TIO_ERROR_OK {
@@ -17144,10 +17141,7 @@ pub mod ocb {
                 match column_fill_selector(buffer)? {
                     RawColumnFillSelector::Name(name) => {
                         column_names.push(cstring(name, "OCB fill column")?);
-                        selectors.push((
-                            column_names.last().expect("just pushed").as_ptr(),
-                            None,
-                        ));
+                        selectors.push((column_names.last().expect("just pushed").as_ptr(), None));
                     }
                     RawColumnFillSelector::Id(column_id) => {
                         selectors.push((ptr::null(), Some(column_id)));
@@ -17192,7 +17186,9 @@ pub mod ocb {
             ColumnFillBufferMut::I32ById { column_id, .. }
             | ColumnFillBufferMut::I64ById { column_id, .. }
             | ColumnFillBufferMut::F32ById { column_id, .. }
-            | ColumnFillBufferMut::F64ById { column_id, .. } => Ok(RawColumnFillSelector::Id(*column_id)),
+            | ColumnFillBufferMut::F64ById { column_id, .. } => {
+                Ok(RawColumnFillSelector::Id(*column_id))
+            }
         }
     }
 
@@ -17532,9 +17528,8 @@ pub mod ocb {
 
     fn read_plan_report(raw_plan: NonNull<sys::ArcadiaTioOcbReadPlan>) -> OcbResult<ReadReport> {
         let mut raw_report = empty_read_report();
-        let status = unsafe {
-            sys::arcadia_tio_ocb_read_plan_report(raw_plan.as_ptr(), &mut raw_report)
-        };
+        let status =
+            unsafe { sys::arcadia_tio_ocb_read_plan_report(raw_plan.as_ptr(), &mut raw_report) };
         let guard = ReadReportGuard(raw_report);
         if status != sys::ARCADIA_TIO_ERROR_OK {
             return Err(OcbError::last("OCB read_plan_report failed"));
@@ -17578,7 +17573,14 @@ pub mod ocb {
             return Err(OcbError::last(context));
         }
         let mut ids = vec![0u32; required];
-        let status = unsafe { f(raw_plan.as_ptr(), ids.as_mut_ptr(), ids.len(), &mut required) };
+        let status = unsafe {
+            f(
+                raw_plan.as_ptr(),
+                ids.as_mut_ptr(),
+                ids.len(),
+                &mut required,
+            )
+        };
         if status != sys::ARCADIA_TIO_ERROR_OK {
             return Err(OcbError::last(context));
         }
