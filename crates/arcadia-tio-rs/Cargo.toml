@@ -35,6 +35,11 @@ path = "examples/ocb_roundtrip.rs"
 required-features = ["format-ocb"]
 
 [[example]]
+name = "ocb_fixed_binary"
+path = "examples/ocb_fixed_binary.rs"
+required-features = ["format-ocb"]
+
+[[example]]
 name = "l2_parquet_to_ocb"
 path = "examples/l2_parquet_to_ocb.rs"
 required-features = ["format-ocb", "parquet"]

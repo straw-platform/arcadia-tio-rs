@@ -4,15 +4,18 @@ Unsafe Rust FFI declarations for the Arcadia TIO C ABI.
 
 This crate is intentionally low level: it exposes `repr(C)` types, constants,
 and `unsafe extern "C"` functions for a compiled `arcadia_tio_capi` native
-library. It does not depend on the private Rust implementation crates and does
-not provide safe high-level TensorFile behavior. With the optional
-`format-ocb` feature enabled, the crate exposes raw appendable OCB C ABI
-constants, `repr(C)` metadata/read/write structs, opaque file handles,
-init/free helpers, and open/create/append/read/dictionary/cleanup declarations;
-callers must still uphold the C header ownership and lifetime contract. The
-linked native library must export the matching `arcadia_tio_ocb_*` symbols when
-`format-ocb` is enabled; missing-symbol link errors mean the native library is
-older than the OCB C ABI surface.
+library. It does not depend on private Rust implementation crates and does not
+provide safe high-level TensorFile behavior. With the optional `format-ocb`
+feature enabled, the crate exposes raw appendable OCB C ABI constants,
+`repr(C)` metadata/read/write structs, opaque file handles, init/free helpers,
+and open/create/append/read/dictionary/cleanup declarations; callers must still
+uphold the C header ownership and lifetime contract. Fixed-binary OCB columns
+reuse reserved ABI fields through the documented
+`arcadia_tio_ocb_*fixed_binary_width` helpers; primitive `len` is row count,
+while fixed-binary fill-buffer `values_len` is byte capacity. The linked native
+library must export the matching `arcadia_tio_ocb_*` symbols when `format-ocb`
+is enabled; missing-symbol link errors mean the native library is older than the
+OCB C ABI surface.
 
 ## Link discovery
 
@@ -32,20 +35,15 @@ shared library at runtime (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, Windows
 
 ## Local tests
 
-Supply or copy the native C ABI library, then set `LIB_DIR` to the directory containing it:
+Build or obtain an operator-approved `arcadia_tio_capi` native library for your
+platform, then point Cargo and the platform runtime loader at that directory.
+From the public checkout root on Linux, for example:
 
 ```sh
-LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
-```
-
-Then run the sys crate tests with the native library directory selected
-explicitly. From the repository root on Linux:
-
-```sh
-LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
+LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"  # or another absolute lib dir
 ARCADIA_TIO_CAPI_LIB_DIR="$LIB_DIR" \
 LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-  cargo test -p arcadia-tio-sys
+  cargo test -p arcadia-tio-sys --no-default-features --features format-ocb
 ```
 
 On macOS, use `DYLD_LIBRARY_PATH` instead of `LD_LIBRARY_PATH`. On Windows, add

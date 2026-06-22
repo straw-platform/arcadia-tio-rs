@@ -72,6 +72,20 @@ if link fails with missing `arcadia_tio_ocb_create`, `arcadia_tio_ocb_append`,
 `arcadia_tio_ocb_plan_read`, or related symbols, refresh the native library
 before testing `format-ocb`.
 
+OCB also supports generic fixed-width opaque byte columns for compact packed
+payload storage. Declare the schema as `PhysicalType::FixedBinary { width }`,
+write row-major bytes with `PrimitiveValues::FixedBinary { width, bytes }`, and
+fill caller-owned buffers with `ColumnFillBufferMut::FixedBinary`; in all cases
+`bytes.len()` must equal `row_count * width`. Fixed-binary columns are payload
+columns only in the first slice: predicates, ordering keys, scalar statistics,
+and dictionary-code fixed-binary columns fail closed, so scalar columns should
+remain responsible for pruning and ordering. The `ocb_fixed_binary` example is a
+minimal generic roundtrip:
+
+```sh
+cargo run --no-default-features --features format-ocb --example ocb_fixed_binary
+```
+
 Append, sparse-intent analysis, OCB create/append/read, mutation, reform,
 compaction, diagnostics, and attributed read helpers borrow Rust
 slices/paths/trace-context strings only for
