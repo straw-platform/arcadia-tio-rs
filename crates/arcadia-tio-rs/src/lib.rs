@@ -15786,6 +15786,140 @@ pub mod ocb {
         }
     }
 
+    /// Generic OCB body-object kind recorded by a summary body reference.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BodyKind {
+        Unknown,
+        Root,
+        Schema,
+        DictionaryIndex,
+        DictionaryValues,
+        RowGroupIndex,
+        OrderingProof,
+        ColumnChunk,
+        StringTable,
+        DebugJsonMetadata,
+        ValidityBitmap,
+        KeyTuple,
+        RowGroupIndexDelta,
+        Other(i32),
+    }
+
+    impl BodyKind {
+        fn from_raw(raw: sys::ArcadiaTioOcbBodyKind) -> Self {
+            match raw {
+                sys::ARCADIA_TIO_OCB_BODY_KIND_UNKNOWN => Self::Unknown,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_ROOT => Self::Root,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_SCHEMA => Self::Schema,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_INDEX => Self::DictionaryIndex,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_VALUES => Self::DictionaryValues,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX => Self::RowGroupIndex,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_ORDERING_PROOF => Self::OrderingProof,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_COLUMN_CHUNK => Self::ColumnChunk,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_STRING_TABLE => Self::StringTable,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_DEBUG_JSON_METADATA => Self::DebugJsonMetadata,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_VALIDITY_BITMAP => Self::ValidityBitmap,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_KEY_TUPLE => Self::KeyTuple,
+                sys::ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX_DELTA => Self::RowGroupIndexDelta,
+                other => Self::Other(other),
+            }
+        }
+    }
+
+    /// Generic OCB checksum kind recorded by a body reference.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ChecksumKind {
+        None,
+        Crc32c,
+        Other(i32),
+    }
+
+    impl ChecksumKind {
+        fn from_raw(raw: sys::ArcadiaTioOcbChecksumKind) -> Self {
+            match raw {
+                sys::ARCADIA_TIO_OCB_CHECKSUM_KIND_NONE => Self::None,
+                sys::ARCADIA_TIO_OCB_CHECKSUM_KIND_CRC32C => Self::Crc32c,
+                other => Self::Other(other),
+            }
+        }
+    }
+
+    /// Generic column-chunk summary codec.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ColumnChunkSummaryCodec {
+        None,
+        Zstd,
+        Other(i32),
+    }
+
+    impl ColumnChunkSummaryCodec {
+        fn from_raw(raw: sys::ArcadiaTioOcbColumnChunkSummaryCodec) -> Self {
+            match raw {
+                sys::ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_NONE => Self::None,
+                sys::ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_ZSTD => Self::Zstd,
+                other => Self::Other(other),
+            }
+        }
+    }
+
+    /// OCB writer chunk codec.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum WriteChunkCodec {
+        None,
+        Zstd { level: i32 },
+    }
+
+    impl WriteChunkCodec {
+        fn to_raw(self) -> (sys::ArcadiaTioOcbWriteChunkCodec, i32) {
+            match self {
+                Self::None => (sys::ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_NONE, 3),
+                Self::Zstd { level } => (sys::ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_ZSTD, level),
+            }
+        }
+    }
+
+    /// OCB write options for create/append.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct WriteOptions {
+        pub write_threads: usize,
+        pub chunk_codec: WriteChunkCodec,
+    }
+
+    impl Default for WriteOptions {
+        fn default() -> Self {
+            Self {
+                write_threads: 1,
+                chunk_codec: WriteChunkCodec::None,
+            }
+        }
+    }
+
+    impl WriteOptions {
+        pub fn zstd(level: i32) -> Self {
+            Self {
+                write_threads: 1,
+                chunk_codec: WriteChunkCodec::Zstd { level },
+            }
+        }
+
+        pub fn with_write_threads(mut self, write_threads: usize) -> Self {
+            self.write_threads = write_threads;
+            self
+        }
+
+        fn to_raw(self) -> sys::ArcadiaTioOcbWriteOptions {
+            let (chunk_codec, zstd_level) = self.chunk_codec.to_raw();
+            sys::ArcadiaTioOcbWriteOptions {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbWriteOptions>(),
+                write_threads: self.write_threads,
+                chunk_codec,
+                zstd_level,
+                reserved: [0; 4],
+            }
+        }
+    }
+
     /// Primitive physical type supported by OCB columns.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PhysicalType {
@@ -16529,6 +16663,58 @@ pub mod ocb {
         pub attribution: ReadAttribution,
     }
 
+    /// Generic OCB body reference summary.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BodyRefSummary {
+        pub offset: u64,
+        pub length: u64,
+        pub kind: BodyKind,
+        pub flags: u16,
+        pub checksum_kind: ChecksumKind,
+        pub checksum: u32,
+    }
+
+    /// Generic OCB column chunk summary.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ColumnChunkSummary {
+        pub row_group_id: u32,
+        pub column_id: u32,
+        pub column_name: String,
+        pub physical_type: PhysicalType,
+        pub logical_kind: LogicalKind,
+        pub fixed_binary_width: Option<u32>,
+        pub codec: ColumnChunkSummaryCodec,
+        pub row_count: u64,
+        pub compressed_bytes: u64,
+        pub uncompressed_bytes: u64,
+        pub value_ref: BodyRefSummary,
+        pub validity_ref: Option<BodyRefSummary>,
+    }
+
+    /// Generic OCB scalar stats summary.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ColumnStatsSummary {
+        pub row_group_id: u32,
+        pub column_id: u32,
+        pub column_name: String,
+        pub physical_type: PhysicalType,
+        pub null_count: u32,
+        pub min: PredicateValue,
+        pub max: PredicateValue,
+    }
+
+    /// Generic OCB row-group summary.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct RowGroupSummary {
+        pub row_group_id: u32,
+        pub base_row: u64,
+        pub row_count: u64,
+        pub first_key_tuple_ref: Option<BodyRefSummary>,
+        pub last_key_tuple_ref: Option<BodyRefSummary>,
+        pub chunks: Vec<ColumnChunkSummary>,
+        pub stats: Vec<ColumnStatsSummary>,
+    }
+
     /// Visitor return control for bounded OCB reads.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum VisitControl {
@@ -16849,6 +17035,38 @@ pub mod ocb {
             })
         }
 
+        /// Return generic metadata summaries for every visible row group.
+        pub fn row_group_summaries(&self) -> OcbResult<Vec<RowGroupSummary>> {
+            let mut raw = empty_row_group_summaries();
+            let status =
+                unsafe { sys::arcadia_tio_ocb_row_group_summaries(self.raw.as_ptr(), &mut raw) };
+            let guard = RowGroupSummariesGuard(raw);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB row_group_summaries failed"));
+            }
+            unsafe { row_group_summaries_from_raw(&guard.0) }
+        }
+
+        /// Return generic summaries for row groups selected by a read plan.
+        pub fn read_plan_row_group_summaries(
+            &self,
+            plan: &ReadPlan<'_>,
+        ) -> OcbResult<Vec<RowGroupSummary>> {
+            let mut raw = empty_row_group_summaries();
+            let status = unsafe {
+                sys::arcadia_tio_ocb_read_plan_row_group_summaries(
+                    self.raw.as_ptr(),
+                    plan.raw.as_ptr(),
+                    &mut raw,
+                )
+            };
+            let guard = RowGroupSummariesGuard(raw);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB read_plan_row_group_summaries failed"));
+            }
+            unsafe { row_group_summaries_from_raw(&guard.0) }
+        }
+
         /// Visit projected/pruned row-group batches incrementally.
         ///
         /// Each callback receives an owned Rust `ColumnBatch` copied from the
@@ -17022,12 +17240,30 @@ pub mod ocb {
 
     /// Create an appendable OCB file and publish its first committed root.
     pub fn create(path: impl AsRef<Path>, spec: &WriteSpec) -> OcbResult<()> {
-        write_path(path, spec, true)
+        write_path(path, spec, true, None)
+    }
+
+    /// Create an appendable OCB file with explicit writer options.
+    pub fn create_with_options(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        options: WriteOptions,
+    ) -> OcbResult<()> {
+        write_path(path, spec, true, Some(options))
     }
 
     /// Append one sorted suffix commit to an existing appendable OCB file.
     pub fn append(path: impl AsRef<Path>, spec: &WriteSpec) -> OcbResult<()> {
-        write_path(path, spec, false)
+        write_path(path, spec, false, None)
+    }
+
+    /// Append one sorted suffix commit with explicit writer options.
+    pub fn append_with_options(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        options: WriteOptions,
+    ) -> OcbResult<()> {
+        write_path(path, spec, false, Some(options))
     }
 
     /// Truncate orphan tail bytes after the latest valid appendable OCB root.
@@ -17049,13 +17285,24 @@ pub mod ocb {
         }
     }
 
-    fn write_path(path: impl AsRef<Path>, spec: &WriteSpec, create_file: bool) -> OcbResult<()> {
+    fn write_path(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        create_file: bool,
+        options: Option<WriteOptions>,
+    ) -> OcbResult<()> {
         let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
         let raw = RawWriteSpec::new(spec)?;
-        let status = if create_file {
-            unsafe { sys::arcadia_tio_ocb_create(path.as_ptr(), &raw.raw) }
-        } else {
-            unsafe { sys::arcadia_tio_ocb_append(path.as_ptr(), &raw.raw) }
+        let raw_options = options.map(WriteOptions::to_raw);
+        let status = match (create_file, raw_options.as_ref()) {
+            (true, Some(options)) => unsafe {
+                sys::arcadia_tio_ocb_create_with_options(path.as_ptr(), &raw.raw, options)
+            },
+            (false, Some(options)) => unsafe {
+                sys::arcadia_tio_ocb_append_with_options(path.as_ptr(), &raw.raw, options)
+            },
+            (true, None) => unsafe { sys::arcadia_tio_ocb_create(path.as_ptr(), &raw.raw) },
+            (false, None) => unsafe { sys::arcadia_tio_ocb_append(path.as_ptr(), &raw.raw) },
         };
         if status == sys::ARCADIA_TIO_ERROR_OK {
             Ok(())
@@ -17733,6 +17980,16 @@ pub mod ocb {
         }
     }
 
+    fn empty_row_group_summaries() -> sys::ArcadiaTioOcbRowGroupSummaries {
+        sys::ArcadiaTioOcbRowGroupSummaries {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbRowGroupSummaries>(),
+            row_groups: ptr::null_mut(),
+            row_groups_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
     struct MetadataGuard(sys::ArcadiaTioOcbMetadata);
     impl Drop for MetadataGuard {
         fn drop(&mut self) {
@@ -17772,6 +18029,13 @@ pub mod ocb {
     impl Drop for ReadOutcomeGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_read_outcome_free(&mut self.0) };
+        }
+    }
+
+    struct RowGroupSummariesGuard(sys::ArcadiaTioOcbRowGroupSummaries);
+    impl Drop for RowGroupSummariesGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_row_group_summaries_free(&mut self.0) };
         }
     }
 
@@ -17991,6 +18255,95 @@ pub mod ocb {
             name: raw_string(raw.name.cast()),
             values,
         })
+    }
+
+    unsafe fn row_group_summaries_from_raw(
+        raw: &sys::ArcadiaTioOcbRowGroupSummaries,
+    ) -> OcbResult<Vec<RowGroupSummary>> {
+        unsafe { raw_slice(raw.row_groups, raw.row_groups_len) }
+            .iter()
+            .map(|summary| unsafe { row_group_summary_from_raw(summary) })
+            .collect()
+    }
+
+    unsafe fn row_group_summary_from_raw(
+        raw: &sys::ArcadiaTioOcbRowGroupSummary,
+    ) -> OcbResult<RowGroupSummary> {
+        Ok(RowGroupSummary {
+            row_group_id: raw.row_group_id,
+            base_row: raw.base_row,
+            row_count: raw.row_count,
+            first_key_tuple_ref: (raw.has_first_key_tuple_ref != 0)
+                .then(|| body_ref_summary_from_raw(&raw.first_key_tuple_ref)),
+            last_key_tuple_ref: (raw.has_last_key_tuple_ref != 0)
+                .then(|| body_ref_summary_from_raw(&raw.last_key_tuple_ref)),
+            chunks: unsafe { raw_slice(raw.chunks, raw.chunks_len) }
+                .iter()
+                .map(|chunk| unsafe { column_chunk_summary_from_raw(chunk) })
+                .collect::<OcbResult<Vec<_>>>()?,
+            stats: unsafe { raw_slice(raw.stats, raw.stats_len) }
+                .iter()
+                .map(|stats| unsafe { column_stats_summary_from_raw(stats) })
+                .collect::<OcbResult<Vec<_>>>()?,
+        })
+    }
+
+    fn body_ref_summary_from_raw(raw: &sys::ArcadiaTioOcbBodyRefSummary) -> BodyRefSummary {
+        BodyRefSummary {
+            offset: raw.offset,
+            length: raw.length,
+            kind: BodyKind::from_raw(raw.kind),
+            flags: raw.flags,
+            checksum_kind: ChecksumKind::from_raw(raw.checksum_kind),
+            checksum: raw.checksum,
+        }
+    }
+
+    unsafe fn column_chunk_summary_from_raw(
+        raw: &sys::ArcadiaTioOcbColumnChunkSummary,
+    ) -> OcbResult<ColumnChunkSummary> {
+        Ok(ColumnChunkSummary {
+            row_group_id: raw.row_group_id,
+            column_id: raw.column_id,
+            column_name: raw_string(raw.column_name),
+            physical_type: PhysicalType::from_raw_with_width(
+                raw.physical_type,
+                raw.fixed_binary_width,
+            ),
+            logical_kind: LogicalKind::from_raw(raw.logical_kind),
+            fixed_binary_width: (raw.fixed_binary_width != 0).then_some(raw.fixed_binary_width),
+            codec: ColumnChunkSummaryCodec::from_raw(raw.codec),
+            row_count: raw.row_count,
+            compressed_bytes: raw.compressed_bytes,
+            uncompressed_bytes: raw.uncompressed_bytes,
+            value_ref: body_ref_summary_from_raw(&raw.value_ref),
+            validity_ref: (raw.has_validity_ref != 0)
+                .then(|| body_ref_summary_from_raw(&raw.validity_ref)),
+        })
+    }
+
+    unsafe fn column_stats_summary_from_raw(
+        raw: &sys::ArcadiaTioOcbColumnStatsSummary,
+    ) -> OcbResult<ColumnStatsSummary> {
+        Ok(ColumnStatsSummary {
+            row_group_id: raw.row_group_id,
+            column_id: raw.column_id,
+            column_name: raw_string(raw.column_name),
+            physical_type: PhysicalType::from_raw(raw.physical_type),
+            null_count: raw.null_count,
+            min: predicate_value_from_raw(&raw.min),
+            max: predicate_value_from_raw(&raw.max),
+        })
+    }
+
+    fn predicate_value_from_raw(raw: &sys::ArcadiaTioOcbPredicateValue) -> PredicateValue {
+        match raw.physical_type {
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32 => PredicateValue::I32(raw.i32_value),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I64 => PredicateValue::I64(raw.i64_value),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F32 => PredicateValue::F32(raw.f32_value),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F64 => PredicateValue::F64(raw.f64_value),
+            _ => PredicateValue::I32(0),
+        }
     }
 
     unsafe fn read_outcome_from_raw(raw: &sys::ArcadiaTioOcbReadOutcome) -> OcbResult<ReadOutcome> {

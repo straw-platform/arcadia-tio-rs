@@ -40,22 +40,27 @@ release-readiness claims.
 
 The non-default `format-ocb` feature exposes the appendable OCB (Ordered Column
 Bundle) API in `arcadia_tio_rs::ocb`. Use `ocb::create` with a `WriteSpec` to
-publish the first root, `ocb::append` to add sorted suffix commits that repeat
-the frozen schema/dictionary/order declarations, `ColumnBundleFile::open` to
-bind a handle to one committed snapshot, `open_with_options` when explicit
-full-payload validation is required before reads, and `metadata`,
-`dictionary_values`, and `read_batches` to copy native-owned OCB
-metadata/dictionaries/batches into Rust-owned structs before the C buffers are
-freed. `ReadRequest::from_ordering_key_ranges` and
+publish the first root, `ocb::create_with_options` / `ocb::append_with_options`
+to select bounded writer threads and `none`/`zstd` chunk compression explicitly,
+`ocb::append` to add sorted suffix commits that repeat the frozen
+schema/dictionary/order declarations, `ColumnBundleFile::open` to bind a handle
+to one committed snapshot, `open_with_options` when explicit full-payload
+validation is required before reads, and `metadata`, `dictionary_values`,
+`row_group_summaries`, and `read_batches` to copy native-owned OCB
+metadata/dictionaries/summaries/batches into Rust-owned structs before the C
+buffers are freed. `ReadRequest::from_ordering_key_ranges` and
 `with_ordering_key_ranges` build pruning-only predicate requests from generic
 scalar bounds over declared ordering keys. For callers that need scheduling
-control before payload reads, `plan_read` exposes snapshot-local projected
-column ids and row-group ids;
+control before payload reads, `plan_read` exposes snapshot-local projected column
+ids and row-group ids;
+`read_plan_row_group_summaries` inspects the selected plan row groups,
 `read_plan_batches` executes the whole plan, and `read_plan_row_groups` executes
 a duplicate/unknown-id-checked subset in deterministic plan order.
 `read_batches_with_attribution` additionally returns diagnostic-only timing and
 byte counters for planning, file reads, checksums, decompression, primitive
-conversion, native C conversion, and wrapper copying. `visit_batches` consumes
+conversion, native C conversion, and wrapper copying. Summary values remain
+generic row-group/chunk/stat metadata and do not encode market-data semantics.
+`visit_batches` consumes
 row-group batches incrementally with `max_in_flight_row_groups` and callback
 cancellation while still copying each callback batch into owned Rust values.
 `read_row_group_into` fills caller-owned typed buffers selected by generic
@@ -72,8 +77,13 @@ machine-readable handling. Dictionary-coded reads return primitive codes; use
 and tests generate tiny project-local `.ocb` files and require an OCB-capable
 `arcadia_tio_capi` native library with the `arcadia_tio_ocb_*` symbols exported;
 if link fails with missing `arcadia_tio_ocb_create`, `arcadia_tio_ocb_append`,
-`arcadia_tio_ocb_plan_read`, or related symbols, refresh the native library
-before testing `format-ocb`.
+`arcadia_tio_ocb_plan_read`, `arcadia_tio_ocb_row_group_summaries`, or related
+symbols, refresh the native library before testing `format-ocb`. For downstream
+runtime experiments, validate against the exact native library that will be
+deployed and use wrapper summaries/attribution as generic preflight data only:
+row-group pruning is not exact row filtering, and payload replay should start
+only after the application has certified key continuity and payload shape for the
+selected owner-local/channel-local window.
 
 OCB also supports generic fixed-width opaque byte columns for compact packed
 payload storage. Declare the schema as `PhysicalType::FixedBinary { width }`,

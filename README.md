@@ -74,18 +74,18 @@ bindings. `csv` and `parquet` provide companion owned `Tensor` conversions with
 explicit dtype/shape/order metadata; they are not native `.tio` storage formats
 or file-to-file native conversion shortcuts. `format-ocb` exposes
 `arcadia_tio_rs::ocb` safe wrappers and matching raw sys declarations for OCB
-create/append/open/metadata/dictionary/read/cleanup. OCB read requests can be
-built from generic ordering-key ranges for row-group pruning. OCB read results own copied
-Rust values, dictionary-coded columns return primitive codes, and decoded
-dictionaries are explicit via `dictionary_values`. Enabling `format-ocb` requires
-an OCB-capable native library with the `arcadia_tio_ocb_*` symbols exported;
-missing-symbol link errors mean the native library predates this OCB C ABI.
-OCB fixed-binary payload columns are available as
-`PhysicalType::FixedBinary { width }` and
+create/append/open/metadata/dictionary/summary/read/cleanup. OCB read requests
+can be built from generic ordering-key ranges for row-group pruning. OCB read
+results own copied Rust values, dictionary-coded columns return primitive codes,
+and decoded dictionaries are explicit via `dictionary_values`. OCB fixed-binary
+payload columns are available as `PhysicalType::FixedBinary { width }` and
 `PrimitiveValues::FixedBinary { width, bytes }`, with `bytes.len() == rows *
 width`; predicates and ordering remain scalar-column responsibilities in this
 first slice. See `cargo run --no-default-features --features format-ocb
---example ocb_fixed_binary` for a generic opaque-byte roundtrip.
+--example ocb_fixed_binary` for a generic opaque-byte roundtrip. Enabling
+`format-ocb` requires an OCB-capable native library with the
+`arcadia_tio_ocb_*` symbols exported; missing-symbol link errors mean the native
+library predates this OCB C ABI.
 
 The Rust wrapper links to the native C ABI library, so the consuming build must
 also provide `libarcadia_tio_capi`/`arcadia_tio_capi`. Point link discovery and

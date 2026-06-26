@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arcadia_tio_rs::ocb::{
-    self, ColumnBundleFile, DecodedDictionaryValues, DictionaryValueKind, LogicalKind, NullOrder,
+    self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec,
+    DecodedDictionaryValues, DictionaryValueKind, LogicalKind, NullOrder,
     OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
     PhysicalType, PredicateValue, PrimitiveValues, Projection, ReadRequest, RowGroupPredicate,
-    WriteColumn, WriteColumnChunk, WriteDictionary, WriteOrderingKey, WriteRowGroup, WriteSpec,
+    WriteColumn, WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup,
+    WriteSpec,
 };
 
 #[test]
@@ -20,7 +22,12 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     let path = unique_path("ocb-safe-wrapper-roundtrip.ocb");
     let _ = fs::remove_file(&path);
 
-    ocb::create(&path, &write_spec(&[10, 11], &[0, 1], &[1.5, 2.5])).expect("create OCB");
+    ocb::create_with_options(
+        &path,
+        &write_spec(&[10, 11], &[0, 1], &[1.5, 2.5]),
+        WriteOptions::zstd(3).with_write_threads(2),
+    )
+    .expect("create OCB");
     let create_snapshot = ColumnBundleFile::open(&path).expect("open create snapshot");
     let create_meta = create_snapshot.metadata().expect("create metadata");
     assert_eq!(create_meta.format_name, "OCB");
@@ -32,7 +39,12 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert_eq!(create_meta.dictionaries.len(), 1);
     assert_eq!(create_meta.ordering_keys.len(), 1);
 
-    ocb::append(&path, &write_spec(&[12, 13], &[1, 0], &[3.5, 4.5])).expect("append OCB");
+    ocb::append_with_options(
+        &path,
+        &write_spec(&[12, 13], &[1, 0], &[3.5, 4.5]),
+        WriteOptions::zstd(3).with_write_threads(2),
+    )
+    .expect("append OCB");
     assert_eq!(
         create_snapshot
             .metadata()
@@ -71,6 +83,21 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         dictionary.values,
         DecodedDictionaryValues::Utf8(vec!["alpha".to_string(), "beta".to_string()])
     );
+
+    let summaries = file.row_group_summaries().expect("row group summaries");
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].row_group_id, 0);
+    assert_eq!(summaries[0].chunks.len(), 3);
+    assert_eq!(summaries[0].stats.len(), 2);
+    assert_eq!(summaries[0].chunks[0].value_ref.kind, BodyKind::ColumnChunk);
+    assert_eq!(
+        summaries[0].chunks[0].value_ref.checksum_kind,
+        ChecksumKind::Crc32c
+    );
+    assert!(matches!(
+        summaries[0].chunks[0].codec,
+        ColumnChunkSummaryCodec::None | ColumnChunkSummaryCodec::Zstd
+    ));
 
     let default_outcome = file
         .read_batches(&ReadRequest::default())
@@ -114,6 +141,11 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert_eq!(plan.projected_column_ids, vec![0, 2]);
     assert_eq!(plan.row_group_ids, vec![0, 1]);
     assert_eq!(plan.report.selected_row_groups, 2);
+    let plan_summaries = file
+        .read_plan_row_group_summaries(&plan)
+        .expect("plan row group summaries");
+    assert_eq!(plan_summaries.len(), 2);
+    assert_eq!(plan_summaries[0].chunks.len(), 2);
     let planned_outcome = file.read_plan_batches(&plan).expect("execute full plan");
     assert_eq!(planned_outcome.batches, outcome.batches);
     let subset_outcome = file
@@ -216,8 +248,8 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         projection: Projection::Names(vec!["category_code".to_string()]),
         predicates: vec![RowGroupPredicate {
             column: "sequence_key".to_string(),
-            lower: Some(PredicateValue::I64(12)),
-            upper: Some(PredicateValue::I64(13)),
+            lower: Some(arcadia_tio_rs::ocb::PredicateValue::I64(12)),
+            upper: Some(arcadia_tio_rs::ocb::PredicateValue::I64(13)),
         }],
         max_threads: 1,
         ..ReadRequest::default()

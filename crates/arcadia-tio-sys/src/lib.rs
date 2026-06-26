@@ -64,6 +64,18 @@ pub type ArcadiaTioOcbNullOrder = c_int;
 /// OCB projection-kind selector.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbProjectionKind = c_int;
+/// OCB body kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbBodyKind = c_int;
+/// OCB checksum kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbChecksumKind = c_int;
+/// OCB column-chunk summary codec selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbColumnChunkSummaryCodec = c_int;
+/// OCB write chunk codec selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbWriteChunkCodec = c_int;
 /// OCB batch visitor callback.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbBatchVisitor = Option<
@@ -259,6 +271,44 @@ raw_constant!(ARCADIA_TIO_OCB_NULL_ORDER_NO_NULLS: ArcadiaTioOcbNullOrder = 2);
 raw_constant!(ARCADIA_TIO_OCB_PROJECTION_ALL: ArcadiaTioOcbProjectionKind = 0);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_PROJECTION_NAMES: ArcadiaTioOcbProjectionKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_UNKNOWN: ArcadiaTioOcbBodyKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROOT: ArcadiaTioOcbBodyKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_SCHEMA: ArcadiaTioOcbBodyKind = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_INDEX: ArcadiaTioOcbBodyKind = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_VALUES: ArcadiaTioOcbBodyKind = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX: ArcadiaTioOcbBodyKind = 5);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ORDERING_PROOF: ArcadiaTioOcbBodyKind = 6);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_COLUMN_CHUNK: ArcadiaTioOcbBodyKind = 7);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_STRING_TABLE: ArcadiaTioOcbBodyKind = 8);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DEBUG_JSON_METADATA: ArcadiaTioOcbBodyKind = 9);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_VALIDITY_BITMAP: ArcadiaTioOcbBodyKind = 10);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_KEY_TUPLE: ArcadiaTioOcbBodyKind = 11);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX_DELTA: ArcadiaTioOcbBodyKind = 12);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_CHECKSUM_KIND_NONE: ArcadiaTioOcbChecksumKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_CHECKSUM_KIND_CRC32C: ArcadiaTioOcbChecksumKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_NONE: ArcadiaTioOcbColumnChunkSummaryCodec = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_ZSTD: ArcadiaTioOcbColumnChunkSummaryCodec = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_NONE: ArcadiaTioOcbWriteChunkCodec = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_ZSTD: ArcadiaTioOcbWriteChunkCodec = 1);
 
 raw_constant!(ARCADIA_TIO_DTYPE_F32: ArcadiaTioDType = 0);
 raw_constant!(ARCADIA_TIO_DTYPE_F64: ArcadiaTioDType = 1);
@@ -834,6 +884,20 @@ pub struct ArcadiaTioOcbWriteSpec {
     pub reserved: [u64; 4],
 }
 
+/// OCB write options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWriteOptions {
+    pub version: u32,
+    pub struct_size: usize,
+    pub write_threads: usize,
+    pub chunk_codec: ArcadiaTioOcbWriteChunkCodec,
+    pub zstd_level: i32,
+    pub reserved: [u64; 4],
+}
+
 /// OCB cleanup result.
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -1006,6 +1070,96 @@ pub struct ArcadiaTioOcbReadAttribution {
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbBodyRefSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub offset: u64,
+    pub length: u64,
+    pub kind: ArcadiaTioOcbBodyKind,
+    pub flags: u16,
+    pub checksum_kind: ArcadiaTioOcbChecksumKind,
+    pub checksum: u32,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbColumnChunkSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub column_name: *mut c_char,
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    pub logical_kind: ArcadiaTioOcbLogicalKind,
+    pub fixed_binary_width: u32,
+    pub codec: ArcadiaTioOcbColumnChunkSummaryCodec,
+    pub row_count: u64,
+    pub compressed_bytes: u64,
+    pub uncompressed_bytes: u64,
+    pub value_ref: ArcadiaTioOcbBodyRefSummary,
+    pub has_validity_ref: u8,
+    pub validity_ref: ArcadiaTioOcbBodyRefSummary,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbColumnStatsSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub column_name: *mut c_char,
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    pub null_count: u32,
+    pub min: ArcadiaTioOcbPredicateValue,
+    pub max: ArcadiaTioOcbPredicateValue,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbRowGroupSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub base_row: u64,
+    pub row_count: u64,
+    pub has_first_key_tuple_ref: u8,
+    pub first_key_tuple_ref: ArcadiaTioOcbBodyRefSummary,
+    pub has_last_key_tuple_ref: u8,
+    pub last_key_tuple_ref: ArcadiaTioOcbBodyRefSummary,
+    pub chunks: *mut ArcadiaTioOcbColumnChunkSummary,
+    pub chunks_len: usize,
+    pub stats: *mut ArcadiaTioOcbColumnStatsSummary,
+    pub stats_len: usize,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbRowGroupSummaries {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_groups: *mut ArcadiaTioOcbRowGroupSummary,
+    pub row_groups_len: usize,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
 pub struct ArcadiaTioOcbReadCursorOptions {
     /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
     pub version: u32,
@@ -2939,7 +3093,20 @@ unsafe extern "C" {
         out_ids_len: usize,
         out_required_len: *mut usize,
     ) -> ArcadiaTioErrorCode;
-    /// Reads all or a subset of batches from a read plan.
+    /// Returns owned row-group summaries for a selected OCB snapshot.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_row_group_summaries(
+        file: *mut ArcadiaTioOcbFile,
+        out_summaries: *mut ArcadiaTioOcbRowGroupSummaries,
+    ) -> ArcadiaTioErrorCode;
+    /// Returns owned row-group summaries for a read plan.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_read_plan_row_group_summaries(
+        file: *mut ArcadiaTioOcbFile,
+        plan: *const ArcadiaTioOcbReadPlan,
+        out_summaries: *mut ArcadiaTioOcbRowGroupSummaries,
+    ) -> ArcadiaTioErrorCode;
+    /// Reads OCB batches from an existing read plan.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_batches_from_plan(
         file: *mut ArcadiaTioOcbFile,
@@ -3028,6 +3195,15 @@ unsafe extern "C" {
     /// Initializes an OCB write spec.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_write_spec_init(spec: *mut ArcadiaTioOcbWriteSpec);
+    /// Initializes OCB write options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_write_options_init(options: *mut ArcadiaTioOcbWriteOptions);
+    /// Initializes an OCB row-group summary output container.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_row_group_summaries_init(summaries: *mut ArcadiaTioOcbRowGroupSummaries);
+    /// Frees an OCB row-group summary output container.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_row_group_summaries_free(summaries: *mut ArcadiaTioOcbRowGroupSummaries);
     /// Initializes an OCB cleanup result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_cleanup_result_init(result: *mut ArcadiaTioOcbCleanupResult);
@@ -3069,11 +3245,25 @@ unsafe extern "C" {
         path: *const c_char,
         spec: *const ArcadiaTioOcbWriteSpec,
     ) -> ArcadiaTioErrorCode;
+    /// Creates an appendable OCB file with explicit writer options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_create_with_options(
+        path: *const c_char,
+        spec: *const ArcadiaTioOcbWriteSpec,
+        options: *const ArcadiaTioOcbWriteOptions,
+    ) -> ArcadiaTioErrorCode;
     /// Appends one sorted suffix commit to an existing appendable OCB file.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_append(
         path: *const c_char,
         spec: *const ArcadiaTioOcbWriteSpec,
+    ) -> ArcadiaTioErrorCode;
+    /// Appends to an OCB file with explicit writer options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_append_with_options(
+        path: *const c_char,
+        spec: *const ArcadiaTioOcbWriteSpec,
+        options: *const ArcadiaTioOcbWriteOptions,
     ) -> ArcadiaTioErrorCode;
     /// Truncates orphan tail bytes after the latest valid OCB root.
     #[cfg(feature = "format-ocb")]
