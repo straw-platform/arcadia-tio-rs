@@ -18,9 +18,10 @@ The `arcadia-tio-ocb-core` crate covers the clean Rust-core OCB reader boundary:
 selected-snapshot open, metadata/dictionary/row-group summaries, read planning,
 projected/predicate reads, explicit plan-local row-group visitors,
 reusable-buffer lower-copy visitors, generic fixed-binary record field projection
-helpers, read-plan certification summaries/fingerprints, callback-wall
-attribution, observed max-in-flight reporting, and stable duplicate/unknown
-row-group subset error constants. It does not depend on
+helpers and projected visitors, read-plan certification summaries/fingerprints,
+fixed-payload projection attribution, callback-wall attribution, observed
+max-in-flight reporting, and stable duplicate/unknown row-group subset error
+constants. It does not depend on
 `arcadia-tio-sys`, `arcadia-tio-capi`, a native library, or native-link build
 scripts.
 

@@ -6,12 +6,14 @@ Column Bundle (OCB) files.
 This crate is intended for downstream Rust integrations that need OCB
 selected-snapshot open, metadata inspection, read planning, projected/predicate
 batch reads, explicit row-group visitors, reusable-buffer lower-copy visitors,
-generic fixed-binary record field projection helpers, read-plan certification
-summaries, and read attribution without linking the native C ABI wrapper path.
+generic fixed-binary record field projection helpers and projected visitors,
+read-plan certification summaries, and read attribution without linking the
+native C ABI wrapper path.
 
 It does not provide writer APIs, C/Python bindings, `TensorFile`, market-data or
-L2 semantics, native compact-L2 decode/projection, payload certification
-manifests, native libraries, release artifacts, or performance/storage claims.
+L2 semantics, domain-specific compact-L2/fixed-ingress adapters, cryptographic
+payload certification manifests, native libraries, release artifacts, or
+performance/storage claims.
 
 ## Visitor contract
 
@@ -38,9 +40,12 @@ callback duration and are overwritten when the pool slot is reused.
 For packed fixed-width binary columns, `PrimitiveColumnValuesRef::fixed_binary_records`
 and `FixedBinaryRecordView::{project_fields, project_fields_with_report}` can
 decode little-endian primitive fields at caller-supplied byte offsets into
-caller-owned buffers with optional projection-wall attribution. This helper is
-generic; it does not add channel, BizIndex, fixed-ingress, order-book, replay, or
-market-data semantics to OCB.
+caller-owned buffers with optional projection-wall attribution. For the bounded
+visitor path, `fixed_binary_projection_buffer_for_plan(...)` plus
+`visit_plan_row_groups_project_fixed_binary_with_attribution(...)` performs the
+same generic projection inside TIO before the callback and reports
+`fixed_payload_decode_ns`. These helpers do not add channel, BizIndex,
+fixed-ingress, order-book, replay, or market-data semantics to OCB.
 
 For fail-closed payload-only gates, `snapshot_fingerprint()` and
 `read_plan_certification(...)` expose deterministic generic metadata

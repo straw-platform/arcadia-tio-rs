@@ -834,6 +834,314 @@ pub struct FixedBinaryProjectionReport {
     pub projection_wall_ns: u64,
 }
 
+/// Caller-described fixed-binary field for reusable projection visitors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedBinaryProjectedField {
+    /// Optional caller-owned field label for diagnostics and downstream mapping.
+    pub name: Option<String>,
+    /// Byte offset of the field inside each fixed-width record.
+    pub offset: u32,
+    /// Little-endian primitive field type to decode.
+    pub field_type: FixedBinaryFieldType,
+}
+
+/// Generic fixed-binary record projection description.
+///
+/// The projection names exactly one fixed-binary source column and decodes
+/// caller-described little-endian fields into caller-owned reusable buffers. It
+/// is intentionally generic: no channel, BizIndex, fixed-ingress, replay,
+/// order-book, or market-data semantics are attached to these APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedBinaryRecordProjection {
+    /// Optional file-local source column id.
+    pub column_id: Option<u32>,
+    /// Optional UTF-8 source column name.
+    pub column_name: Option<String>,
+    /// Expected fixed byte width for each source record.
+    pub expected_width: u32,
+    /// Whether a nullable source column/chunk is allowed. Required compact
+    /// payload paths should keep this `false` to fail closed before callbacks.
+    pub allow_nulls: bool,
+    /// Fields to project from every record.
+    pub fields: Vec<FixedBinaryProjectedField>,
+}
+
+/// Borrowed field values from a reusable fixed-binary projection buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FixedBinaryFieldValuesRef<'a> {
+    /// Unsigned 8-bit integer values.
+    U8(&'a [u8]),
+    /// Signed 8-bit integer values.
+    I8(&'a [i8]),
+    /// Unsigned 16-bit integer values.
+    U16(&'a [u16]),
+    /// Signed 16-bit integer values.
+    I16(&'a [i16]),
+    /// Unsigned 32-bit integer values.
+    U32(&'a [u32]),
+    /// Signed 32-bit integer values.
+    I32(&'a [i32]),
+    /// Unsigned 64-bit integer values.
+    U64(&'a [u64]),
+    /// Signed 64-bit integer values.
+    I64(&'a [i64]),
+}
+
+/// Owned reusable storage for one projected fixed-binary field.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReusableFixedBinaryFieldValues {
+    /// Unsigned 8-bit integer output values.
+    U8(Vec<u8>),
+    /// Signed 8-bit integer output values.
+    I8(Vec<i8>),
+    /// Unsigned 16-bit integer output values.
+    U16(Vec<u16>),
+    /// Signed 16-bit integer output values.
+    I16(Vec<i16>),
+    /// Unsigned 32-bit integer output values.
+    U32(Vec<u32>),
+    /// Signed 32-bit integer output values.
+    I32(Vec<i32>),
+    /// Unsigned 64-bit integer output values.
+    U64(Vec<u64>),
+    /// Signed 64-bit integer output values.
+    I64(Vec<i64>),
+}
+
+impl ReusableFixedBinaryFieldValues {
+    fn new(field_type: FixedBinaryFieldType, capacity: usize) -> Self {
+        match field_type {
+            FixedBinaryFieldType::U8 => Self::U8(vec![0; capacity]),
+            FixedBinaryFieldType::I8 => Self::I8(vec![0; capacity]),
+            FixedBinaryFieldType::U16Le => Self::U16(vec![0; capacity]),
+            FixedBinaryFieldType::I16Le => Self::I16(vec![0; capacity]),
+            FixedBinaryFieldType::U32Le => Self::U32(vec![0; capacity]),
+            FixedBinaryFieldType::I32Le => Self::I32(vec![0; capacity]),
+            FixedBinaryFieldType::U64Le => Self::U64(vec![0; capacity]),
+            FixedBinaryFieldType::I64Le => Self::I64(vec![0; capacity]),
+        }
+    }
+
+    fn field_type(&self) -> FixedBinaryFieldType {
+        match self {
+            Self::U8(_) => FixedBinaryFieldType::U8,
+            Self::I8(_) => FixedBinaryFieldType::I8,
+            Self::U16(_) => FixedBinaryFieldType::U16Le,
+            Self::I16(_) => FixedBinaryFieldType::I16Le,
+            Self::U32(_) => FixedBinaryFieldType::U32Le,
+            Self::I32(_) => FixedBinaryFieldType::I32Le,
+            Self::U64(_) => FixedBinaryFieldType::U64Le,
+            Self::I64(_) => FixedBinaryFieldType::I64Le,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::U8(values) => values.len(),
+            Self::I8(values) => values.len(),
+            Self::U16(values) => values.len(),
+            Self::I16(values) => values.len(),
+            Self::U32(values) => values.len(),
+            Self::I32(values) => values.len(),
+            Self::U64(values) => values.len(),
+            Self::I64(values) => values.len(),
+        }
+    }
+
+    fn values_mut(&mut self) -> FixedBinaryFieldValuesMut<'_> {
+        match self {
+            Self::U8(values) => FixedBinaryFieldValuesMut::U8(values.as_mut_slice()),
+            Self::I8(values) => FixedBinaryFieldValuesMut::I8(values.as_mut_slice()),
+            Self::U16(values) => FixedBinaryFieldValuesMut::U16(values.as_mut_slice()),
+            Self::I16(values) => FixedBinaryFieldValuesMut::I16(values.as_mut_slice()),
+            Self::U32(values) => FixedBinaryFieldValuesMut::U32(values.as_mut_slice()),
+            Self::I32(values) => FixedBinaryFieldValuesMut::I32(values.as_mut_slice()),
+            Self::U64(values) => FixedBinaryFieldValuesMut::U64(values.as_mut_slice()),
+            Self::I64(values) => FixedBinaryFieldValuesMut::I64(values.as_mut_slice()),
+        }
+    }
+
+    fn values_ref(&self, row_count: usize) -> Result<FixedBinaryFieldValuesRef<'_>> {
+        if self.len() < row_count {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection buffer is too small for row group",
+            ));
+        }
+        Ok(match self {
+            Self::U8(values) => FixedBinaryFieldValuesRef::U8(&values[..row_count]),
+            Self::I8(values) => FixedBinaryFieldValuesRef::I8(&values[..row_count]),
+            Self::U16(values) => FixedBinaryFieldValuesRef::U16(&values[..row_count]),
+            Self::I16(values) => FixedBinaryFieldValuesRef::I16(&values[..row_count]),
+            Self::U32(values) => FixedBinaryFieldValuesRef::U32(&values[..row_count]),
+            Self::I32(values) => FixedBinaryFieldValuesRef::I32(&values[..row_count]),
+            Self::U64(values) => FixedBinaryFieldValuesRef::U64(&values[..row_count]),
+            Self::I64(values) => FixedBinaryFieldValuesRef::I64(&values[..row_count]),
+        })
+    }
+}
+
+/// One reusable decoded field in a fixed-binary projection buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnBundleFixedBinaryProjectedFieldBuffer {
+    /// Optional caller-owned field label.
+    pub name: Option<String>,
+    /// Byte offset of the field inside each fixed-width record.
+    pub offset: u32,
+    /// Decoded reusable values.
+    pub values: ReusableFixedBinaryFieldValues,
+}
+
+/// Reusable caller-owned fixed-binary projection buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnBundleFixedBinaryProjectionBuffer {
+    /// Source column id validated against the read plan.
+    pub source_column_id: u32,
+    /// Source column name validated against the read plan.
+    pub source_column_name: String,
+    /// Expected source record width in bytes.
+    pub source_width: u32,
+    /// Decoded field buffers reused for each callback.
+    pub fields: Vec<ColumnBundleFixedBinaryProjectedFieldBuffer>,
+    row_count: usize,
+}
+
+impl ColumnBundleFixedBinaryProjectionBuffer {
+    fn for_projection(
+        source_column: &BundleColumn,
+        projection: &FixedBinaryRecordProjection,
+        capacity: usize,
+    ) -> Result<Self> {
+        let fields = projection
+            .fields
+            .iter()
+            .map(|field| ColumnBundleFixedBinaryProjectedFieldBuffer {
+                name: field.name.clone(),
+                offset: field.offset,
+                values: ReusableFixedBinaryFieldValues::new(field.field_type, capacity),
+            })
+            .collect();
+        Ok(Self {
+            source_column_id: source_column.id,
+            source_column_name: source_column.name.clone(),
+            source_width: projection.expected_width,
+            fields,
+            row_count: 0,
+        })
+    }
+
+    fn project_records(
+        &mut self,
+        records: FixedBinaryRecordView<'_>,
+        projection: &FixedBinaryRecordProjection,
+    ) -> Result<FixedBinaryProjectionReport> {
+        let started = Instant::now();
+        let rows = records.len();
+        if self.source_width != projection.expected_width
+            || records.width != projection.expected_width
+        {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection source width does not match projection",
+            ));
+        }
+        if self.fields.len() != projection.fields.len() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection buffer field count does not match projection",
+            ));
+        }
+        for (spec, field) in projection.fields.iter().zip(self.fields.iter_mut()) {
+            if field.offset != spec.offset || field.values.field_type() != spec.field_type {
+                return Err(ArcadiaTioError::ocb_invalid_input(
+                    "OCB fixed-binary projection buffer field does not match projection",
+                ));
+            }
+            let values = field.values.values_mut();
+            let mut field_projection = FixedBinaryFieldProjectionMut {
+                offset: spec.offset,
+                values,
+            };
+            records.project_fields_inner(std::slice::from_mut(&mut field_projection))?;
+        }
+        self.row_count = rows;
+        Ok(FixedBinaryProjectionReport {
+            rows_projected: rows,
+            fields_projected: projection.fields.len(),
+            projection_wall_ns: duration_to_ns(started.elapsed()),
+        })
+    }
+
+    fn view(&self, row_group_id: u32, base_row: u64) -> FixedBinaryProjectedBatchView<'_> {
+        FixedBinaryProjectedBatchView {
+            row_group_id,
+            base_row,
+            row_count: self.row_count as u64,
+            source_column_id: self.source_column_id,
+            source_column_name: &self.source_column_name,
+            source_width: self.source_width,
+            fields: &self.fields,
+        }
+    }
+}
+
+/// Borrowed view of one projected fixed-binary field.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FixedBinaryProjectedFieldView<'a> {
+    /// Optional caller-owned field label.
+    pub name: Option<&'a str>,
+    /// Byte offset of the field inside each fixed-width record.
+    pub offset: u32,
+    /// Little-endian primitive field type.
+    pub field_type: FixedBinaryFieldType,
+    /// Borrowed decoded field values valid only for the callback duration.
+    pub values: FixedBinaryFieldValuesRef<'a>,
+}
+
+/// Borrowed projected fixed-binary batch view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FixedBinaryProjectedBatchView<'a> {
+    /// File-local row-group id.
+    pub row_group_id: u32,
+    /// Logical starting row for this row group in the selected snapshot.
+    pub base_row: u64,
+    /// Number of rows projected.
+    pub row_count: u64,
+    /// File-local source column id.
+    pub source_column_id: u32,
+    /// Source column name.
+    pub source_column_name: &'a str,
+    /// Fixed byte width of each source record.
+    pub source_width: u32,
+    fields: &'a [ColumnBundleFixedBinaryProjectedFieldBuffer],
+}
+
+impl FixedBinaryProjectedBatchView<'_> {
+    /// Number of projected fields.
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Borrow one projected field by projection index.
+    pub fn field(&self, index: usize) -> Result<FixedBinaryProjectedFieldView<'_>> {
+        let field = self
+            .fields
+            .get(index)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projected field index is out of bounds",
+            ))?;
+        let row_count = usize::try_from(self.row_count).map_err(|_| {
+            ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projected row count does not fit usize",
+            )
+        })?;
+        let values = field.values.values_ref(row_count)?;
+        Ok(FixedBinaryProjectedFieldView {
+            name: field.name.as_deref(),
+            offset: field.offset,
+            field_type: field.values.field_type(),
+            values,
+        })
+    }
+}
+
 /// Borrowed fixed-width record view over one fixed-binary column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FixedBinaryRecordView<'a> {
@@ -1687,6 +1995,10 @@ pub struct ColumnBundleReadAttribution {
     pub decompression_ns: u64,
     /// Cumulative time spent decoding primitive byte payloads into typed vectors.
     pub primitive_decode_ns: u64,
+    /// Cumulative time spent projecting fixed-binary payload fields into caller buffers.
+    pub fixed_payload_decode_ns: u64,
+    /// Cumulative time spent copying/materializing values when separately measured.
+    pub copy_materialization_ns: u64,
     /// Native C ABI conversion/allocation/copy time when measured by that layer.
     pub native_to_c_copy_ns: Option<u64>,
     /// Public wrapper copy time when measured by that layer.
@@ -2573,6 +2885,27 @@ impl ColumnBundleFile {
         Ok(ColumnBundleReusableBufferPool { buffers })
     }
 
+    /// Allocate a reusable buffer for generic fixed-binary record projection.
+    ///
+    /// The source column must be part of `plan.projected_column_ids`, must have
+    /// the expected fixed-binary width, and is rejected before payload reads when
+    /// `projection.allow_nulls` is false and the schema marks it nullable.
+    pub fn fixed_binary_projection_buffer_for_plan(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        projection: &FixedBinaryRecordProjection,
+    ) -> Result<ColumnBundleFixedBinaryProjectionBuffer> {
+        self.validate_read_plan(plan)?;
+        let source_column =
+            validate_fixed_binary_record_projection(&self.columns, plan, projection)?;
+        let row_capacity = max_row_count_for_plan(&self.metadata, plan)?;
+        ColumnBundleFixedBinaryProjectionBuffer::for_projection(
+            source_column,
+            projection,
+            row_capacity,
+        )
+    }
+
     /// Visit projected columns as bounded deterministic row-group batches.
     ///
     /// This API yields owned `ColumnBatch` values one at a time to the visitor
@@ -2795,6 +3128,53 @@ impl ColumnBundleFile {
             cursor_options,
             buffers,
             0,
+            visitor,
+        )
+    }
+
+    /// Visit an explicit row-group subset, project a fixed-binary source column,
+    /// and collect attribution.
+    ///
+    /// This is the native generic compact-payload path: TIO reads the planned
+    /// row groups into reusable column buffers, validates the fixed-binary source
+    /// projection, decodes caller-described little-endian fields into a reusable
+    /// projection buffer, then invokes the coarse row-group callback with both
+    /// scalar/reusable column views and projected payload-field views. It keeps
+    /// the OCB API generic and does not encode downstream domain semantics.
+    pub fn visit_plan_row_groups_project_fixed_binary_with_attribution<F>(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        row_group_ids: &[u32],
+        cursor_options: ColumnBundleReadCursorOptions,
+        buffers: &mut ColumnBundleReusableBufferPool,
+        projection: &FixedBinaryRecordProjection,
+        projection_buffer: &mut ColumnBundleFixedBinaryProjectionBuffer,
+        visitor: F,
+    ) -> Result<ColumnBundleReadAttributedCursorReport>
+    where
+        F: FnMut(
+            ColumnBundleReusableBatchView<'_>,
+            FixedBinaryProjectedBatchView<'_>,
+        ) -> Result<ColumnBundleVisitControl>,
+    {
+        self.validate_read_plan(plan)?;
+        validate_read_cursor_options(cursor_options)?;
+        let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
+        validate_reusable_buffer_pool(buffers, plan, &self.columns)?;
+        validate_fixed_binary_record_projection(&self.columns, plan, projection)?;
+        validate_fixed_binary_projection_buffer(projection_buffer, projection)?;
+        let report = execution_report_for_plan(plan, selected_row_group_ids.len());
+        let execution_plan = ColumnBundleReadPlan {
+            projected_column_ids: plan.projected_column_ids.clone(),
+            row_group_ids: selected_row_group_ids,
+            report,
+        };
+        self.visit_execution_plan_project_fixed_binary_with_attribution(
+            &execution_plan,
+            cursor_options,
+            buffers,
+            projection,
+            projection_buffer,
             visitor,
         )
     }
@@ -3361,6 +3741,150 @@ impl ColumnBundleFile {
         })
     }
 
+    fn visit_execution_plan_project_fixed_binary_with_attribution<F>(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        cursor_options: ColumnBundleReadCursorOptions,
+        buffers: &mut ColumnBundleReusableBufferPool,
+        projection: &FixedBinaryRecordProjection,
+        projection_buffer: &mut ColumnBundleFixedBinaryProjectionBuffer,
+        mut visitor: F,
+    ) -> Result<ColumnBundleReadAttributedCursorReport>
+    where
+        F: FnMut(
+            ColumnBundleReusableBatchView<'_>,
+            FixedBinaryProjectedBatchView<'_>,
+        ) -> Result<ColumnBundleVisitControl>,
+    {
+        let execute_started = Instant::now();
+        let mut accumulator = ReadAttributionAccumulator::default();
+        let mut cursor_report = ColumnBundleReadCursorReport {
+            base_report: plan.report.clone(),
+            batches_yielded: 0,
+            rows_yielded: 0,
+            max_in_flight_row_groups_observed: 0,
+            cancelled: false,
+        };
+        if plan.row_group_ids.is_empty() {
+            let attribution = attribution_from_accumulator(
+                accumulator,
+                &plan.report,
+                0,
+                duration_to_ns(execute_started.elapsed()),
+            );
+            return Ok(ColumnBundleReadAttributedCursorReport {
+                cursor_report,
+                attribution,
+            });
+        }
+        let wave_size = plan
+            .report
+            .effective_threads
+            .max(1)
+            .min(cursor_options.max_in_flight_row_groups.max(1))
+            .min(buffers.len());
+        for wave in plan.row_group_ids.chunks(wave_size) {
+            let mut reports = Vec::with_capacity(wave.len());
+            thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(wave.len());
+                for (slot, row_group_id) in buffers.buffers[..wave.len()]
+                    .iter_mut()
+                    .zip(wave.iter().copied())
+                {
+                    let path = self.path.as_path();
+                    let metadata = &self.metadata;
+                    let columns = &self.columns;
+                    handles.push(scope.spawn(move || {
+                        read_row_group_into_reusable_with_attribution(
+                            path,
+                            metadata,
+                            columns,
+                            row_group_id,
+                            slot,
+                        )
+                    }));
+                }
+                let mut first_error = None;
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok((report, row_attr))) => {
+                            accumulator.add(row_attr);
+                            reports.push(report);
+                        }
+                        Ok(Err(err)) => {
+                            if first_error.is_none() {
+                                first_error = Some(err);
+                            }
+                        }
+                        Err(_) => {
+                            if first_error.is_none() {
+                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
+                                    "OCB fixed-binary projection read worker panicked",
+                                )));
+                            }
+                        }
+                    }
+                }
+                if let Some(err) = first_error {
+                    return Err(err);
+                }
+                Ok(())
+            })?;
+            cursor_report.max_in_flight_row_groups_observed = cursor_report
+                .max_in_flight_row_groups_observed
+                .max(reports.len());
+            for (slot, report) in buffers.buffers.iter().zip(reports.iter()) {
+                let view = ColumnBundleReusableBatchView {
+                    report,
+                    buffers: slot,
+                };
+                let projection_report =
+                    project_fixed_binary_reusable_batch(&view, projection, projection_buffer)?;
+                accumulator.fixed_payload_decode +=
+                    Duration::from_nanos(projection_report.projection_wall_ns);
+                let projected_view = projection_buffer.view(report.row_group_id, report.base_row);
+                let callback_started = Instant::now();
+                let control = visitor(view, projected_view);
+                accumulator.callback += callback_started.elapsed();
+                match control? {
+                    ColumnBundleVisitControl::Continue => {
+                        cursor_report.batches_yielded =
+                            cursor_report.batches_yielded.saturating_add(1);
+                        cursor_report.rows_yielded =
+                            cursor_report.rows_yielded.saturating_add(report.row_count);
+                    }
+                    ColumnBundleVisitControl::Stop => {
+                        cursor_report.batches_yielded =
+                            cursor_report.batches_yielded.saturating_add(1);
+                        cursor_report.rows_yielded =
+                            cursor_report.rows_yielded.saturating_add(report.row_count);
+                        cursor_report.cancelled = true;
+                        let attribution = attribution_from_accumulator(
+                            accumulator,
+                            &plan.report,
+                            0,
+                            duration_to_ns(execute_started.elapsed()),
+                        );
+                        return Ok(ColumnBundleReadAttributedCursorReport {
+                            cursor_report,
+                            attribution,
+                        });
+                    }
+                }
+            }
+        }
+        let attribution = attribution_from_accumulator(
+            accumulator,
+            &plan.report,
+            0,
+            duration_to_ns(execute_started.elapsed()),
+        );
+        Ok(ColumnBundleReadAttributedCursorReport {
+            cursor_report,
+            attribution,
+        })
+    }
+
     fn execute_plan(&self, plan: &ColumnBundleReadPlan) -> Result<Vec<ColumnBatch>> {
         if plan.row_group_ids.is_empty() {
             return Ok(Vec::new());
@@ -3885,6 +4409,178 @@ fn validate_reusable_buffer_pool(
         }
     }
     Ok(())
+}
+
+fn validate_fixed_binary_record_projection<'a>(
+    columns: &'a [BundleColumn],
+    plan: &ColumnBundleReadPlan,
+    projection: &FixedBinaryRecordProjection,
+) -> Result<&'a BundleColumn> {
+    if projection.expected_width == 0 {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection expected_width must be greater than zero",
+        ));
+    }
+    if projection.fields.is_empty() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection requires at least one field",
+        ));
+    }
+    if projection.column_id.is_none() && projection.column_name.is_none() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection must identify a source column",
+        ));
+    }
+    let by_id_column = match projection.column_id {
+        Some(column_id) => Some(columns.iter().find(|column| column.id == column_id).ok_or(
+            ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection references an unknown column id",
+            ),
+        )?),
+        None => None,
+    };
+    let by_name_column = match projection.column_name.as_deref() {
+        Some(column_name) => Some(
+            columns
+                .iter()
+                .find(|column| column.name == column_name)
+                .ok_or(ArcadiaTioError::ocb_invalid_input(
+                    "OCB fixed-binary projection references an unknown column name",
+                ))?,
+        ),
+        None => None,
+    };
+    let source_column = match (by_id_column, by_name_column) {
+        (Some(left), Some(right)) if left.id != right.id => {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection column name and id do not match",
+            ));
+        }
+        (Some(column), _) | (_, Some(column)) => column,
+        (None, None) => unreachable!("source identity checked above"),
+    };
+    if !plan.projected_column_ids.contains(&source_column.id) {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection source column is not in the read plan projection",
+        ));
+    }
+    match source_column.physical_type {
+        ColumnPhysicalType::FixedBinary { width } if width == projection.expected_width => {}
+        ColumnPhysicalType::FixedBinary { .. } => {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection expected_width does not match source column",
+            ));
+        }
+        _ => {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection source column must be fixed-binary",
+            ));
+        }
+    }
+    if source_column.nullable && !projection.allow_nulls {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection source column is nullable",
+        ));
+    }
+    let width = usize::try_from(projection.expected_width).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection expected_width does not fit usize",
+        )
+    })?;
+    for field in &projection.fields {
+        let offset = usize::try_from(field.offset).map_err(|_| {
+            ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection field offset does not fit usize",
+            )
+        })?;
+        let end = offset.checked_add(field.field_type.byte_width()).ok_or(
+            ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection field end offset overflows",
+            ),
+        )?;
+        if end > width {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection field extends past record width",
+            ));
+        }
+    }
+    Ok(source_column)
+}
+
+fn validate_fixed_binary_projection_buffer(
+    buffer: &ColumnBundleFixedBinaryProjectionBuffer,
+    projection: &FixedBinaryRecordProjection,
+) -> Result<()> {
+    if projection
+        .column_id
+        .map(|column_id| buffer.source_column_id != column_id)
+        .unwrap_or(false)
+        || projection
+            .column_name
+            .as_deref()
+            .map(|column_name| buffer.source_column_name != column_name)
+            .unwrap_or(false)
+        || buffer.source_width != projection.expected_width
+        || buffer.fields.len() != projection.fields.len()
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection buffer does not match projection",
+        ));
+    }
+    for (spec, field) in projection.fields.iter().zip(buffer.fields.iter()) {
+        if spec.offset != field.offset || spec.field_type != field.values.field_type() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection buffer field does not match projection",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn project_fixed_binary_reusable_batch(
+    view: &ColumnBundleReusableBatchView<'_>,
+    projection: &FixedBinaryRecordProjection,
+    projection_buffer: &mut ColumnBundleFixedBinaryProjectionBuffer,
+) -> Result<FixedBinaryProjectionReport> {
+    let mut source_column = None;
+    for index in 0..view.column_count() {
+        let column = view.column(index)?;
+        let id_matches = projection
+            .column_id
+            .map(|column_id| column_id == column.column_id)
+            .unwrap_or(false);
+        let name_matches = projection
+            .column_name
+            .as_deref()
+            .map(|column_name| column_name == column.name)
+            .unwrap_or(false);
+        if id_matches || name_matches {
+            source_column = Some(column);
+            break;
+        }
+    }
+    let source_column = source_column.ok_or(ArcadiaTioError::ocb_invalid_input(
+        "OCB fixed-binary projection source column is not in the batch",
+    ))?;
+    if !projection.allow_nulls && source_column.validity.is_some() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection source column contains nulls",
+        ));
+    }
+    if projection_buffer.source_column_id != source_column.column_id
+        || projection_buffer.source_column_name != source_column.name
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection buffer source column does not match batch",
+        ));
+    }
+    let records = source_column.values.fixed_binary_records()?;
+    if records.width != projection.expected_width {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection source width does not match projection",
+        ));
+    }
+    projection_buffer.project_records(records, projection)
 }
 
 fn max_row_count_for_plan(metadata: &OcbMetadataV1, plan: &ColumnBundleReadPlan) -> Result<usize> {
@@ -4531,6 +5227,8 @@ struct ReadAttributionAccumulator {
     checksum: Duration,
     decompression: Duration,
     primitive_decode: Duration,
+    fixed_payload_decode: Duration,
+    copy_materialization: Duration,
     callback: Duration,
     row_groups_materialized: usize,
     column_chunks_materialized: usize,
@@ -4546,6 +5244,8 @@ impl ReadAttributionAccumulator {
         self.checksum += other.checksum;
         self.decompression += other.decompression;
         self.primitive_decode += other.primitive_decode;
+        self.fixed_payload_decode += other.fixed_payload_decode;
+        self.copy_materialization += other.copy_materialization;
         self.callback += other.callback;
         self.row_groups_materialized = self
             .row_groups_materialized
@@ -4571,6 +5271,17 @@ fn duration_to_ns(duration: Duration) -> u64 {
     duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
+fn record_value_materialization_time(
+    attribution: &mut ReadAttributionAccumulator,
+    physical_type: ColumnPhysicalType,
+    elapsed: Duration,
+) {
+    match physical_type {
+        ColumnPhysicalType::FixedBinary { .. } => attribution.copy_materialization += elapsed,
+        _ => attribution.primitive_decode += elapsed,
+    }
+}
+
 fn attribution_from_accumulator(
     accumulator: ReadAttributionAccumulator,
     report: &ColumnBundleReadReport,
@@ -4586,6 +5297,8 @@ fn attribution_from_accumulator(
         checksum_ns: duration_to_ns(accumulator.checksum),
         decompression_ns: duration_to_ns(accumulator.decompression),
         primitive_decode_ns: duration_to_ns(accumulator.primitive_decode),
+        fixed_payload_decode_ns: duration_to_ns(accumulator.fixed_payload_decode),
+        copy_materialization_ns: duration_to_ns(accumulator.copy_materialization),
         native_to_c_copy_ns: None,
         wrapper_copy_ns: None,
         bytes_read: accumulator.bytes_read,
@@ -5045,7 +5758,11 @@ fn fill_column_buffer_with_attribution(
     attribution.decompression += decompression;
     let decode_started = Instant::now();
     fill_primitive_values(&payload, row_count, &mut buffer.values)?;
-    attribution.primitive_decode += decode_started.elapsed();
+    record_value_materialization_time(
+        attribution,
+        target.column.physical_type,
+        decode_started.elapsed(),
+    );
     let mut validity_filled = false;
     if !target.chunk.validity_ref.is_null() {
         let validity =
@@ -5404,7 +6121,11 @@ fn read_column_array_with_attribution(
     let validity = read_validity_bitmap_with_attribution(path, metadata, chunk, &mut attribution)?;
     let decode_started = Instant::now();
     let values = decode_primitive_values(column.physical_type, &payload)?;
-    attribution.primitive_decode += decode_started.elapsed();
+    record_value_materialization_time(
+        &mut attribution,
+        column.physical_type,
+        decode_started.elapsed(),
+    );
     Ok((
         ColumnArray {
             column_id: column.id,
@@ -5909,6 +6630,75 @@ mod tests {
         assert_eq!(certification.selected_uncompressed_bytes, 6);
         assert!(certification.selected_compressed_bytes > 0);
         assert_eq!(certification.selected_chunk_fingerprint.len(), 8);
+
+        let full_plan = bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key", "payload"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::parallel(2),
+            })
+            .expect("plan fixed-binary projection read");
+        let projection = FixedBinaryRecordProjection {
+            column_id: None,
+            column_name: Some("payload".to_string()),
+            expected_width: 2,
+            allow_nulls: false,
+            fields: vec![
+                FixedBinaryProjectedField {
+                    name: Some("first".to_string()),
+                    offset: 0,
+                    field_type: FixedBinaryFieldType::U8,
+                },
+                FixedBinaryProjectedField {
+                    name: Some("second".to_string()),
+                    offset: 1,
+                    field_type: FixedBinaryFieldType::U8,
+                },
+            ],
+        };
+        let mut reusable = bundle
+            .reusable_buffer_pool_for_plan(&full_plan, 2, false)
+            .expect("reusable pool");
+        let mut projection_buffer = bundle
+            .fixed_binary_projection_buffer_for_plan(&full_plan, &projection)
+            .expect("fixed-binary projection buffer");
+        let mut visited = Vec::new();
+        let projected = bundle
+            .visit_plan_row_groups_project_fixed_binary_with_attribution(
+                &full_plan,
+                &[1, 0],
+                ColumnBundleReadCursorOptions {
+                    max_in_flight_row_groups: 2,
+                    ordered: true,
+                },
+                &mut reusable,
+                &projection,
+                &mut projection_buffer,
+                |batch, projected| {
+                    assert_eq!(batch.row_count(), projected.row_count);
+                    let first = projected.field(0)?;
+                    let second = projected.field(1)?;
+                    match (first.values, second.values) {
+                        (
+                            FixedBinaryFieldValuesRef::U8(first),
+                            FixedBinaryFieldValuesRef::U8(second),
+                        ) => {
+                            visited.push((projected.row_group_id, first.to_vec(), second.to_vec()));
+                        }
+                        _ => panic!("unexpected fixed-binary projection field types"),
+                    }
+                    Ok(ColumnBundleVisitControl::Continue)
+                },
+            )
+            .expect("visit fixed-binary projected row groups");
+        assert_eq!(visited.len(), 2);
+        assert_eq!(visited[0], (0, b"abc".to_vec(), b"abc".to_vec()));
+        assert_eq!(visited[1], (1, b"def".to_vec(), b"def".to_vec()));
+        assert_eq!(projected.cursor_report.batches_yielded, 2);
+        assert_eq!(projected.cursor_report.rows_yielded, 6);
+        assert_eq!(projected.cursor_report.max_in_flight_row_groups_observed, 2);
+        assert_eq!(projected.attribution.selected_row_groups, 2);
+        let _fixed_payload_decode_ns = projected.attribution.fixed_payload_decode_ns;
 
         cleanup(&path);
     }
