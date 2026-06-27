@@ -1,0 +1,44 @@
+name: OCB Core Reader CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  core-reader:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: Test C-ABI-free OCB core reader
+        run: cargo test -p arcadia-tio-ocb-core
+
+      - name: Check OCB core reader examples
+        run: cargo check -p arcadia-tio-ocb-core --examples
+
+      - name: Assert OCB core reader has no C ABI dependency edge
+        run: |
+          set -euo pipefail
+          cargo tree -p arcadia-tio-ocb-core --edges normal | tee core-reader-tree.txt
+          for forbidden in arcadia-tio-rs arcadia-tio-sys arcadia-tio-capi; do
+            if grep -q "${forbidden} v" core-reader-tree.txt; then
+              echo "forbidden dependency edge found in arcadia-tio-ocb-core tree: ${forbidden}" >&2
+              exit 1
+            fi
+          done
+          grep -q "zstd v" core-reader-tree.txt
