@@ -38,6 +38,17 @@ surfaces only: they are not benchmark evidence and do not create performance,
 phase-percentage, zero-copy, storage, cache, layout, external-format, or
 release-readiness claims.
 
+## 0.2.0 source-release posture
+
+The 0.2.0 public Rust workspace tag is source-only: it does not publish native
+libraries, package-manager artifacts, signatures, benchmark evidence, or a
+default/production runtime readiness claim. Consumers of this C-ABI-backed crate
+must still supply an operator-approved `arcadia_tio_capi` native library for the
+same target and validate their runtime loader configuration separately. The
+sibling `arcadia-tio-ocb-core` crate provides the C-ABI-free generic OCB reader
+path for integrations that need only selected-snapshot reading, planning,
+visitor, fixed-binary projection, and certification-substrate APIs.
+
 The non-default `format-ocb` feature exposes the appendable OCB (Ordered Column
 Bundle) API in `arcadia_tio_rs::ocb`. Use `ocb::create` with a `WriteSpec` to
 publish the first root, `ocb::create_with_options` / `ocb::append_with_options`

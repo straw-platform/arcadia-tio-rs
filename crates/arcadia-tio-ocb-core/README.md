@@ -15,6 +15,32 @@ L2 semantics, domain-specific compact-L2/fixed-ingress adapters, cryptographic
 payload certification manifests, native libraries, release artifacts, or
 performance/storage claims.
 
+## 0.2.0 release boundary
+
+The 0.2.0 public Rust workspace tag is a source release of the generic OCB
+substrate. The `arcadia-tio-ocb-core` crate remains C-ABI-free and owns only
+selected-snapshot reader, planning, visitor, fixed-binary projection, and generic
+certification-substrate behavior. It is not a production/default Arcadia runtime
+readiness claim and it does not move downstream channel, BizIndex,
+fixed-ingress, compact-L2, replay, or order-book semantics into OCB.
+
+Certification fingerprints are deterministic compatibility identifiers under
+`ocb.generic.crc32c.v1`, not cryptographic digests. Fail-closed downstream gates
+that enable payload-only reads should persist and compare the snapshot
+`combined` fingerprint, root and previous-root generation identifiers, selected
+row-group ids/base rows/counts, selected chunk summaries/checksums, selected
+compressed and uncompressed byte totals, the plan report, and
+`selected_chunk_fingerprint`. Full-file artifact digests remain offline/operator
+recertification evidence rather than normal runtime startup validation.
+
+For row-group-coalesced scans, build one `ReadPlan`, union the plan-local
+row-group ids needed by downstream windows/channels, read them once with
+`read_plan_row_groups(...)` or
+`visit_plan_row_groups_into_with_attribution(...)`, and demultiplex in the
+application using payload fields it owns. OCB validates the subset and preserves
+plan order, but it intentionally stays generic and does not define channel or
+market-data selection semantics.
+
 ## Visitor contract
 
 `ColumnBundleFile::visit_plan_row_groups_with_attribution(...)` validates the

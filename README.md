@@ -25,6 +25,29 @@ constants. It does not depend on
 `arcadia-tio-sys`, `arcadia-tio-capi`, a native library, or native-link build
 scripts.
 
+## 0.2.0 release boundary
+
+The 0.2.0 public Rust workspace tag is a source release for the generic OCB
+Rust-core reader boundary plus the existing C-ABI-backed wrapper source. It does
+not publish crates.io packages, native libraries, signed artifacts, benchmark
+evidence, storage/capacity/performance claims, or production/default runtime
+readiness.
+
+For OCB-core runtime gates, `ocb.generic.crc32c.v1` fingerprints are
+deterministic compatibility identifiers, not cryptographic digests. Downstream
+payload-only use should be manifest-gated and fail closed by comparing the
+snapshot `combined` fingerprint, root/previous-root generation identifiers,
+selected row-group ids/base rows/counts, selected chunk summaries/checksums,
+selected compressed/uncompressed byte totals, the plan report, and
+`selected_chunk_fingerprint`. Full-file artifact digests remain offline/operator
+recertification evidence rather than normal startup validation.
+
+For coalesced downstream scans, build one `ReadPlan`, union the needed
+plan-local row-group ids, execute `read_plan_row_groups(...)` or
+`visit_plan_row_groups_into_with_attribution(...)` once, and demultiplex in the
+application. OCB keeps these APIs generic; channel, BizIndex, fixed-ingress,
+compact-L2, replay, and order-book semantics remain downstream.
+
 The C-ABI-backed safe wrapper covers the agreed source-visible public Rust beta scope:
 create/open metadata, policy and inferred create helpers, inline numeric
 coordinate metadata/lookup/read conveniences, bounded source-visible Coordinate
@@ -67,11 +90,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use a git dependency once the desired commit is pushed:
+Or use the 0.2.0 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.2.0", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -81,11 +104,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use a git dependency once the desired commit is pushed:
+Or use the 0.2.0 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git" }
+arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.2.0" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

@@ -27,14 +27,14 @@ dependencies = [
 
 [[package]]
 name = "arcadia-tio-ocb-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "zstd",
 ]
 
 [[package]]
 name = "arcadia-tio-rs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arcadia-tio-sys",
  "arrow-array",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "arcadia-tio-sys"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "arrow-array"
