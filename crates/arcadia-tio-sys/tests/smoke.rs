@@ -104,6 +104,23 @@ fn linked_native_library_can_roundtrip_tiny_f64_tensor() {
         );
         arcadia_tio_tensor_free(&mut indexed);
 
+        let mut scaled = ArcadiaTioTensor::default();
+        let scale_status = arcadia_tio_tensor_mul_scalar(&out, 2.0, &mut scaled);
+        assert_eq!(
+            scale_status,
+            ARCADIA_TIO_ERROR_OK,
+            "mul_scalar failed: {}",
+            last_error()
+        );
+        assert_eq!(scaled.dtype, ARCADIA_TIO_DTYPE_F64);
+        assert_eq!(scaled.rank, 1);
+        assert_eq!(slice::from_raw_parts(scaled.shape, scaled.rank), [3_u64]);
+        assert_eq!(
+            slice::from_raw_parts(scaled.data.cast::<f64>(), values.len()),
+            [2.5_f64, -5.0, 7.5]
+        );
+        arcadia_tio_tensor_free(&mut scaled);
+
         arcadia_tio_tensor_free(&mut out);
         arcadia_tio_close(handle);
     }

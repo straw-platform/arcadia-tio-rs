@@ -123,7 +123,10 @@ borrowed Arrow pointers are valid only while that owner is alive and are
 released exactly once when it is dropped. The public `ops` namespace provides
 owned-copy in-memory helpers over dense `TensorData`; its structural core mirrors
 the copy-only native C ABI tensor-ops family while preserving Rust-owned tensor
-semantics. `TypedTensor<T>` and the
+semantics. The raw sys crate also exposes the native float-only elementwise C
+ABI family; the safe Rust arithmetic helpers remain Rust-owned conveniences with
+broader local integer behavior than that float-only native family.
+`TypedTensor<T>` and the
 `typed_ops` namespace provide dtype-checked owned wrappers over that same public
 `Tensor` model without depending on private core typed tensors; optional
 conversion features are also owned-copy only. This slice still does not expose

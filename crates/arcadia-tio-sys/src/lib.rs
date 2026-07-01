@@ -3877,6 +3877,54 @@ unsafe extern "C" {
         index: u64,
         out_tensor: *mut ArcadiaTioTensor,
     ) -> c_int;
+    /// Adds two floating-point tensors with exact dtype matching and broadcasting.
+    pub fn arcadia_tio_tensor_add(
+        lhs: *const ArcadiaTioTensor,
+        rhs: *const ArcadiaTioTensor,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Subtracts two floating-point tensors with exact dtype matching and broadcasting.
+    pub fn arcadia_tio_tensor_sub(
+        lhs: *const ArcadiaTioTensor,
+        rhs: *const ArcadiaTioTensor,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Multiplies two floating-point tensors with exact dtype matching and broadcasting.
+    pub fn arcadia_tio_tensor_mul(
+        lhs: *const ArcadiaTioTensor,
+        rhs: *const ArcadiaTioTensor,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Divides two floating-point tensors with exact dtype matching and broadcasting.
+    pub fn arcadia_tio_tensor_div(
+        lhs: *const ArcadiaTioTensor,
+        rhs: *const ArcadiaTioTensor,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Adds a floating-point scalar to a tensor.
+    pub fn arcadia_tio_tensor_add_scalar(
+        input: *const ArcadiaTioTensor,
+        rhs: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Subtracts a floating-point scalar from a tensor.
+    pub fn arcadia_tio_tensor_sub_scalar(
+        input: *const ArcadiaTioTensor,
+        rhs: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Multiplies a tensor by a floating-point scalar.
+    pub fn arcadia_tio_tensor_mul_scalar(
+        input: *const ArcadiaTioTensor,
+        rhs: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
+    /// Divides a tensor by a floating-point scalar.
+    pub fn arcadia_tio_tensor_div_scalar(
+        input: *const ArcadiaTioTensor,
+        rhs: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+    ) -> c_int;
 
     /// Appends f32 payload data.
     pub fn arcadia_tio_append_f32(
