@@ -7,22 +7,25 @@ This crate is intended for downstream Rust integrations that need OCB
 selected-snapshot open, metadata inspection, read planning, projected/predicate
 batch reads, explicit row-group visitors, reusable-buffer lower-copy visitors,
 generic fixed-binary record field projection helpers and projected visitors,
-read-plan certification summaries, and read attribution without linking the
-native C ABI wrapper path.
+read-plan certification summaries, channel-sharded compact-L2 manifest parsing,
+fixed-ingress header validation, artifact certification helpers, and read
+attribution without linking the native C ABI wrapper path.
 
-It does not provide writer APIs, C/Python bindings, `TensorFile`, market-data or
-L2 semantics, domain-specific compact-L2/fixed-ingress adapters, cryptographic
-payload certification manifests, native libraries, release artifacts, or
-performance/storage claims.
+It does not provide writer APIs, C/Python bindings, `TensorFile`, order-book
+replay, owner assignment, factor/KOB logic, shm-ring transport, production LIVE
+orchestration, native libraries, release artifacts, or performance/storage
+claims.
 
-## 0.2.0 release boundary
+## 0.3.0 release boundary
 
-The 0.2.0 public Rust workspace tag is a source release of the generic OCB
+The 0.3.0 public Rust workspace tag is a source release of the OCB core reader
 substrate. The `arcadia-tio-ocb-core` crate remains C-ABI-free and owns only
-selected-snapshot reader, planning, visitor, fixed-binary projection, and generic
-certification-substrate behavior. It is not a production/default Arcadia runtime
-readiness claim and it does not move downstream channel, BizIndex,
-fixed-ingress, compact-L2, replay, or order-book semantics into OCB.
+selected-snapshot reader, planning, visitor, fixed-binary projection, generic
+certification-substrate behavior, and source-visible channel-sharded compact-L2
+artifact facts. It is not a production/default Arcadia runtime readiness claim:
+upstream certification validates manifest, path, checksum, payload-header,
+ChannelID, and BizIndex continuity facts, while downstream still owns replay,
+owner assignment, order-book semantics, factor/KOB logic, and runtime policy.
 
 Certification fingerprints are deterministic compatibility identifiers under
 `ocb.generic.crc32c.v1`, not cryptographic digests. Fail-closed downstream gates
@@ -38,8 +41,9 @@ row-group ids needed by downstream windows/channels, read them once with
 `read_plan_row_groups(...)` or
 `visit_plan_row_groups_into_with_attribution(...)`, and demultiplex in the
 application using payload fields it owns. OCB validates the subset and preserves
-plan order, but it intentionally stays generic and does not define channel or
-market-data selection semantics.
+plan order. The compact-L2 certification helpers validate source-format channel
+and BizIndex continuity, but they intentionally do not define replay scheduling,
+book mutation, factor output, or market-data runtime policy.
 
 ## Visitor contract
 
@@ -75,8 +79,24 @@ bounded visitor path, `fixed_binary_projection_buffer_for_plan(...)` plus
 same generic projection inside TIO before the callback and reports
 `fixed_payload_decode_ns`. The example
 `cargo run -p arcadia-tio-ocb-core --example project_fixed_binary -- <file> <column> <width>`
-shows this flow. These helpers do not add channel, BizIndex, fixed-ingress,
-order-book, replay, or market-data semantics to OCB.
+shows this flow. These generic helpers do not add order-book, replay, factor, or
+market-data runtime semantics to OCB.
+
+## Channel-sharded compact-L2 manifests and certification
+
+`ChannelShardedManifestV1::from_path(...)` parses the upstream JSON manifest
+schema and rejects unsafe absolute/traversing artifact paths. The public
+constants `OCB_CORE_READER_API_VERSION`,
+`CHANNEL_SHARDED_MANIFEST_SCHEMA_VERSION_V1`, and
+`COMPACT_L2_FIXED_BINARY_SCHEMA_VERSION_V1` identify the supported reader and
+source-format contract.
+
+`certify_channel_sharded_artifact_v1(...)` opens every manifest-relative OCB
+artifact through the pure-Rust reader and validates row counts, row-group counts
+when present, fixed-binary payload width, non-null payload chunks, optional
+SHA-256/FNV fingerprints, compact-L2 payload headers, trading day, constant
+ChannelID per artifact, and strict gap-free BizIndex continuity. Reports include
+`SafeCertificationSummary` with aggregate counts and no absolute paths.
 
 For fail-closed payload-only gates, `snapshot_fingerprint()` and
 `read_plan_certification(...)` expose deterministic generic metadata

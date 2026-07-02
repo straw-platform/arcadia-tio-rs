@@ -37,7 +37,7 @@ pub const OCB_READ_PLAN_SUBSET_UNKNOWN_ROW_GROUP_ERROR: &str =
 pub const OCB_READ_PLAN_SUBSET_DUPLICATE_ROW_GROUP_ERROR: &str =
     "OCB read plan subset contains duplicate row group ids";
 
-/// Coarse OCB error taxonomy for public Rust and mapped external surfaces.
+/// OCB error taxonomy for public Rust and mapped external surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OcbErrorKind {
     /// Caller input or operation preconditions are invalid.
@@ -46,6 +46,32 @@ pub enum OcbErrorKind {
     UnsupportedFormat,
     /// The file appears to be corrupt, torn, truncated, or internally inconsistent.
     CorruptFile,
+    /// Manifest or certification schema version is unsupported.
+    UnsupportedSchemaVersion,
+    /// Manifest JSON or required manifest fields are invalid.
+    InvalidManifest,
+    /// Manifest-relative artifact path is absolute, empty, traversing, or escapes the root.
+    UnsafeManifestPath,
+    /// A manifest-listed artifact is missing.
+    MissingArtifact,
+    /// A fixed-binary payload width differs from the expected compact-L2 width.
+    FixedBinaryWidthMismatch,
+    /// A fixed-binary payload header failed fail-closed validation.
+    PayloadHeaderMismatch,
+    /// Payload CRC/checksum validation failed.
+    PayloadCrcMismatch,
+    /// A channel artifact contains a ChannelID other than the manifest channel.
+    ChannelIdMismatch,
+    /// A per-channel BizIndex value is duplicated.
+    BizIndexDuplicate,
+    /// A per-channel BizIndex value has a gap relative to the expected sequence.
+    BizIndexGap,
+    /// A per-channel BizIndex value regressed below the expected sequence.
+    BizIndexRegression,
+    /// Observed rows do not match manifest, metadata, or row-group counts.
+    RowCountMismatch,
+    /// Manifest hash/fingerprint metadata does not match the artifact.
+    ChecksumMismatch,
     /// A cooperating OCB mutation lock is already held or unavailable.
     LockUnavailable,
     /// Low-level I/O failure not otherwise classified.
@@ -54,6 +80,9 @@ pub enum OcbErrorKind {
 
 impl OcbErrorKind {
     pub fn from_error(error: &ArcadiaTioError) -> Option<Self> {
+        if let ArcadiaTioError::OcbDiagnostic { kind, .. } = error {
+            return Some(*kind);
+        }
         if let Some(cause) = error.ocb_failure_cause() {
             return Some(Self::from_cause(cause));
         }
@@ -71,6 +100,7 @@ impl OcbErrorKind {
                 message.contains("OCB").then_some(Self::UnsupportedFormat)
             }
             ArcadiaTioError::Ocb { .. } => None,
+            ArcadiaTioError::OcbDiagnostic { .. } => None,
         }
     }
 
@@ -80,6 +110,7 @@ impl OcbErrorKind {
             OcbFailureCause::UnsupportedFormat => Self::UnsupportedFormat,
             OcbFailureCause::CorruptFile => Self::CorruptFile,
             OcbFailureCause::LockUnavailable => Self::LockUnavailable,
+            OcbFailureCause::Io => Self::Io,
         }
     }
 
@@ -88,6 +119,19 @@ impl OcbErrorKind {
             Self::InvalidInput => "invalid_input",
             Self::UnsupportedFormat => "unsupported_format",
             Self::CorruptFile => "corrupt_file",
+            Self::UnsupportedSchemaVersion => "unsupported_schema_version",
+            Self::InvalidManifest => "invalid_manifest",
+            Self::UnsafeManifestPath => "unsafe_manifest_path",
+            Self::MissingArtifact => "missing_artifact",
+            Self::FixedBinaryWidthMismatch => "fixed_binary_width_mismatch",
+            Self::PayloadHeaderMismatch => "payload_header_mismatch",
+            Self::PayloadCrcMismatch => "payload_crc_mismatch",
+            Self::ChannelIdMismatch => "channel_id_mismatch",
+            Self::BizIndexDuplicate => "biz_index_duplicate",
+            Self::BizIndexGap => "biz_index_gap",
+            Self::BizIndexRegression => "biz_index_regression",
+            Self::RowCountMismatch => "row_count_mismatch",
+            Self::ChecksumMismatch => "checksum_mismatch",
             Self::LockUnavailable => "lock_unavailable",
             Self::Io => "io",
         }

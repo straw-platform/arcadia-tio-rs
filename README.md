@@ -19,20 +19,23 @@ selected-snapshot open, metadata/dictionary/row-group summaries, read planning,
 projected/predicate reads, explicit plan-local row-group visitors,
 reusable-buffer lower-copy visitors, generic fixed-binary record field projection
 helpers and projected visitors, read-plan certification summaries/fingerprints,
-fixed-payload projection attribution, callback-wall attribution, observed
-max-in-flight reporting, and stable duplicate/unknown row-group subset error
-constants. It does not depend on
-`arcadia-tio-sys`, `arcadia-tio-capi`, a native library, or native-link build
-scripts. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public
-source-release notes.
+channel-sharded compact-L2 manifest parsing, fixed-ingress header validation,
+artifact certification helpers, fixed-payload projection attribution,
+callback-wall attribution, observed max-in-flight reporting, and stable
+structured OCB error kinds. It does not depend on `arcadia-tio-sys`,
+`arcadia-tio-capi`, a native library, or native-link build scripts. See
+[`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
+notes.
 
-## 0.2.0 release boundary
+## 0.3.0 release boundary
 
-The 0.2.0 public Rust workspace tag is a source release for the generic OCB
-Rust-core reader boundary plus the existing C-ABI-backed wrapper source. It does
-not publish crates.io packages, native libraries, signed artifacts, benchmark
-evidence, storage/capacity/performance claims, or production/default runtime
-readiness.
+The 0.3.0 public Rust workspace tag is a source release for the OCB Rust-core
+reader boundary plus the existing C-ABI-backed wrapper source. It extends the
+C-ABI-free core reader with channel-sharded compact-L2 source-format
+manifest/header/certification helpers while preserving the no-native-C-ABI
+boundary. It does not publish crates.io packages, native libraries, signed
+artifacts, benchmark evidence, storage/capacity/performance claims, or
+production/default runtime readiness.
 
 For OCB-core runtime gates, `ocb.generic.crc32c.v1` fingerprints are
 deterministic compatibility identifiers, not cryptographic digests. Downstream
@@ -46,8 +49,12 @@ recertification evidence rather than normal startup validation.
 For coalesced downstream scans, build one `ReadPlan`, union the needed
 plan-local row-group ids, execute `read_plan_row_groups(...)` or
 `visit_plan_row_groups_into_with_attribution(...)` once, and demultiplex in the
-application. OCB keeps these APIs generic; channel, BizIndex, fixed-ingress,
-compact-L2, replay, and order-book semantics remain downstream.
+application. OCB now also exposes source-format channel-sharded compact-L2
+manifest/certification facts: manifest-relative safe paths, payload width,
+fixed-ingress header fields, constant ChannelID, and strict gap-free BizIndex
+continuity. Replay scheduling, owner assignment, order-book mutation, factor/KOB
+logic, shm-ring transport, LIVE orchestration, and performance/runtime policy
+remain downstream.
 
 The C-ABI-backed safe wrapper covers the agreed source-visible public Rust beta scope:
 create/open metadata, policy and inferred create helpers, inline numeric
@@ -77,7 +84,7 @@ Before using the C-ABI-backed public Rust wrapper in an application build:
 3. Run `cargo make ci` (format, all-feature check, OCB feature smoke, and the default/no-default/optional/all-feature test matrix) plus `bash examples/tutorials/run/run_rust.sh` against that native library. A committed Cargo target runner automatically adds `ARCADIA_TIO_CAPI_LIB_DIR` or `native/x86_64-unknown-linux-gnu/lib` to the runtime loader path for common Linux/macOS `cargo run` and `cargo test` invocations.
 4. Keep generated `.tio` files, native libraries, package archives, and local `native/` copies out of source control unless a separate release task approves them.
 5. Treat Coordinate external references as metadata/status summaries only; this wrapper does not add dereference, variable-length string, broad calendar/session, lookup-acceleration, or release/performance claims.
-6. Treat OCB as one appendable Ordered Column Bundle format; these crates do not expose public binary revision names, market-data/domain-specific APIs, or performance/storage/capacity/layout claims.
+6. Treat OCB as one appendable Ordered Column Bundle format. The core crate exposes compact-L2 source-format certification facts, but these crates do not expose replay scheduling, order-book/factor runtime policy, production-readiness, or performance/storage/capacity/layout claims.
 
 For the Rust-core OCB reader-only path, depend on `arcadia-tio-ocb-core`; no native C ABI library, `ARCADIA_TIO_CAPI_LIB_DIR`, or runtime loader configuration is required for that crate.
 
@@ -91,11 +98,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the 0.2.0 public source tag:
+Or use the 0.3.0 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.2.0", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.0", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -105,11 +112,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the 0.2.0 public source tag:
+Or use the 0.3.0 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.2.0" }
+arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.0" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

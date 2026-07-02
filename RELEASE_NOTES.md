@@ -1,5 +1,59 @@
 # Release notes
 
+## 0.3.0 — channel-sharded compact-L2 OCB certification
+
+Tag: `0.3.0`
+Commit: see `git rev-parse 0.3.0`
+
+### Scope
+
+This is a source-only release of the public Rust wrapper workspace focused on
+`arcadia-tio-ocb-core`:
+
+- Adds pure-Rust channel-sharded compact-L2 manifest parsing and safe
+  manifest-relative artifact path resolution.
+- Adds fixed-ingress compact-L2 binary header constants/decoding for source
+  format validation.
+- Adds `certify_channel_sharded_artifact_v1(...)` with path-redacted reports for
+  manifest/schema/count invariants, payload width, payload header fields,
+  constant ChannelID, strict gap-free BizIndex continuity, receive-nano edges,
+  and optional manifest hash/fingerprint checks.
+- Adds structured OCB diagnostic kinds for unsafe manifest paths, missing
+  artifacts, payload/header mismatches, ChannelID mismatches, BizIndex gaps or
+  duplicates, checksum mismatches, and I/O diagnostics.
+
+### OCB-core guidance
+
+- The new compact-L2 helpers remain source-format certification facts only. They
+  do not define replay scheduling, owner assignment, order-book mutation,
+  factor/KOB logic, shm-ring transport, LIVE orchestration, runtime policy,
+  benchmark claims, or production/default readiness.
+- Public certification summaries and diagnostics avoid raw absolute paths and
+  manifest-relative artifact path disclosure. Consumers should log the returned
+  safe summaries and keep raw path evidence in private/operator scopes only.
+- Optional manifest hashes are verified when present. `checksum_verified` is
+  true only when at least one optional artifact hash/fingerprint check was
+  present and passed.
+
+### Non-goals
+
+This release does not publish crates.io packages, native libraries, signed
+artifacts, package-manager/system installs, benchmark evidence, storage/capacity
+claims, Arcadia LOB replay semantics, or production/default runtime readiness.
+
+### Validation summary
+
+Maintainer validation before tagging included:
+
+- `cargo fmt --all -- --check`;
+- `cargo check -p arcadia-tio-ocb-core`;
+- `cargo check -p arcadia-tio-ocb-core --examples`;
+- `cargo test -p arcadia-tio-ocb-core`;
+- `cargo test -p arcadia-tio-ocb-core --no-default-features`;
+- `cargo make test-core-reader-no-cabi` in the public workspace;
+- downstream `arcadia-lob-player-runtime` targeted check/test review before
+  downstream pin notification.
+
 ## 0.2.0 — public Rust wrapper source release
 
 Tag: `0.2.0`

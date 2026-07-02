@@ -42,6 +42,8 @@ pub enum OcbFailureCause {
     CorruptFile,
     /// A cooperating OCB mutation lock is already held or unavailable.
     LockUnavailable,
+    /// Low-level I/O failure.
+    Io,
 }
 
 impl OcbFailureCause {
@@ -51,6 +53,7 @@ impl OcbFailureCause {
             OcbFailureCause::UnsupportedFormat => "unsupported_format",
             OcbFailureCause::CorruptFile => "corrupt_file",
             OcbFailureCause::LockUnavailable => "lock_unavailable",
+            OcbFailureCause::Io => "io",
         }
     }
 }
@@ -68,6 +71,14 @@ pub enum ArcadiaTioError {
         cause: OcbFailureCause,
         message: &'static str,
     },
+    /// Structured OCB failure with a granular machine-readable kind and
+    /// caller-safe dynamic context.
+    OcbDiagnostic {
+        code: ArcadiaTioErrorCode,
+        cause: OcbFailureCause,
+        kind: crate::column_bundle::OcbErrorKind,
+        message: String,
+    },
     /// Wrapper for I/O errors.
     Io(std::io::Error),
 }
@@ -79,6 +90,7 @@ impl ArcadiaTioError {
             ArcadiaTioError::Unimplemented(_) => ArcadiaTioErrorCode::Unimplemented,
             ArcadiaTioError::InvalidArgument(_) => ArcadiaTioErrorCode::InvalidArgument,
             ArcadiaTioError::Ocb { code, .. } => *code,
+            ArcadiaTioError::OcbDiagnostic { code, .. } => *code,
             ArcadiaTioError::Io(_) => ArcadiaTioErrorCode::Io,
         }
     }
@@ -87,6 +99,7 @@ impl ArcadiaTioError {
     pub const fn ocb_failure_cause(&self) -> Option<OcbFailureCause> {
         match self {
             ArcadiaTioError::Ocb { cause, .. } => Some(*cause),
+            ArcadiaTioError::OcbDiagnostic { cause, .. } => Some(*cause),
             _ => None,
         }
     }
@@ -122,6 +135,36 @@ impl ArcadiaTioError {
             message,
         }
     }
+
+    /// Build a path-safe OCB diagnostic with a granular public kind.
+    pub fn ocb_diagnostic(
+        kind: crate::column_bundle::OcbErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
+        let cause = match kind {
+            crate::column_bundle::OcbErrorKind::UnsupportedFormat
+            | crate::column_bundle::OcbErrorKind::UnsupportedSchemaVersion => {
+                OcbFailureCause::UnsupportedFormat
+            }
+            crate::column_bundle::OcbErrorKind::LockUnavailable => OcbFailureCause::LockUnavailable,
+            crate::column_bundle::OcbErrorKind::Io => OcbFailureCause::Io,
+            crate::column_bundle::OcbErrorKind::CorruptFile
+            | crate::column_bundle::OcbErrorKind::PayloadCrcMismatch
+            | crate::column_bundle::OcbErrorKind::ChecksumMismatch => OcbFailureCause::CorruptFile,
+            _ => OcbFailureCause::InvalidInput,
+        };
+        let code = match kind {
+            crate::column_bundle::OcbErrorKind::Io
+            | crate::column_bundle::OcbErrorKind::LockUnavailable => ArcadiaTioErrorCode::Io,
+            _ => ArcadiaTioErrorCode::InvalidArgument,
+        };
+        ArcadiaTioError::OcbDiagnostic {
+            code,
+            cause,
+            kind,
+            message: message.into(),
+        }
+    }
 }
 
 impl fmt::Display for ArcadiaTioError {
@@ -130,6 +173,14 @@ impl fmt::Display for ArcadiaTioError {
             ArcadiaTioError::Unimplemented(message) => write!(f, "unimplemented: {message}"),
             ArcadiaTioError::InvalidArgument(message) => write!(f, "invalid argument: {message}"),
             ArcadiaTioError::Ocb { code, message, .. } => match code {
+                ArcadiaTioErrorCode::Unimplemented => write!(f, "unimplemented: {message}"),
+                ArcadiaTioErrorCode::InvalidArgument => write!(f, "invalid argument: {message}"),
+                ArcadiaTioErrorCode::Io => write!(f, "io error: {message}"),
+                ArcadiaTioErrorCode::Ok | ArcadiaTioErrorCode::Flatbuffers => {
+                    write!(f, "{message}")
+                }
+            },
+            ArcadiaTioError::OcbDiagnostic { code, message, .. } => match code {
                 ArcadiaTioErrorCode::Unimplemented => write!(f, "unimplemented: {message}"),
                 ArcadiaTioErrorCode::InvalidArgument => write!(f, "invalid argument: {message}"),
                 ArcadiaTioErrorCode::Io => write!(f, "io error: {message}"),
