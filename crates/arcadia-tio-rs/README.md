@@ -192,13 +192,17 @@ statuses and return status-preserving `CoordinateReadResult<Tensor>` or
 `HistoricalCoordinateReadResult<Tensor>` so ordinary missing, unavailable,
 duplicate, unsupported, many, and error lookup outcomes remain visible with no
 fabricated tensor payload.
+Dense/mask variants `read_at_coordinate_v2_dense`,
+`read_coordinate_range_v2_dense`, `read_at_coordinate_at_commit_v2_dense`, and
+`read_coordinate_range_at_commit_v2_dense` preserve the same lookup envelope and
+return `DenseTensor` payloads with masks for readable lookups.
 The public Rust wrapper does not dereference external references and does not add
 variable-length strings, locale/collation/case folding, broad calendar or
 resolver semantics, strict tensor-only historical coordinate-read aliases,
-dense/mask historical coordinate-read helpers, or benchmark/release/readiness
-claims. Raw C ABI current and historical coordinate-read helpers are declared
-in `arcadia-tio-sys`; the safe wrapper keeps its status-preserving helpers
-composed through existing safe lookup/read APIs.
+or benchmark/release/readiness claims. Raw C ABI current and historical
+coordinate-read helpers are declared in `arcadia-tio-sys`; the safe wrapper
+keeps its status-preserving helpers composed through existing safe lookup/read
+APIs.
 
 ## Write-forward compression controls
 
@@ -628,8 +632,7 @@ read payload ranges only for readable lookup outcomes. Current coordinate
 create/read wrappers cover only the implemented descriptor/value/dictionary/
 status/lookup surfaces listed above; external value resolution, variable-length
 strings, broad calendar/timezone interpretation, strict tensor-only coordinate-read
-aliases, dense/mask historical coordinate-read helpers, and authoritative index
-acceleration are deferred. Pop/revert, metadata setter, index
+aliases, and authoritative index acceleration are deferred. Pop/revert, metadata setter, index
 checkpoint setter, clear-block, and unsupported auto-compaction calls
 intentionally surface native policy/layout support errors.
 

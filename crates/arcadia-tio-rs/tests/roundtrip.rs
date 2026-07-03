@@ -878,6 +878,33 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     );
     assert_eq!(current_exact_read.execution.query_max_threads, 2);
 
+    let current_exact_dense = file
+        .read_at_coordinate_v2_dense(
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::parallel_threads(2),
+            -123.0,
+        )
+        .expect("current exact coordinate dense read");
+    assert_eq!(
+        current_exact_dense.lookup.status,
+        CoordinateLookupResultStatus::Unique
+    );
+    let current_exact_dense_read = current_exact_dense
+        .read
+        .expect("current unique lookup should dense read payload");
+    assert_eq!(current_exact_dense_read.value.tensor.shape, vec![3, 1]);
+    assert_eq!(
+        current_exact_dense_read.value.tensor.data,
+        TensorData::F32(vec![2.0, 5.0, 8.0])
+    );
+    assert_eq!(
+        current_exact_dense_read.value.mask.as_deref(),
+        Some(&[1, 1, 1][..])
+    );
+    assert_eq!(current_exact_dense_read.execution.query_max_threads, 2);
+
     let current_ranged = file
         .read_coordinate_range_v2(
             1,
@@ -900,6 +927,33 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
         TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     );
 
+    let current_ranged_dense = file
+        .read_coordinate_range_v2_dense(
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::serial(),
+            -123.0,
+        )
+        .expect("current coordinate range dense read");
+    assert_eq!(
+        current_ranged_dense.lookup.status,
+        CoordinateLookupResultStatus::Range
+    );
+    let current_range_dense_read = current_ranged_dense
+        .read
+        .expect("current range lookup should dense read payload");
+    assert_eq!(current_range_dense_read.value.tensor.shape, vec![3, 3]);
+    assert_eq!(
+        current_range_dense_read.value.tensor.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+    );
+    assert_eq!(
+        current_range_dense_read.value.mask.as_deref(),
+        Some(&[1, 1, 1, 1, 1, 1, 1, 1, 1][..])
+    );
+
     let current_missing = file
         .read_at_coordinate_v2(
             1,
@@ -913,6 +967,20 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
         CoordinateLookupResultStatus::Missing
     );
     assert!(current_missing.read.is_none());
+    let current_missing_dense = file
+        .read_at_coordinate_v2_dense(
+            1,
+            &CoordinateLookupKey::i32(40),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::serial(),
+            -123.0,
+        )
+        .expect("current missing coordinate dense read preserves lookup result");
+    assert_eq!(
+        current_missing_dense.lookup.status,
+        CoordinateLookupResultStatus::Missing
+    );
+    assert!(current_missing_dense.read.is_none());
 
     let exact = file
         .read_at_coordinate_at_commit_v2(
@@ -929,6 +997,32 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     assert_eq!(exact_read.value.data, TensorData::F32(vec![2.0, 5.0]));
     assert_eq!(exact_read.execution.query_commit_seq, commit1);
     assert_eq!(exact_read.execution.execution.query_max_threads, 3);
+
+    let exact_dense = file
+        .read_at_coordinate_at_commit_v2_dense(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::parallel_threads(3),
+            -123.0,
+        )
+        .expect("historical exact coordinate dense read");
+    assert_eq!(
+        exact_dense.lookup.status,
+        CoordinateLookupResultStatus::Unique
+    );
+    let exact_dense_read = exact_dense
+        .read
+        .expect("historical unique lookup should dense read payload");
+    assert_eq!(exact_dense_read.value.tensor.shape, vec![2, 1]);
+    assert_eq!(
+        exact_dense_read.value.tensor.data,
+        TensorData::F32(vec![2.0, 5.0])
+    );
+    assert_eq!(exact_dense_read.value.mask.as_deref(), Some(&[1, 1][..]));
+    assert_eq!(exact_dense_read.execution.query_commit_seq, commit1);
+    assert_eq!(exact_dense_read.execution.execution.query_max_threads, 3);
 
     let ranged = file
         .read_coordinate_range_at_commit_v2(
@@ -949,6 +1043,35 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     );
     assert_eq!(range_read.execution.query_commit_seq, commit1);
 
+    let ranged_dense = file
+        .read_coordinate_range_at_commit_v2_dense(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::serial(),
+            -123.0,
+        )
+        .expect("historical coordinate range dense read");
+    assert_eq!(
+        ranged_dense.lookup.status,
+        CoordinateLookupResultStatus::Range
+    );
+    let range_dense_read = ranged_dense
+        .read
+        .expect("historical range lookup should dense read payload");
+    assert_eq!(range_dense_read.value.tensor.shape, vec![2, 3]);
+    assert_eq!(
+        range_dense_read.value.tensor.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    );
+    assert_eq!(
+        range_dense_read.value.mask.as_deref(),
+        Some(&[1, 1, 1, 1, 1, 1][..])
+    );
+    assert_eq!(range_dense_read.execution.query_commit_seq, commit1);
+
     let missing = file
         .read_at_coordinate_at_commit_v2(
             commit1,
@@ -960,6 +1083,21 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
         .expect("historical missing coordinate read preserves lookup result");
     assert_eq!(missing.lookup.status, CoordinateLookupResultStatus::Missing);
     assert!(missing.read.is_none());
+    let missing_dense = file
+        .read_at_coordinate_at_commit_v2_dense(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(40),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::serial(),
+            -123.0,
+        )
+        .expect("historical missing coordinate dense read preserves lookup result");
+    assert_eq!(
+        missing_dense.lookup.status,
+        CoordinateLookupResultStatus::Missing
+    );
+    assert!(missing_dense.read.is_none());
     assert_eq!(
         file.head_commit()
             .expect("head after historical coordinate reads")

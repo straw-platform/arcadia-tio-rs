@@ -13009,6 +13009,57 @@ impl TensorFile {
         Ok(CoordinateReadResult { lookup, read })
     }
 
+    /// Performs current-head Coordinate v2 exact lookup and densely reads the matching axis slice.
+    ///
+    /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
+    /// current selected head, materializing nulls with `fill_value` and returning a validity mask.
+    /// Ordinary Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_at_coordinate_v2_dense(
+        &self,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithOptions,
+        fill_value: f64,
+    ) -> Result<CoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_v2(axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_with_options_dense(&selectors, read_options, fill_value)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
+    /// Performs current-head Coordinate v2 range lookup and densely reads the matching axis range.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the current selected
+    /// head, materializing nulls with `fill_value` and returning a validity mask. Ordinary
+    /// Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_coordinate_range_v2_dense(
+        &self,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithOptions,
+        fill_value: f64,
+    ) -> Result<CoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_range_v2(axis, lower, upper, coordinate_options)?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_with_options_dense(&selectors, read_options, fill_value)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
     /// Performs historical Coordinate v2 exact lookup and reads the matching axis slice.
     ///
     /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
@@ -13062,6 +13113,76 @@ impl TensorFile {
         let read = if let Some(range) = lookup.range() {
             let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
             Some(self.read_at_commit_with_options(commit_seq, &selectors, historical_options)?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 exact lookup and densely reads the matching axis slice.
+    ///
+    /// `Unique` lookup results read `[position, position + 1)` at the same retained commit,
+    /// materializing nulls with `fill_value` and returning a validity mask. Ordinary Coordinate v2
+    /// non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_at_coordinate_at_commit_v2_dense(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalCoordinateReadResult<DenseTensor>> {
+        let lookup =
+            self.coordinate_lookup_at_commit_v2(commit_seq, axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_at_commit_with_options_dense(
+                commit_seq,
+                &selectors,
+                historical_options,
+                fill_value,
+            )?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 range lookup and densely reads the matching axis range.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the same retained
+    /// commit, materializing nulls with `fill_value` and returning a validity mask. Ordinary
+    /// Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_coordinate_range_at_commit_v2_dense(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalCoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_range_at_commit_v2(
+            commit_seq,
+            axis,
+            lower,
+            upper,
+            coordinate_options,
+        )?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_at_commit_with_options_dense(
+                commit_seq,
+                &selectors,
+                historical_options,
+                fill_value,
+            )?)
         } else {
             None
         };

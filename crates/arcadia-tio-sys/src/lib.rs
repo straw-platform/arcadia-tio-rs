@@ -2353,6 +2353,30 @@ pub struct ArcadiaTioCoordinateReadResultV2 {
     pub reserved: [u64; 4],
 }
 
+/// Current-head Coordinate v2 lookup plus optional dense tensor/mask read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCoordinateDenseReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Native-owned validity mask when `has_read` is nonzero.
+    pub mask: ArcadiaTioMask,
+    /// Current read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioReadExecutionReport,
+    /// Nonzero when `values`, `mask`, and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
 /// Query trace context borrowed by attributed read APIs.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -2472,6 +2496,30 @@ pub struct ArcadiaTioHistoricalCoordinateReadResultV2 {
     /// Historical read execution metadata when `has_read` is nonzero.
     pub execution: ArcadiaTioHistoricalReadExecutionReport,
     /// Nonzero when `values` and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Historical Coordinate v2 lookup plus optional dense tensor/mask read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalCoordinateDenseReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Native-owned validity mask when `has_read` is nonzero.
+    pub mask: ArcadiaTioMask,
+    /// Historical read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioHistoricalReadExecutionReport,
+    /// Nonzero when `values`, `mask`, and `execution` contain a payload read.
     pub has_read: u8,
     /// Reserved padding bytes.
     pub reserved0: [u8; 7],
@@ -4817,6 +4865,10 @@ unsafe extern "C" {
     pub fn arcadia_tio_coordinate_read_result_v2_free(
         result: *mut ArcadiaTioCoordinateReadResultV2,
     );
+    /// Frees owned fields in a current dense Coordinate v2 read result.
+    pub fn arcadia_tio_coordinate_dense_read_result_v2_free(
+        result: *mut ArcadiaTioCoordinateDenseReadResultV2,
+    );
     /// Frees native-owned JSON strings in an attributed query trace.
     pub fn arcadia_tio_query_trace_json_free(trace_json: *mut ArcadiaTioQueryTraceJson);
     /// Frees native-owned strings in a historical read execution report.
@@ -4826,6 +4878,10 @@ unsafe extern "C" {
     /// Frees owned fields in a historical Coordinate v2 read result.
     pub fn arcadia_tio_historical_coordinate_read_result_v2_free(
         result: *mut ArcadiaTioHistoricalCoordinateReadResultV2,
+    );
+    /// Frees owned fields in a historical dense Coordinate v2 read result.
+    pub fn arcadia_tio_historical_coordinate_dense_read_result_v2_free(
+        result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
     );
     /// Frees native-owned strings in a historical read-index report.
     pub fn arcadia_tio_historical_read_index_report_free(
@@ -4902,6 +4958,16 @@ unsafe extern "C" {
         read_options: *const ArcadiaTioReadWithOptionsOptions,
         out_result: *mut ArcadiaTioCoordinateReadResultV2,
     ) -> c_int;
+    /// Performs a current-head Coordinate v2 exact lookup and densely reads the matching axis slice.
+    pub fn arcadia_tio_read_at_coordinate_v2_dense(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioCoordinateDenseReadResultV2,
+    ) -> c_int;
     /// Performs a current-head Coordinate v2 range lookup and reads the matching axis range.
     pub fn arcadia_tio_read_coordinate_range_v2(
         handle: *mut ArcadiaTioHandle,
@@ -4911,6 +4977,17 @@ unsafe extern "C" {
         coordinate_options: *const ArcadiaTioCoordinateV2Options,
         read_options: *const ArcadiaTioReadWithOptionsOptions,
         out_result: *mut ArcadiaTioCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a current-head Coordinate v2 range lookup and densely reads the matching axis range.
+    pub fn arcadia_tio_read_coordinate_range_v2_dense(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioCoordinateDenseReadResultV2,
     ) -> c_int;
     /// Reads current selector data with execution options and query attribution.
     pub fn arcadia_tio_read_with_options_attributed(
@@ -4968,6 +5045,17 @@ unsafe extern "C" {
         read_options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
         out_result: *mut ArcadiaTioHistoricalCoordinateReadResultV2,
     ) -> c_int;
+    /// Performs a historical Coordinate v2 exact lookup and densely reads the matching axis slice.
+    pub fn arcadia_tio_read_at_coordinate_at_commit_v2_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
+    ) -> c_int;
     /// Performs a historical Coordinate v2 range lookup and reads the matching axis range.
     pub fn arcadia_tio_read_coordinate_range_at_commit_v2(
         handle: *mut ArcadiaTioHandle,
@@ -4978,6 +5066,18 @@ unsafe extern "C" {
         coordinate_options: *const ArcadiaTioCoordinateV2Options,
         read_options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
         out_result: *mut ArcadiaTioHistoricalCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a historical Coordinate v2 range lookup and densely reads the matching axis range.
+    pub fn arcadia_tio_read_coordinate_range_at_commit_v2_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
     ) -> c_int;
     /// Reads current selector data with a shape policy into an owned tensor.
     pub fn arcadia_tio_read_with_shape_policy(
