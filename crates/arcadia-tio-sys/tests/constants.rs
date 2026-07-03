@@ -270,6 +270,8 @@ fn coordinate_v2_symbols_are_declared() {
         "arcadia_tio_coordinate_dictionary_v2_free",
         "arcadia_tio_coordinate_lookup_v2",
         "arcadia_tio_coordinate_lookup_range_v2",
+        "arcadia_tio_coordinate_lookup_at_commit_v2",
+        "arcadia_tio_coordinate_lookup_range_at_commit_v2",
         "arcadia_tio_coordinate_lookup_result_v2_free",
         "arcadia_tio_append_f32_with_coordinates_v2",
         "arcadia_tio_append_f64_with_coordinates_v2",

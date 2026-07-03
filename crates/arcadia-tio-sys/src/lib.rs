@@ -3939,6 +3939,25 @@ unsafe extern "C" {
         options: *const ArcadiaTioCoordinateV2Options,
         out_result: *mut ArcadiaTioCoordinateLookupResultV2,
     ) -> c_int;
+    /// Performs an exact Coordinate v2 lookup against a retained historical commit.
+    pub fn arcadia_tio_coordinate_lookup_at_commit_v2(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        options: *const ArcadiaTioCoordinateV2Options,
+        out_result: *mut ArcadiaTioCoordinateLookupResultV2,
+    ) -> c_int;
+    /// Performs a half-open range Coordinate v2 lookup against a retained historical commit.
+    pub fn arcadia_tio_coordinate_lookup_range_at_commit_v2(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        options: *const ArcadiaTioCoordinateV2Options,
+        out_result: *mut ArcadiaTioCoordinateLookupResultV2,
+    ) -> c_int;
     /// Frees an owned Coordinate v2 lookup result.
     pub fn arcadia_tio_coordinate_lookup_result_v2_free(
         result: *mut ArcadiaTioCoordinateLookupResultV2,

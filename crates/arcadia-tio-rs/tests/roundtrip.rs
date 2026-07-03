@@ -743,6 +743,39 @@ fn safe_wrapper_coordinate_v2_append_with_coordinates_success() {
             .expect("lookup appended dictionary entry");
         assert_eq!(lookup.status, CoordinateLookupResultStatus::Unique);
         assert_eq!(lookup.unique_position(), Some(2));
+        let future_lookup = file
+            .coordinate_lookup_at_commit(
+                1,
+                0,
+                &CoordinateLookupKey::stable_id("instrument-c"),
+                CoordinateOptions::authoritative_scan(),
+            )
+            .expect("historical lookup should not see future dictionary entry");
+        assert_eq!(future_lookup.status, CoordinateLookupResultStatus::Missing);
+        let retained_lookup = file
+            .coordinate_lookup_at_commit(
+                1,
+                0,
+                &CoordinateLookupKey::dictionary_code(2),
+                CoordinateOptions::authoritative_scan(),
+            )
+            .expect("historical lookup should bind retained dictionary entry");
+        assert_eq!(retained_lookup.status, CoordinateLookupResultStatus::Unique);
+        assert_eq!(retained_lookup.unique_position(), Some(1));
+        let range_lookup = file
+            .coordinate_lookup_range_at_commit(
+                1,
+                0,
+                &CoordinateLookupKey::dictionary_code(1),
+                &CoordinateLookupKey::dictionary_code(3),
+                CoordinateOptions::authoritative_scan(),
+            )
+            .expect("historical dictionary range lookup returns status-rich non-answer");
+        assert_eq!(range_lookup.status, CoordinateLookupResultStatus::Error);
+        assert_eq!(
+            range_lookup.status_category,
+            CoordinateStatusCategory::LookupDomainMismatch
+        );
         let invalid_extension = AppendCoordinateBatch::new(vec![
             AppendCoordinateEntry::dictionary_codes_u16_with_entries(
                 0,

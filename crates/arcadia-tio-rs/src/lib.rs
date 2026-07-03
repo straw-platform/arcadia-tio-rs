@@ -12774,6 +12774,61 @@ impl TensorFile {
         out
     }
 
+    /// Performs an exact coordinate lookup against a retained historical commit.
+    pub fn coordinate_lookup_at_commit(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKey,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateLookupResult> {
+        self.coordinate_lookup_at_commit_v2(commit_seq, axis, key, options)
+    }
+
+    /// Performs an exact Coordinate v2 lookup against a retained historical commit.
+    ///
+    /// The lookup binds Coordinate v2 values, dictionaries, and append-coordinate chunks to the
+    /// target commit before evaluating the key. Result status semantics match
+    /// [`Self::coordinate_lookup_v2`].
+    pub fn coordinate_lookup_at_commit_v2(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        options: CoordinateV2Options,
+    ) -> Result<CoordinateLookupResultV2> {
+        self.validate_axis(axis)?;
+        let prepared_key = key.prepare()?;
+        let raw_options = options.to_raw();
+        let mut raw = sys::ArcadiaTioCoordinateLookupResultV2::default();
+        // SAFETY: `self.raw` is live. `prepared_key`, `raw_options`, and `raw` remain valid for
+        // the duration of the call and the raw result is copied before being freed.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_lookup_at_commit_v2(
+                self.raw.as_ptr(),
+                commit_seq,
+                axis,
+                prepared_key.raw(),
+                &raw_options,
+                &mut raw,
+            )
+        };
+        if let Err(err) = status_result(
+            status,
+            "failed to perform historical Coordinate v2 exact lookup",
+        ) {
+            // SAFETY: The raw result is either default/empty or native-owned partial output; the
+            // paired free function tolerates empty carriers and is called at most once here.
+            unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
+            return Err(err);
+        }
+        // SAFETY: Successful status initializes `raw`; from_raw_borrowed copies positions/reason.
+        let out = unsafe { CoordinateLookupResultV2::from_raw_borrowed(&raw) };
+        // SAFETY: `raw` is native-owned output and is freed exactly once after copying.
+        unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
+        out
+    }
+
     /// Performs a half-open coordinate range lookup using typed lower/upper keys.
     pub fn coordinate_lookup_range(
         &self,
@@ -12815,6 +12870,65 @@ impl TensorFile {
             )
         };
         if let Err(err) = status_result(status, "failed to perform Coordinate v2 range lookup") {
+            // SAFETY: The raw result is either default/empty or native-owned partial output; the
+            // paired free function tolerates empty carriers and is called at most once here.
+            unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
+            return Err(err);
+        }
+        // SAFETY: Successful status initializes `raw`; from_raw_borrowed copies positions/reason.
+        let out = unsafe { CoordinateLookupResultV2::from_raw_borrowed(&raw) };
+        // SAFETY: `raw` is native-owned output and is freed exactly once after copying.
+        unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
+        out
+    }
+
+    /// Performs a half-open coordinate range lookup against a retained historical commit.
+    pub fn coordinate_lookup_range_at_commit(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKey,
+        upper: &CoordinateLookupKey,
+        options: CoordinateOptions,
+    ) -> Result<CoordinateLookupResult> {
+        self.coordinate_lookup_range_at_commit_v2(commit_seq, axis, lower, upper, options)
+    }
+
+    /// Performs a half-open Coordinate v2 range lookup against a retained historical commit.
+    ///
+    /// The target commit is bound before Coordinate v2 lower-inclusive, upper-exclusive range
+    /// semantics are evaluated. Result status semantics match
+    /// [`Self::coordinate_lookup_range_v2`].
+    pub fn coordinate_lookup_range_at_commit_v2(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        options: CoordinateV2Options,
+    ) -> Result<CoordinateLookupResultV2> {
+        self.validate_axis(axis)?;
+        let prepared_lower = lower.prepare()?;
+        let prepared_upper = upper.prepare()?;
+        let raw_options = options.to_raw();
+        let mut raw = sys::ArcadiaTioCoordinateLookupResultV2::default();
+        // SAFETY: `self.raw` is live. Prepared keys/options/output outlive the FFI call and the
+        // raw result is copied before being freed.
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_lookup_range_at_commit_v2(
+                self.raw.as_ptr(),
+                commit_seq,
+                axis,
+                prepared_lower.raw(),
+                prepared_upper.raw(),
+                &raw_options,
+                &mut raw,
+            )
+        };
+        if let Err(err) = status_result(
+            status,
+            "failed to perform historical Coordinate v2 range lookup",
+        ) {
             // SAFETY: The raw result is either default/empty or native-owned partial output; the
             // paired free function tolerates empty carriers and is called at most once here.
             unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
