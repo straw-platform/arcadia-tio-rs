@@ -192,8 +192,11 @@ duplicate, unsupported, many, and error lookup outcomes remain visible with no
 fabricated tensor payload.
 The public Rust wrapper does not dereference external references and does not add
 variable-length strings, locale/collation/case folding, broad calendar or
-resolver semantics, strict tensor-only historical coordinate-read aliases, raw C
-ABI coordinate-read helpers, or benchmark/release/readiness claims.
+resolver semantics, strict tensor-only historical coordinate-read aliases,
+dense/mask historical coordinate-read helpers, or benchmark/release/readiness
+claims. Raw C ABI historical coordinate-read helpers are declared in
+`arcadia-tio-sys`; the safe wrapper keeps its status-preserving helpers composed
+through existing safe lookup/read APIs.
 
 ## Write-forward compression controls
 
@@ -623,8 +626,8 @@ ranges only for readable historical lookup outcomes. Current coordinate create/r
 wrappers cover only the implemented descriptor/value/dictionary/status/lookup
 surfaces listed above; external value resolution, variable-length strings, broad
 calendar/timezone interpretation, strict tensor-only historical coordinate-read
-aliases, raw C ABI coordinate-read helpers, and authoritative index acceleration
-are deferred. Pop/revert, metadata setter, index
+aliases, dense/mask historical coordinate-read helpers, and authoritative index
+acceleration are deferred. Pop/revert, metadata setter, index
 checkpoint setter, clear-block, and unsupported auto-compaction calls
 intentionally surface native policy/layout support errors.
 
