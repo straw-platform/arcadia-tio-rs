@@ -403,6 +403,30 @@ fn representative_raw_layouts_are_pointer_compatible() {
         assert_eq!(size_of::<ArcadiaTioChunkPlan>(), 16);
         assert_eq!(size_of::<ArcadiaTioCommitInfo>(), 24);
         assert_eq!(size_of::<ArcadiaTioCommitList>(), 16);
+        #[cfg(feature = "format-ocb")]
+        {
+            assert_eq!(size_of::<ArcadiaTioOcbCompactL2CertificationOptions>(), 96);
+            assert_eq!(
+                size_of::<ArcadiaTioOcbCompactL2ChannelCertificationReport>(),
+                160
+            );
+            assert_eq!(size_of::<ArcadiaTioOcbCompactL2CertificationReport>(), 120);
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbCompactL2CertificationOptions, max_rows),
+                24
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbCompactL2ChannelCertificationReport,
+                    min_receive_nano
+                ),
+                64
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbCompactL2CertificationReport, channels),
+                72
+            );
+        }
     }
 
     #[cfg(target_pointer_width = "32")]

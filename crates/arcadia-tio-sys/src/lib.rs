@@ -913,6 +913,115 @@ pub struct ArcadiaTioOcbCleanupResult {
     pub reserved: [u64; 3],
 }
 
+/// Compact-L2 certification options for channel-sharded OCB artifacts.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2CertificationOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Expected source record width in bytes.
+    pub expected_record_width: u32,
+    /// Nonzero to verify payload headers.
+    pub verify_payload_header: u8,
+    /// Nonzero to verify CRC32C checksums.
+    pub verify_crc32c: u8,
+    /// Nonzero to verify content hashes.
+    pub verify_hashes: u8,
+    /// Nonzero when max_rows is meaningful.
+    pub has_max_rows: u8,
+    /// Maximum rows accepted during certification.
+    pub max_rows: u64,
+    /// Requested worker thread count.
+    pub read_threads: usize,
+    /// Maximum row groups allowed in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Borrowed expected artifact format string or NULL.
+    pub artifact_format: *const c_char,
+    /// Borrowed payload column name string or NULL.
+    pub payload_column_name: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Per-channel compact-L2 certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2ChannelCertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Channel identifier.
+    pub channel_id: u32,
+    /// Certified row count.
+    pub row_count: u64,
+    /// Certified row-group count.
+    pub row_group_count: u32,
+    /// First business index in the channel.
+    pub first_biz_index: u64,
+    /// Last business index in the channel.
+    pub last_biz_index: u64,
+    /// Nonzero when min_receive_nano is meaningful.
+    pub has_min_receive_nano: u8,
+    /// Minimum receive timestamp in nanoseconds.
+    pub min_receive_nano: i64,
+    /// Nonzero when max_receive_nano is meaningful.
+    pub has_max_receive_nano: u8,
+    /// Maximum receive timestamp in nanoseconds.
+    pub max_receive_nano: i64,
+    /// Nonzero when order_record_count is meaningful.
+    pub has_order_record_count: u8,
+    /// Count of order records.
+    pub order_record_count: u64,
+    /// Nonzero when trade_record_count is meaningful.
+    pub has_trade_record_count: u8,
+    /// Count of trade records.
+    pub trade_record_count: u64,
+    /// Nonzero when checksums were verified.
+    pub checksum_verified: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2CertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Certified schema version.
+    pub schema_version: u32,
+    /// Certified trading day.
+    pub trading_day: u32,
+    /// Native-owned artifact format string or NULL.
+    pub artifact_format: *mut c_char,
+    /// Number of certified channels.
+    pub channel_count: usize,
+    /// Total certified row count.
+    pub row_count: u64,
+    /// Total certified row-group count.
+    pub row_group_count: u64,
+    /// Number of channels that failed certification.
+    pub failed_channel_count: usize,
+    /// Nonzero when the artifact is certified.
+    pub certified: u8,
+    /// Nonzero when paths were redacted.
+    pub path_redacted: u8,
+    /// Native-owned channel reports.
+    pub channels: *mut ArcadiaTioOcbCompactL2ChannelCertificationReport,
+    /// Number of channel reports.
+    pub channels_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
 /// OCB predicate bound value.
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -3243,6 +3352,16 @@ unsafe extern "C" {
     /// Initializes an OCB cleanup result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_cleanup_result_init(result: *mut ArcadiaTioOcbCleanupResult);
+    /// Initializes compact-L2 certification options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_compact_l2_certification_options_init(
+        options: *mut ArcadiaTioOcbCompactL2CertificationOptions,
+    );
+    /// Initializes a compact-L2 certification report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_compact_l2_certification_report_init(
+        report: *mut ArcadiaTioOcbCompactL2CertificationReport,
+    );
     /// Sets fixed-binary width metadata on an OCB write column.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_write_column_set_fixed_binary_width(
@@ -3307,6 +3426,18 @@ unsafe extern "C" {
         path: *const c_char,
         out_result: *mut ArcadiaTioOcbCleanupResult,
     ) -> ArcadiaTioErrorCode;
+    /// Certifies a channel-sharded compact-L2 manifest.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_certify_compact_l2_manifest(
+        manifest_path: *const c_char,
+        options: *const ArcadiaTioOcbCompactL2CertificationOptions,
+        out_report: *mut ArcadiaTioOcbCompactL2CertificationReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Frees native-owned compact-L2 certification report data.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_compact_l2_certification_report_free(
+        report: *mut ArcadiaTioOcbCompactL2CertificationReport,
+    );
 
     /// Sets write-time compression for future appends.
     pub fn arcadia_tio_set_compression_config(
