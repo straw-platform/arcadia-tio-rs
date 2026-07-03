@@ -856,6 +856,64 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
         .expect("head before historical coordinate reads")
         .commit_seq;
 
+    let current_exact = file
+        .read_at_coordinate_v2(
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::parallel_threads(2),
+        )
+        .expect("current exact coordinate read");
+    assert_eq!(
+        current_exact.lookup.status,
+        CoordinateLookupResultStatus::Unique
+    );
+    let current_exact_read = current_exact
+        .read
+        .expect("current unique lookup should read payload");
+    assert_eq!(current_exact_read.value.shape, vec![3, 1]);
+    assert_eq!(
+        current_exact_read.value.data,
+        TensorData::F32(vec![2.0, 5.0, 8.0])
+    );
+    assert_eq!(current_exact_read.execution.query_max_threads, 2);
+
+    let current_ranged = file
+        .read_coordinate_range_v2(
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::serial(),
+        )
+        .expect("current coordinate range read");
+    assert_eq!(
+        current_ranged.lookup.status,
+        CoordinateLookupResultStatus::Range
+    );
+    let current_range_read = current_ranged
+        .read
+        .expect("current range lookup should read payload");
+    assert_eq!(current_range_read.value.shape, vec![3, 3]);
+    assert_eq!(
+        current_range_read.value.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+    );
+
+    let current_missing = file
+        .read_at_coordinate_v2(
+            1,
+            &CoordinateLookupKey::i32(40),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithOptions::serial(),
+        )
+        .expect("current missing coordinate read preserves lookup result");
+    assert_eq!(
+        current_missing.lookup.status,
+        CoordinateLookupResultStatus::Missing
+    );
+    assert!(current_missing.read.is_none());
+
     let exact = file
         .read_at_coordinate_at_commit_v2(
             commit1,

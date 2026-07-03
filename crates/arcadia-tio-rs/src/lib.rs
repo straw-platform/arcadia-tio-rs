@@ -5903,6 +5903,15 @@ pub struct ReadResult<T> {
     pub execution: ReadExecutionReport,
 }
 
+/// Current Coordinate v2 lookup result plus an optional payload read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoordinateReadResult<T> {
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: CoordinateLookupResultV2,
+    /// Payload read when the lookup result is readable for this helper.
+    pub read: Option<ReadResult<T>>,
+}
+
 /// Historical read value with execution metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoricalReadResult<T> {
@@ -12948,6 +12957,56 @@ impl TensorFile {
         // SAFETY: `raw` is native-owned output and is freed exactly once after copying.
         unsafe { sys::arcadia_tio_coordinate_lookup_result_v2_free(&mut raw) };
         out
+    }
+
+    /// Performs current-head Coordinate v2 exact lookup and reads the matching axis slice.
+    ///
+    /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
+    /// current selected head. Ordinary Coordinate v2 non-answers such as missing, unavailable,
+    /// duplicate, unsupported, many, or error statuses are preserved in `lookup` and return no
+    /// payload read.
+    pub fn read_at_coordinate_v2(
+        &self,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithOptions,
+    ) -> Result<CoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_v2(axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_with_options(&selectors, read_options)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
+    /// Performs current-head Coordinate v2 range lookup and reads the matching axis range.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the current selected
+    /// head. Zero-length ranges are passed through to the current read path unchanged. Ordinary
+    /// Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_coordinate_range_v2(
+        &self,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithOptions,
+    ) -> Result<CoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_range_v2(axis, lower, upper, coordinate_options)?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_with_options(&selectors, read_options)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
     }
 
     /// Performs historical Coordinate v2 exact lookup and reads the matching axis slice.
