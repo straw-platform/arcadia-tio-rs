@@ -13060,6 +13060,108 @@ impl TensorFile {
         Ok(CoordinateReadResult { lookup, read })
     }
 
+    /// Performs current-head Coordinate v2 exact lookup and reads the matching axis slice with shape policy.
+    ///
+    /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
+    /// current selected head with the requested shape policy. Ordinary Coordinate v2 non-answers
+    /// are preserved in `lookup` and return no payload read.
+    pub fn read_at_coordinate_v2_with_shape_policy(
+        &self,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithShapePolicyOptions,
+    ) -> Result<CoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_v2(axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_with_shape_policy(&selectors, read_options)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
+    /// Performs current-head Coordinate v2 range lookup and reads the matching axis range with shape policy.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the current selected
+    /// head with the requested shape policy. Ordinary Coordinate v2 non-answers are preserved in
+    /// `lookup` and return no payload read.
+    pub fn read_coordinate_range_v2_with_shape_policy(
+        &self,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithShapePolicyOptions,
+    ) -> Result<CoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_range_v2(axis, lower, upper, coordinate_options)?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_with_shape_policy(&selectors, read_options)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
+    /// Performs current-head Coordinate v2 exact lookup and densely reads the matching axis slice with shape policy.
+    ///
+    /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
+    /// current selected head with the requested shape policy, materializing nulls with
+    /// `fill_value` and returning a validity mask. Ordinary Coordinate v2 non-answers are
+    /// preserved in `lookup` and return no payload read.
+    pub fn read_at_coordinate_v2_with_shape_policy_dense(
+        &self,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<CoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_v2(axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_with_shape_policy_dense(&selectors, read_options, fill_value)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
+    /// Performs current-head Coordinate v2 range lookup and densely reads the matching axis range with shape policy.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the current selected
+    /// head with the requested shape policy, materializing nulls with `fill_value` and returning a
+    /// validity mask. Ordinary Coordinate v2 non-answers are preserved in `lookup` and return no
+    /// payload read.
+    pub fn read_coordinate_range_v2_with_shape_policy_dense(
+        &self,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        read_options: ReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<CoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_range_v2(axis, lower, upper, coordinate_options)?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_with_shape_policy_dense(&selectors, read_options, fill_value)?)
+        } else {
+            None
+        };
+        Ok(CoordinateReadResult { lookup, read })
+    }
+
     /// Performs historical Coordinate v2 exact lookup and reads the matching axis slice.
     ///
     /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
@@ -13178,6 +13280,143 @@ impl TensorFile {
         let read = if let Some(range) = lookup.range() {
             let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
             Some(self.read_at_commit_with_options_dense(
+                commit_seq,
+                &selectors,
+                historical_options,
+                fill_value,
+            )?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 exact lookup and reads the matching axis slice with shape policy.
+    ///
+    /// `Unique` lookup results read `[position, position + 1)` at the same retained commit with the
+    /// requested shape policy. Ordinary Coordinate v2 non-answers are preserved in `lookup` and
+    /// return no payload read.
+    pub fn read_at_coordinate_at_commit_v2_with_shape_policy(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithShapePolicyOptions,
+    ) -> Result<HistoricalCoordinateReadResult<Tensor>> {
+        let lookup =
+            self.coordinate_lookup_at_commit_v2(commit_seq, axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_at_commit_with_shape_policy(
+                commit_seq,
+                &selectors,
+                historical_options,
+            )?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 range lookup and reads the matching axis range with shape policy.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the same retained commit
+    /// with the requested shape policy. Ordinary Coordinate v2 non-answers are preserved in
+    /// `lookup` and return no payload read.
+    pub fn read_coordinate_range_at_commit_v2_with_shape_policy(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithShapePolicyOptions,
+    ) -> Result<HistoricalCoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_range_at_commit_v2(
+            commit_seq,
+            axis,
+            lower,
+            upper,
+            coordinate_options,
+        )?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_at_commit_with_shape_policy(
+                commit_seq,
+                &selectors,
+                historical_options,
+            )?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 exact lookup and densely reads the matching axis slice with shape policy.
+    ///
+    /// `Unique` lookup results read `[position, position + 1)` at the same retained commit with the
+    /// requested shape policy, materializing nulls with `fill_value` and returning a validity mask.
+    /// Ordinary Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_at_coordinate_at_commit_v2_with_shape_policy_dense(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalCoordinateReadResult<DenseTensor>> {
+        let lookup =
+            self.coordinate_lookup_at_commit_v2(commit_seq, axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_at_commit_with_shape_policy_dense(
+                commit_seq,
+                &selectors,
+                historical_options,
+                fill_value,
+            )?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 range lookup and densely reads the matching axis range with shape policy.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the same retained commit
+    /// with the requested shape policy, materializing nulls with `fill_value` and returning a
+    /// validity mask. Ordinary Coordinate v2 non-answers are preserved in `lookup` and return no
+    /// payload read.
+    pub fn read_coordinate_range_at_commit_v2_with_shape_policy_dense(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalCoordinateReadResult<DenseTensor>> {
+        let lookup = self.coordinate_lookup_range_at_commit_v2(
+            commit_seq,
+            axis,
+            lower,
+            upper,
+            coordinate_options,
+        )?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_at_commit_with_shape_policy_dense(
                 commit_seq,
                 &selectors,
                 historical_options,
@@ -13872,6 +14111,110 @@ impl TensorFile {
             }
             return Err(TioError::from_last_error(
                 "failed to read dense tensor at commit with read_index",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let copied_report = copy_historical_read_index_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_historical_read_index_report_free(&mut report);
+        }
+        Ok(HistoricalReadIndexDenseResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            report: copied_report?,
+        })
+    }
+
+    /// Reads retained historical data through the native basic read-index API with a shape-policy domain.
+    pub fn read_index_at_commit_with_shape_policy(
+        &self,
+        commit_seq: u64,
+        items: &[ReadIndexItem],
+        options: HistoricalReadWithShapePolicyOptions,
+    ) -> Result<HistoricalReadIndexResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedHistoricalReadWithShapePolicyOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut report = new_historical_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_at_commit_with_shape_policy(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                &mut raw_tensor,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_historical_read_index_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read at commit with read_index shape policy",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let copied_report = copy_historical_read_index_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_historical_read_index_report_free(&mut report);
+        }
+        Ok(HistoricalReadIndexResult {
+            value: tensor?,
+            report: copied_report?,
+        })
+    }
+
+    /// Reads retained historical data through the native basic read-index API with a shape-policy domain and dense fill materialization.
+    pub fn read_index_at_commit_with_shape_policy_dense(
+        &self,
+        commit_seq: u64,
+        items: &[ReadIndexItem],
+        options: HistoricalReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalReadIndexDenseResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedHistoricalReadWithShapePolicyOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut report = new_historical_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_at_commit_with_shape_policy_dense(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_historical_read_index_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor at commit with read_index shape policy",
             ));
         }
         let tensor = copy_tensor(&raw_tensor);
@@ -16245,7 +16588,7 @@ pub mod ocb {
     use std::mem;
     use std::os::raw::{c_char, c_void};
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::ptr::{self, NonNull};
     use std::slice;
     use std::time::Instant;
@@ -16269,6 +16612,16 @@ pub mod ocb {
                 Self::FullPayload => sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD,
             }
         }
+
+        fn from_raw(raw: sys::ArcadiaTioOcbOpenValidation) -> OcbResult<Self> {
+            match raw {
+                sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH => Ok(Self::MetadataGraph),
+                sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD => Ok(Self::FullPayload),
+                other => Err(OcbError::invalid_input(format!(
+                    "unknown OCB open validation value {other}"
+                ))),
+            }
+        }
     }
 
     /// OCB open options.
@@ -16279,6 +16632,21 @@ pub mod ocb {
     }
 
     impl Default for OpenOptions {
+        fn default() -> Self {
+            Self {
+                validation: OpenValidation::MetadataGraph,
+            }
+        }
+    }
+
+    /// OCB selected-snapshot export-copy options.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SnapshotExportOptions {
+        /// Validation depth applied to the source snapshot and staged copy.
+        pub validation: OpenValidation,
+    }
+
+    impl Default for SnapshotExportOptions {
         fn default() -> Self {
             Self {
                 validation: OpenValidation::MetadataGraph,
@@ -17569,6 +17937,50 @@ pub mod ocb {
         pub truncated: bool,
     }
 
+    /// Deterministic OCB declaration fingerprints returned by export-copy.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SnapshotFingerprints {
+        /// Fingerprint algorithm label.
+        pub algorithm: String,
+        /// Schema fingerprint.
+        pub schema: String,
+        /// Dictionary declarations fingerprint.
+        pub dictionaries: String,
+        /// Ordering declarations fingerprint.
+        pub ordering: String,
+        /// Combined declaration fingerprint.
+        pub combined: String,
+    }
+
+    /// Provenance report from selected-snapshot export-copy.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SnapshotExportReport {
+        /// Source path copied from the native report.
+        pub source_path: PathBuf,
+        /// Destination path copied from the native report.
+        pub destination_path: PathBuf,
+        /// Validation depth applied during export.
+        pub validation: OpenValidation,
+        /// Source file length observed before export.
+        pub source_file_bytes: u64,
+        /// Destination file length after export.
+        pub destination_file_bytes: u64,
+        /// Number of selected-snapshot bytes copied.
+        pub bytes_copied: u64,
+        /// Orphan tail bytes excluded from the destination.
+        pub orphan_tail_bytes_excluded: u64,
+        /// Selected root generation.
+        pub root_generation: u64,
+        /// Previous selected root generation when present.
+        pub previous_root_generation: Option<u64>,
+        /// Selected snapshot row count.
+        pub row_count: u64,
+        /// Selected snapshot row-group count.
+        pub row_group_count: u32,
+        /// Declaration fingerprints for the selected snapshot.
+        pub fingerprints: SnapshotFingerprints,
+    }
+
     /// OCB file handle bound to one selected committed snapshot.
     #[derive(Debug)]
     pub struct ColumnBundleFile {
@@ -17923,6 +18335,35 @@ pub mod ocb {
         } else {
             Err(OcbError::last("OCB cleanup_orphan_tail failed"))
         }
+    }
+
+    /// Copy one source file's selected committed OCB snapshot to a new destination file.
+    ///
+    /// The source file is never modified. Orphan tail bytes beyond the selected snapshot
+    /// boundary are excluded from the destination and reported.
+    pub fn copy_selected_snapshot(
+        source_path: impl AsRef<Path>,
+        destination_path: impl AsRef<Path>,
+        options: SnapshotExportOptions,
+    ) -> OcbResult<SnapshotExportReport> {
+        let source_path = path_to_cstring(source_path).map_err(OcbError::from_tio_error)?;
+        let destination_path =
+            path_to_cstring(destination_path).map_err(OcbError::from_tio_error)?;
+        let raw_options = raw_snapshot_export_options(options);
+        let mut raw_report = empty_snapshot_export_report();
+        let status = unsafe {
+            sys::arcadia_tio_ocb_copy_selected_snapshot(
+                source_path.as_ptr(),
+                destination_path.as_ptr(),
+                &raw_options,
+                &mut raw_report,
+            )
+        };
+        let guard = SnapshotExportReportGuard(raw_report);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last("OCB copy_selected_snapshot failed"));
+        }
+        unsafe { snapshot_export_report_from_raw(&guard.0) }
     }
 
     fn write_path(
@@ -18495,6 +18936,17 @@ pub mod ocb {
         CString::new(value).map_err(|_| OcbError::invalid_input(format!("{label} contains NUL")))
     }
 
+    fn raw_snapshot_export_options(
+        options: SnapshotExportOptions,
+    ) -> sys::ArcadiaTioOcbSnapshotExportOptions {
+        sys::ArcadiaTioOcbSnapshotExportOptions {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbSnapshotExportOptions>(),
+            validation: options.validation.to_raw(),
+            reserved: [0; 4],
+        }
+    }
+
     fn empty_metadata() -> sys::ArcadiaTioOcbMetadata {
         sys::ArcadiaTioOcbMetadata {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -18529,6 +18981,31 @@ pub mod ocb {
             string_values_len: 0,
             byte_values: ptr::null_mut(),
             byte_values_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_snapshot_export_report() -> sys::ArcadiaTioOcbSnapshotExportReport {
+        sys::ArcadiaTioOcbSnapshotExportReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbSnapshotExportReport>(),
+            source_path: ptr::null_mut(),
+            destination_path: ptr::null_mut(),
+            validation: sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH,
+            source_file_bytes: 0,
+            destination_file_bytes: 0,
+            bytes_copied: 0,
+            orphan_tail_bytes_excluded: 0,
+            root_generation: 0,
+            has_previous_root_generation: 0,
+            previous_root_generation: 0,
+            row_count: 0,
+            row_group_count: 0,
+            fingerprint_algorithm: ptr::null_mut(),
+            schema_fingerprint: ptr::null_mut(),
+            dictionaries_fingerprint: ptr::null_mut(),
+            ordering_fingerprint: ptr::null_mut(),
+            combined_fingerprint: ptr::null_mut(),
             reserved: [0; 4],
         }
     }
@@ -18676,6 +19153,13 @@ pub mod ocb {
     impl Drop for RowGroupSummariesGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_row_group_summaries_free(&mut self.0) };
+        }
+    }
+
+    struct SnapshotExportReportGuard(sys::ArcadiaTioOcbSnapshotExportReport);
+    impl Drop for SnapshotExportReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_snapshot_export_report_free(&mut self.0) };
         }
     }
 
@@ -19059,6 +19543,32 @@ pub mod ocb {
             selected_column_chunks: raw.selected_column_chunks,
             fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
         }
+    }
+
+    unsafe fn snapshot_export_report_from_raw(
+        raw: &sys::ArcadiaTioOcbSnapshotExportReport,
+    ) -> OcbResult<SnapshotExportReport> {
+        Ok(SnapshotExportReport {
+            source_path: PathBuf::from(raw_string(raw.source_path.cast())),
+            destination_path: PathBuf::from(raw_string(raw.destination_path.cast())),
+            validation: OpenValidation::from_raw(raw.validation)?,
+            source_file_bytes: raw.source_file_bytes,
+            destination_file_bytes: raw.destination_file_bytes,
+            bytes_copied: raw.bytes_copied,
+            orphan_tail_bytes_excluded: raw.orphan_tail_bytes_excluded,
+            root_generation: raw.root_generation,
+            previous_root_generation: (raw.has_previous_root_generation != 0)
+                .then_some(raw.previous_root_generation),
+            row_count: raw.row_count,
+            row_group_count: raw.row_group_count,
+            fingerprints: SnapshotFingerprints {
+                algorithm: raw_string(raw.fingerprint_algorithm.cast()),
+                schema: raw_string(raw.schema_fingerprint.cast()),
+                dictionaries: raw_string(raw.dictionaries_fingerprint.cast()),
+                ordering: raw_string(raw.ordering_fingerprint.cast()),
+                combined: raw_string(raw.combined_fingerprint.cast()),
+            },
+        })
     }
 
     unsafe fn column_batch_from_raw(raw: &sys::ArcadiaTioOcbColumnBatch) -> OcbResult<ColumnBatch> {

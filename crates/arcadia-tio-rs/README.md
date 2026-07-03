@@ -81,7 +81,9 @@ are unspecified. `clone_reader` cheaply
 creates another handle for the same immutable selected snapshot, and the safe
 wrapper marks `ColumnBundleFile` as `Send`/`Sync` for read-only multi-lane use.
 `ocb::cleanup_orphan_tail` truncates orphan tail bytes after the latest valid
-root. `OcbError` preserves the
+root, while `ocb::copy_selected_snapshot` copies the latest selected snapshot to
+a fresh destination and returns byte, generation, row-count, and fingerprint
+provenance. `OcbError` preserves the
 ordinary C ABI error code plus OCB `ErrorKind` and optional `FailureCause` for
 machine-readable handling. Dictionary-coded reads return primitive codes; use
 `dictionary_values` for explicit decoded dictionary labels/bytes. OCB examples
@@ -117,7 +119,8 @@ the duration of one bulk FFI call, validate dtype/rank/shape/data length before
 crossing the ABI where possible, and return or surface the native status. Read
 and report helpers copy
 native-owned tensor/mask/report/trace outputs into Rust-owned values and
-immediately free the C allocation. `read_values_arrow` is the exception: it
+immediately free the C allocation. Historical `read_index` helpers support both
+execution-options-only reads and shape-policy domain reads. `read_values_arrow` is the exception: it
 returns an `ArrowCData` RAII owner for the Arrow C Data release callbacks;
 borrowed Arrow pointers are valid only while that owner is alive and are
 released exactly once when it is dropped. The public `ops` namespace provides
@@ -515,8 +518,8 @@ let indexed_dense = file.read_index_dense(&[
 ], -1.0)?;
 assert_eq!(indexed_dense.value.tensor.data, TensorData::F64(vec![2.0, 3.0]));
 assert_eq!(indexed_dense.value.mask.as_deref(), Some(&[1, 1][..]));
-// Retained historical snapshots also expose options-only read_index helpers:
-// read_index_at_commit_with_options(...) and read_index_at_commit_with_options_dense(...).
+// Retained historical snapshots also expose read_index helpers with execution
+// options or explicit shape-policy domains.
 
 let head = file.head_commit()?;
 let visible_commits = file.list_commits(Some(8))?;

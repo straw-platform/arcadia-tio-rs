@@ -905,6 +905,34 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     );
     assert_eq!(current_exact_dense_read.execution.query_max_threads, 2);
 
+    let current_exact_shape_policy = file
+        .read_at_coordinate_v2_with_shape_policy(
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithShapePolicyOptions::parallel_threads(
+                2,
+                ReadShapePolicy::ExplicitExtents(vec![3]),
+            ),
+        )
+        .expect("current exact coordinate shape-policy read");
+    assert_eq!(
+        current_exact_shape_policy.lookup.status,
+        CoordinateLookupResultStatus::Unique
+    );
+    let current_exact_shape_policy_read = current_exact_shape_policy
+        .read
+        .expect("current unique lookup should shape-policy read payload");
+    assert_eq!(current_exact_shape_policy_read.value.shape, vec![3, 1]);
+    assert_eq!(
+        current_exact_shape_policy_read.value.data,
+        TensorData::F32(vec![2.0, 5.0, 8.0])
+    );
+    assert_eq!(
+        current_exact_shape_policy_read.execution.query_max_threads,
+        2
+    );
+
     let current_ranged = file
         .read_coordinate_range_v2(
             1,
@@ -951,6 +979,36 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     );
     assert_eq!(
         current_range_dense_read.value.mask.as_deref(),
+        Some(&[1, 1, 1, 1, 1, 1, 1, 1, 1][..])
+    );
+
+    let current_ranged_shape_policy_dense = file
+        .read_coordinate_range_v2_with_shape_policy_dense(
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            ReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![3])),
+            -123.0,
+        )
+        .expect("current coordinate range shape-policy dense read");
+    assert_eq!(
+        current_ranged_shape_policy_dense.lookup.status,
+        CoordinateLookupResultStatus::Range
+    );
+    let current_range_shape_policy_dense_read = current_ranged_shape_policy_dense
+        .read
+        .expect("current range lookup should shape-policy dense read payload");
+    assert_eq!(
+        current_range_shape_policy_dense_read.value.tensor.shape,
+        vec![3, 3]
+    );
+    assert_eq!(
+        current_range_shape_policy_dense_read.value.tensor.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+    );
+    assert_eq!(
+        current_range_shape_policy_dense_read.value.mask.as_deref(),
         Some(&[1, 1, 1, 1, 1, 1, 1, 1, 1][..])
     );
 
@@ -1024,6 +1082,39 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
     assert_eq!(exact_dense_read.execution.query_commit_seq, commit1);
     assert_eq!(exact_dense_read.execution.execution.query_max_threads, 3);
 
+    let exact_shape_policy = file
+        .read_at_coordinate_at_commit_v2_with_shape_policy(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithShapePolicyOptions::parallel_threads(
+                3,
+                ReadShapePolicy::ExplicitExtents(vec![3]),
+            ),
+        )
+        .expect("historical exact coordinate shape-policy read");
+    assert_eq!(
+        exact_shape_policy.lookup.status,
+        CoordinateLookupResultStatus::Unique
+    );
+    let exact_shape_policy_read = exact_shape_policy
+        .read
+        .expect("historical unique lookup should shape-policy read payload");
+    assert_eq!(exact_shape_policy_read.value.shape, vec![2, 1]);
+    assert_eq!(
+        exact_shape_policy_read.value.data,
+        TensorData::F32(vec![2.0, 5.0])
+    );
+    assert_eq!(exact_shape_policy_read.execution.query_commit_seq, commit1);
+    assert_eq!(
+        exact_shape_policy_read
+            .execution
+            .execution
+            .query_max_threads,
+        3
+    );
+
     let ranged = file
         .read_coordinate_range_at_commit_v2(
             commit1,
@@ -1071,6 +1162,38 @@ fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() 
         Some(&[1, 1, 1, 1, 1, 1][..])
     );
     assert_eq!(range_dense_read.execution.query_commit_seq, commit1);
+
+    let ranged_shape_policy_dense = file
+        .read_coordinate_range_at_commit_v2_with_shape_policy_dense(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![3])),
+            -123.0,
+        )
+        .expect("historical coordinate range shape-policy dense read");
+    assert_eq!(
+        ranged_shape_policy_dense.lookup.status,
+        CoordinateLookupResultStatus::Range
+    );
+    let range_shape_policy_dense_read = ranged_shape_policy_dense
+        .read
+        .expect("historical range lookup should shape-policy dense read payload");
+    assert_eq!(range_shape_policy_dense_read.value.tensor.shape, vec![2, 3]);
+    assert_eq!(
+        range_shape_policy_dense_read.value.tensor.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    );
+    assert_eq!(
+        range_shape_policy_dense_read.value.mask.as_deref(),
+        Some(&[1, 1, 1, 1, 1, 1][..])
+    );
+    assert_eq!(
+        range_shape_policy_dense_read.execution.query_commit_seq,
+        commit1
+    );
 
     let missing = file
         .read_at_coordinate_at_commit_v2(
@@ -1731,6 +1854,62 @@ fn safe_wrapper_historical_read_index_binds_target_commit() {
     );
     assert!(
         !tail_at_commit_two
+            .report
+            .read_index
+            .used_full_tensor_fallback
+    );
+
+    let shape_policy_tail = file
+        .read_index_at_commit_with_shape_policy(
+            2,
+            &[
+                ReadIndexItem::slice(Some(-1), None, 1).expect("valid target tail slice"),
+                ReadIndexItem::all(),
+            ],
+            HistoricalReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![1])),
+        )
+        .expect("historical read_index shape-policy target tail");
+    assert_eq!(shape_policy_tail.value.shape, vec![1, 1]);
+    assert_eq!(shape_policy_tail.value.data, TensorData::F32(vec![3.0]));
+    assert_eq!(shape_policy_tail.report.execution.query_commit_seq, 2);
+    assert_eq!(
+        shape_policy_tail.report.read_index.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(
+        !shape_policy_tail
+            .report
+            .read_index
+            .used_full_tensor_fallback
+    );
+
+    let shape_policy_tail_dense = file
+        .read_index_at_commit_with_shape_policy_dense(
+            2,
+            &[
+                ReadIndexItem::slice(Some(-1), None, 1).expect("valid target tail slice"),
+                ReadIndexItem::all(),
+            ],
+            HistoricalReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![1])),
+            -9.0,
+        )
+        .expect("historical dense read_index shape-policy target tail");
+    assert_eq!(shape_policy_tail_dense.value.tensor.shape, vec![1, 1]);
+    assert_eq!(
+        shape_policy_tail_dense.value.tensor.data,
+        TensorData::F32(vec![3.0])
+    );
+    assert_eq!(
+        shape_policy_tail_dense.value.mask.as_deref(),
+        Some(&[1][..])
+    );
+    assert_eq!(shape_policy_tail_dense.report.execution.query_commit_seq, 2);
+    assert_eq!(
+        shape_policy_tail_dense.report.read_index.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(
+        !shape_policy_tail_dense
             .report
             .read_index
             .used_full_tensor_fallback

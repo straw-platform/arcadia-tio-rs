@@ -20,7 +20,9 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert_send_sync::<ColumnBundleFile>();
 
     let path = unique_path("ocb-safe-wrapper-roundtrip.ocb");
+    let export_path = unique_path("ocb-safe-wrapper-roundtrip-export.ocb");
     let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&export_path);
 
     ocb::create_with_options(
         &path,
@@ -378,6 +380,46 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         .expect("open for orphan tail")
         .write_all(b"orphan-tail")
         .expect("write orphan tail");
+    let export_report = ocb::copy_selected_snapshot(
+        &path,
+        &export_path,
+        ocb::SnapshotExportOptions {
+            validation: OpenValidation::FullPayload,
+        },
+    )
+    .expect("export selected snapshot");
+    assert_eq!(export_report.validation, OpenValidation::FullPayload);
+    assert!(export_report.source_file_bytes > export_report.destination_file_bytes);
+    assert_eq!(
+        export_report.orphan_tail_bytes_excluded,
+        export_report.source_file_bytes - export_report.destination_file_bytes
+    );
+    assert_eq!(
+        export_report.bytes_copied,
+        export_report.destination_file_bytes
+    );
+    assert_eq!(export_report.root_generation, 2);
+    assert_eq!(export_report.previous_root_generation, Some(1));
+    assert_eq!(export_report.row_count, 4);
+    assert_eq!(export_report.row_group_count, 2);
+    assert!(!export_report.fingerprints.algorithm.is_empty());
+    assert!(!export_report.fingerprints.combined.is_empty());
+    assert_eq!(
+        ColumnBundleFile::open(&export_path)
+            .expect("open exported selected snapshot")
+            .metadata()
+            .expect("export metadata")
+            .row_count,
+        4
+    );
+    let existing_export =
+        ocb::copy_selected_snapshot(&path, &export_path, ocb::SnapshotExportOptions::default())
+            .expect_err("existing destination rejects");
+    assert!(
+        existing_export
+            .message()
+            .contains("destination path already exists")
+    );
     let cleanup = ocb::cleanup_orphan_tail(&path).expect("cleanup orphan tail");
     assert!(cleanup.truncated);
     assert_eq!(
@@ -390,6 +432,7 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     );
 
     let _ = fs::remove_file(path);
+    let _ = fs::remove_file(export_path);
 }
 
 #[test]

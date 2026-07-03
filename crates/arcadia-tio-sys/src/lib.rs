@@ -913,6 +913,68 @@ pub struct ArcadiaTioOcbCleanupResult {
     pub reserved: [u64; 3],
 }
 
+/// OCB selected-snapshot export-copy options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbSnapshotExportOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Validation depth for the source and staged destination.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB selected-snapshot export-copy report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbSnapshotExportReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned source path string.
+    pub source_path: *mut c_char,
+    /// Native-owned destination path string.
+    pub destination_path: *mut c_char,
+    /// Validation depth applied during export.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Source file length observed before export.
+    pub source_file_bytes: u64,
+    /// Destination file length after export.
+    pub destination_file_bytes: u64,
+    /// Number of selected-snapshot bytes copied.
+    pub bytes_copied: u64,
+    /// Orphan tail bytes excluded from the destination.
+    pub orphan_tail_bytes_excluded: u64,
+    /// Selected root generation.
+    pub root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous selected root generation.
+    pub previous_root_generation: u64,
+    /// Selected snapshot row count.
+    pub row_count: u64,
+    /// Selected snapshot row-group count.
+    pub row_group_count: u32,
+    /// Native-owned fingerprint algorithm string.
+    pub fingerprint_algorithm: *mut c_char,
+    /// Native-owned schema fingerprint string.
+    pub schema_fingerprint: *mut c_char,
+    /// Native-owned dictionary fingerprint string.
+    pub dictionaries_fingerprint: *mut c_char,
+    /// Native-owned ordering fingerprint string.
+    pub ordering_fingerprint: *mut c_char,
+    /// Native-owned combined fingerprint string.
+    pub combined_fingerprint: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
 /// Compact-L2 certification options for channel-sharded OCB artifacts.
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -3444,6 +3506,16 @@ unsafe extern "C" {
     /// Initializes an OCB cleanup result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_cleanup_result_init(result: *mut ArcadiaTioOcbCleanupResult);
+    /// Initializes OCB selected-snapshot export-copy options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_snapshot_export_options_init(
+        options: *mut ArcadiaTioOcbSnapshotExportOptions,
+    );
+    /// Initializes an OCB selected-snapshot export-copy report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_snapshot_export_report_init(
+        report: *mut ArcadiaTioOcbSnapshotExportReport,
+    );
     /// Initializes compact-L2 certification options.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_compact_l2_certification_options_init(
@@ -3518,6 +3590,19 @@ unsafe extern "C" {
         path: *const c_char,
         out_result: *mut ArcadiaTioOcbCleanupResult,
     ) -> ArcadiaTioErrorCode;
+    /// Copies one source file's selected committed OCB snapshot to a new destination.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_copy_selected_snapshot(
+        source_path: *const c_char,
+        destination_path: *const c_char,
+        options: *const ArcadiaTioOcbSnapshotExportOptions,
+        out_report: *mut ArcadiaTioOcbSnapshotExportReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Frees native-owned selected-snapshot export-copy report data.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_snapshot_export_report_free(
+        report: *mut ArcadiaTioOcbSnapshotExportReport,
+    );
     /// Certifies a channel-sharded compact-L2 manifest.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_certify_compact_l2_manifest(
@@ -4929,6 +5014,28 @@ unsafe extern "C" {
         out_mask: *mut ArcadiaTioMask,
         out_report: *mut ArcadiaTioHistoricalReadIndexReport,
     ) -> c_int;
+    /// Reads historical data through low-level read-index items with a shape-policy domain.
+    pub fn arcadia_tio_read_index_at_commit_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioHistoricalReadIndexReport,
+    ) -> c_int;
+    /// Reads historical data through low-level read-index items with a shape-policy domain into a dense tensor and optional mask.
+    pub fn arcadia_tio_read_index_at_commit_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioHistoricalReadIndexReport,
+    ) -> c_int;
     /// Reads current selector data with execution options into an owned tensor.
     pub fn arcadia_tio_read_with_options(
         handle: *mut ArcadiaTioHandle,
@@ -4986,6 +5093,46 @@ unsafe extern "C" {
         upper: *const ArcadiaTioCoordinateLookupKeyV2,
         coordinate_options: *const ArcadiaTioCoordinateV2Options,
         read_options: *const ArcadiaTioReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioCoordinateDenseReadResultV2,
+    ) -> c_int;
+    /// Performs a current-head Coordinate v2 exact lookup and reads the matching axis slice with shape policy.
+    pub fn arcadia_tio_read_at_coordinate_v2_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithShapePolicyOptions,
+        out_result: *mut ArcadiaTioCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a current-head Coordinate v2 exact lookup and densely reads the matching axis slice with shape policy.
+    pub fn arcadia_tio_read_at_coordinate_v2_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithShapePolicyOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioCoordinateDenseReadResultV2,
+    ) -> c_int;
+    /// Performs a current-head Coordinate v2 range lookup and reads the matching axis range with shape policy.
+    pub fn arcadia_tio_read_coordinate_range_v2_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithShapePolicyOptions,
+        out_result: *mut ArcadiaTioCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a current-head Coordinate v2 range lookup and densely reads the matching axis range with shape policy.
+    pub fn arcadia_tio_read_coordinate_range_v2_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioReadWithShapePolicyOptions,
         fill_value: c_double,
         out_result: *mut ArcadiaTioCoordinateDenseReadResultV2,
     ) -> c_int;
@@ -5076,6 +5223,50 @@ unsafe extern "C" {
         upper: *const ArcadiaTioCoordinateLookupKeyV2,
         coordinate_options: *const ArcadiaTioCoordinateV2Options,
         read_options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
+    ) -> c_int;
+    /// Performs a historical Coordinate v2 exact lookup and reads the matching axis slice with shape policy.
+    pub fn arcadia_tio_read_at_coordinate_at_commit_v2_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
+        out_result: *mut ArcadiaTioHistoricalCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a historical Coordinate v2 exact lookup and densely reads the matching axis slice with shape policy.
+    pub fn arcadia_tio_read_at_coordinate_at_commit_v2_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        key: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
+        fill_value: c_double,
+        out_result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
+    ) -> c_int;
+    /// Performs a historical Coordinate v2 range lookup and reads the matching axis range with shape policy.
+    pub fn arcadia_tio_read_coordinate_range_at_commit_v2_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
+        out_result: *mut ArcadiaTioHistoricalCoordinateReadResultV2,
+    ) -> c_int;
+    /// Performs a historical Coordinate v2 range lookup and densely reads the matching axis range with shape policy.
+    pub fn arcadia_tio_read_coordinate_range_at_commit_v2_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        axis: usize,
+        lower: *const ArcadiaTioCoordinateLookupKeyV2,
+        upper: *const ArcadiaTioCoordinateLookupKeyV2,
+        coordinate_options: *const ArcadiaTioCoordinateV2Options,
+        read_options: *const ArcadiaTioHistoricalReadWithShapePolicyOptions,
         fill_value: c_double,
         out_result: *mut ArcadiaTioHistoricalCoordinateDenseReadResultV2,
     ) -> c_int;
