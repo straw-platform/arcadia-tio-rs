@@ -46,6 +46,9 @@ pub type ArcadiaTioOcbFailureCause = c_int;
 /// OCB open validation selector.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbOpenValidation = c_int;
+/// OCB manifest/file-set compatibility status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbCompatibilityStatus = c_int;
 /// OCB column physical type value.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbPhysicalType = c_int;
@@ -227,6 +230,12 @@ raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_LOCK_UNAVAILABLE: ArcadiaTioOcbFailu
 raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH: ArcadiaTioOcbOpenValidation = 0);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD: ArcadiaTioOcbOpenValidation = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_COMPATIBLE: ArcadiaTioOcbCompatibilityStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_INCOMPATIBLE: ArcadiaTioOcbCompatibilityStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_UNKNOWN: ArcadiaTioOcbCompatibilityStatus = 2);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32: ArcadiaTioOcbPhysicalType = 0);
 #[cfg(feature = "format-ocb")]
@@ -971,6 +980,209 @@ pub struct ArcadiaTioOcbSnapshotExportReport {
     pub ordering_fingerprint: *mut c_char,
     /// Native-owned combined fingerprint string.
     pub combined_fingerprint: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest build options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestBuildOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Validation depth for opened input files.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Nonzero to compute and include per-file SHA-256 digests.
+    pub compute_file_digest: u8,
+    /// Optional borrowed generated-by name override.
+    pub generated_by_name: *const c_char,
+    /// Optional borrowed generated-by version override.
+    pub generated_by_version: *const c_char,
+    /// Nonzero when generated_at_unix_seconds is meaningful.
+    pub has_generated_at_unix_seconds: u8,
+    /// Explicit generated-at timestamp.
+    pub generated_at_unix_seconds: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Tool identity recorded in an OCB manifest.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestTool {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed tool name, depending on carrier ownership.
+    pub name: *mut c_char,
+    /// Native-owned or caller-borrowed tool version text, depending on carrier ownership.
+    pub version_text: *mut c_char,
+    /// Manifest generated-at timestamp.
+    pub generated_at_unix_seconds: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Optional file digest recorded in an OCB manifest entry.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestDigest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed digest algorithm string.
+    pub algorithm: *mut c_char,
+    /// Native-owned or caller-borrowed digest hex string.
+    pub digest: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest declaration fingerprints.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestFingerprints {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed fingerprint algorithm string.
+    pub algorithm: *mut c_char,
+    /// Native-owned or caller-borrowed schema fingerprint string.
+    pub schema: *mut c_char,
+    /// Native-owned or caller-borrowed dictionaries fingerprint string.
+    pub dictionaries: *mut c_char,
+    /// Native-owned or caller-borrowed ordering fingerprint string.
+    pub ordering: *mut c_char,
+    /// Native-owned or caller-borrowed combined fingerprint string.
+    pub combined: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest validation issue.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestIssue {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed reason code string.
+    pub code: *mut c_char,
+    /// Native-owned or caller-borrowed optional field path string.
+    pub field_path: *mut c_char,
+    /// Native-owned or caller-borrowed diagnostic message string.
+    pub message: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest entry validation summary.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestEntryValidation {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed validation mode string.
+    pub mode: *mut c_char,
+    /// Native-owned or caller-borrowed validation status string.
+    pub status: *mut c_char,
+    /// Native-owned or caller-borrowed issue array.
+    pub issues: *mut ArcadiaTioOcbManifestIssue,
+    /// Number of issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest file entry.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestEntry {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed entry path string.
+    pub path: *mut c_char,
+    /// Native-owned or caller-borrowed optional URI string.
+    pub uri: *mut c_char,
+    /// Nonzero when file_bytes is meaningful.
+    pub has_file_bytes: u8,
+    /// Entry file length.
+    pub file_bytes: u64,
+    /// Nonzero when digest is meaningful.
+    pub has_digest: u8,
+    /// Optional digest value.
+    pub digest: ArcadiaTioOcbManifestDigest,
+    /// Selected root generation.
+    pub root_generation: u64,
+    /// Selected snapshot row count.
+    pub row_count: u64,
+    /// Selected snapshot row-group count.
+    pub row_group_count: u32,
+    /// Declaration fingerprints.
+    pub fingerprints: ArcadiaTioOcbManifestFingerprints,
+    /// Validation summary captured when the entry was built.
+    pub validation: ArcadiaTioOcbManifestEntryValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB selected-snapshot manifest carrier.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed manifest schema string.
+    pub schema: *mut c_char,
+    /// Manifest generated-by tool identity.
+    pub generated_by: ArcadiaTioOcbManifestTool,
+    /// Native-owned or caller-borrowed entry array.
+    pub entries: *mut ArcadiaTioOcbManifestEntry,
+    /// Number of entries.
+    pub entries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest validation report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestValidationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-set compatibility status.
+    pub status: ArcadiaTioOcbCompatibilityStatus,
+    /// Validation depth used by the report.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Number of manifest entries checked.
+    pub entries_checked: usize,
+    /// Native-owned issue array.
+    pub issues: *mut ArcadiaTioOcbManifestIssue,
+    /// Number of issues.
+    pub issues_len: usize,
     /// Reserved words; callers set to zero.
     pub reserved: [u64; 4],
 }
@@ -3516,6 +3728,19 @@ unsafe extern "C" {
     pub fn arcadia_tio_ocb_snapshot_export_report_init(
         report: *mut ArcadiaTioOcbSnapshotExportReport,
     );
+    /// Initializes OCB manifest build options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_build_options_init(
+        options: *mut ArcadiaTioOcbManifestBuildOptions,
+    );
+    /// Initializes an OCB manifest carrier.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_init(manifest: *mut ArcadiaTioOcbManifest);
+    /// Initializes an OCB manifest validation report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_validation_report_init(
+        report: *mut ArcadiaTioOcbManifestValidationReport,
+    );
     /// Initializes compact-L2 certification options.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_compact_l2_certification_options_init(
@@ -3602,6 +3827,31 @@ unsafe extern "C" {
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_snapshot_export_report_free(
         report: *mut ArcadiaTioOcbSnapshotExportReport,
+    );
+    /// Builds a generic selected-snapshot OCB manifest from local files.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_build_from_files(
+        manifest_path: *const c_char,
+        input_paths: *const *const c_char,
+        input_paths_len: usize,
+        options: *const ArcadiaTioOcbManifestBuildOptions,
+        out_manifest: *mut ArcadiaTioOcbManifest,
+    ) -> ArcadiaTioErrorCode;
+    /// Validates a generic selected-snapshot OCB manifest against local files.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_validate_files(
+        manifest_path: *const c_char,
+        manifest: *const ArcadiaTioOcbManifest,
+        options: *const ArcadiaTioOcbOpenOptions,
+        out_report: *mut ArcadiaTioOcbManifestValidationReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Frees native-owned OCB manifest strings and arrays.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_free(manifest: *mut ArcadiaTioOcbManifest);
+    /// Frees native-owned OCB manifest validation report issues.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_manifest_validation_report_free(
+        report: *mut ArcadiaTioOcbManifestValidationReport,
     );
     /// Certifies a channel-sharded compact-L2 manifest.
     #[cfg(feature = "format-ocb")]
