@@ -182,10 +182,18 @@ status category/reason, external summaries, dictionary summaries, and optional
 index summaries remain visible as status/context; optional indexes are not
 treated as authoritative coordinate truth, and callers must explicitly allow
 selected-root authoritative scans with `CoordinateOptions::authoritative_scan`.
+Historical Coordinate v2 read conveniences
+`TensorFile::read_at_coordinate_at_commit_v2` and
+`TensorFile::read_coordinate_range_at_commit_v2` first bind the lookup to the
+requested retained commit, then read the matching payload range at that same
+commit only for readable `unique`/`range` statuses. They return
+`HistoricalCoordinateReadResult<Tensor>` so ordinary missing, unavailable,
+duplicate, unsupported, many, and error lookup outcomes remain visible with no
+fabricated tensor payload.
 The public Rust wrapper does not dereference external references and does not add
 variable-length strings, locale/collation/case folding, broad calendar or
-resolver semantics, lookup-composed coordinate reads, or
-benchmark/release/readiness claims.
+resolver semantics, strict tensor-only historical coordinate-read aliases, raw C
+ABI coordinate-read helpers, or benchmark/release/readiness claims.
 
 ## Write-forward compression controls
 
@@ -609,11 +617,14 @@ typed file handles, direct NumPy integration, or compressed storage-accounting
 eligibility claims. Legacy numeric coordinate lookup/read
 conveniences remain inline numeric-only for fixed axes:
 exact/range coordinate read helpers compose lookup with ordinary axis-range reads
-and do not imply coordinate-index acceleration. Current coordinate create/read
+and do not imply coordinate-index acceleration. Historical Coordinate v2
+exact/range read helpers preserve status-rich lookup results and read payload
+ranges only for readable historical lookup outcomes. Current coordinate create/read
 wrappers cover only the implemented descriptor/value/dictionary/status/lookup
 surfaces listed above; external value resolution, variable-length strings, broad
-calendar/timezone interpretation, lookup-composed coordinate reads, and
-authoritative index acceleration are deferred. Pop/revert, metadata setter, index
+calendar/timezone interpretation, strict tensor-only historical coordinate-read
+aliases, raw C ABI coordinate-read helpers, and authoritative index acceleration
+are deferred. Pop/revert, metadata setter, index
 checkpoint setter, clear-block, and unsupported auto-compaction calls
 intentionally surface native policy/layout support errors.
 

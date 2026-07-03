@@ -752,6 +752,20 @@ fn safe_wrapper_coordinate_v2_append_with_coordinates_success() {
             )
             .expect("historical lookup should not see future dictionary entry");
         assert_eq!(future_lookup.status, CoordinateLookupResultStatus::Missing);
+        let future_read = file
+            .read_at_coordinate_at_commit_v2(
+                1,
+                0,
+                &CoordinateLookupKey::stable_id("instrument-c"),
+                CoordinateOptions::authoritative_scan(),
+                HistoricalReadWithOptions::serial(),
+            )
+            .expect("historical coordinate read should not read future dictionary entry");
+        assert_eq!(
+            future_read.lookup.status,
+            CoordinateLookupResultStatus::Missing
+        );
+        assert!(future_read.read.is_none());
         let retained_lookup = file
             .coordinate_lookup_at_commit(
                 1,
@@ -802,6 +816,100 @@ fn safe_wrapper_coordinate_v2_append_with_coordinates_success() {
     let _ = fs::remove_file(numeric_path);
     let _ = fs::remove_file(fixed_path);
     let _ = fs::remove_file(dict_path);
+}
+
+#[test]
+fn safe_wrapper_historical_coordinate_v2_reads_bind_lookup_and_payload_commit() {
+    let path = unique_path("safe-wrapper-historical-coordinate-v2-read.tio");
+    let options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0).with_name("time"),
+            DimSpec::new(AxisKind::Channel, 3).with_name("channel"),
+        ],
+        0,
+    );
+    let coordinates = vec![
+        AxisCoordinateInput::inline_i32(1, vec![10, 20, 30])
+            .with_name("channel_id")
+            .with_kind(CoordinateKind::LabelId)
+            .with_ordering(CoordinateOrdering {
+                sorted: arcadia_tio_rs::CoordinateSortedness::Ascending,
+                monotonicity: CoordinateMonotonicity::StrictlyIncreasing,
+                uniqueness: CoordinateUniqueness::Unique,
+            }),
+    ];
+    let mut file = TensorFile::create_with_coordinates(
+        &path,
+        options,
+        &coordinates,
+        CoordinateOptions::default(),
+    )
+    .expect("create historical coordinate read fixture");
+    file.append_f32(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3])
+        .expect("append commit1 payload");
+    let commit1 = file.head_commit().expect("commit1").commit_seq;
+    file.append_f32(&[7.0, 8.0, 9.0], &[1, 3])
+        .expect("append commit2 payload");
+    let head_before_reads = file
+        .head_commit()
+        .expect("head before historical coordinate reads")
+        .commit_seq;
+
+    let exact = file
+        .read_at_coordinate_at_commit_v2(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(20),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::parallel_threads(3),
+        )
+        .expect("historical exact coordinate read");
+    assert_eq!(exact.lookup.status, CoordinateLookupResultStatus::Unique);
+    let exact_read = exact.read.expect("unique lookup should read payload");
+    assert_eq!(exact_read.value.shape, vec![2, 1]);
+    assert_eq!(exact_read.value.data, TensorData::F32(vec![2.0, 5.0]));
+    assert_eq!(exact_read.execution.query_commit_seq, commit1);
+    assert_eq!(exact_read.execution.execution.query_max_threads, 3);
+
+    let ranged = file
+        .read_coordinate_range_at_commit_v2(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(10),
+            &CoordinateLookupKey::i32(31),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::serial(),
+        )
+        .expect("historical coordinate range read");
+    assert_eq!(ranged.lookup.status, CoordinateLookupResultStatus::Range);
+    let range_read = ranged.read.expect("range lookup should read payload");
+    assert_eq!(range_read.value.shape, vec![2, 3]);
+    assert_eq!(
+        range_read.value.data,
+        TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    );
+    assert_eq!(range_read.execution.query_commit_seq, commit1);
+
+    let missing = file
+        .read_at_coordinate_at_commit_v2(
+            commit1,
+            1,
+            &CoordinateLookupKey::i32(40),
+            CoordinateOptions::authoritative_scan(),
+            HistoricalReadWithOptions::serial(),
+        )
+        .expect("historical missing coordinate read preserves lookup result");
+    assert_eq!(missing.lookup.status, CoordinateLookupResultStatus::Missing);
+    assert!(missing.read.is_none());
+    assert_eq!(
+        file.head_commit()
+            .expect("head after historical coordinate reads")
+            .commit_seq,
+        head_before_reads
+    );
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]

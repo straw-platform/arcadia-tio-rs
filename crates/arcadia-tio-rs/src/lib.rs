@@ -5912,6 +5912,15 @@ pub struct HistoricalReadResult<T> {
     pub execution: HistoricalReadExecutionReport,
 }
 
+/// Historical Coordinate v2 lookup result plus an optional payload read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalCoordinateReadResult<T> {
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: CoordinateLookupResultV2,
+    /// Payload read when the lookup result is readable for this helper.
+    pub read: Option<HistoricalReadResult<T>>,
+}
+
 /// Compaction mode used by compaction workflows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompactionMode {
@@ -12941,6 +12950,65 @@ impl TensorFile {
         out
     }
 
+    /// Performs historical Coordinate v2 exact lookup and reads the matching axis slice.
+    ///
+    /// `Unique` lookup results read the half-open payload range `[position, position + 1)` at the
+    /// same retained commit. Ordinary Coordinate v2 non-answers such as missing, unavailable,
+    /// duplicate, unsupported, many, or error statuses are preserved in `lookup` and return no
+    /// payload read.
+    pub fn read_at_coordinate_at_commit_v2(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        key: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithOptions,
+    ) -> Result<HistoricalCoordinateReadResult<Tensor>> {
+        let lookup =
+            self.coordinate_lookup_at_commit_v2(commit_seq, axis, key, coordinate_options)?;
+        let read = if lookup.status == CoordinateLookupResultStatusV2::Unique {
+            let end = lookup.unique_position.checked_add(1).ok_or_else(|| {
+                TioError::invalid_argument("Coordinate v2 unique position overflowed range end")
+            })?;
+            let selectors =
+                self.coordinate_axis_range_selectors(axis, lookup.unique_position, end)?;
+            Some(self.read_at_commit_with_options(commit_seq, &selectors, historical_options)?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
+    /// Performs historical Coordinate v2 range lookup and reads the matching axis range.
+    ///
+    /// `Range` lookup results read the returned half-open payload range at the same retained
+    /// commit. Zero-length ranges are passed through to the historical read path unchanged.
+    /// Ordinary Coordinate v2 non-answers are preserved in `lookup` and return no payload read.
+    pub fn read_coordinate_range_at_commit_v2(
+        &self,
+        commit_seq: u64,
+        axis: usize,
+        lower: &CoordinateLookupKeyV2,
+        upper: &CoordinateLookupKeyV2,
+        coordinate_options: CoordinateV2Options,
+        historical_options: HistoricalReadWithOptions,
+    ) -> Result<HistoricalCoordinateReadResult<Tensor>> {
+        let lookup = self.coordinate_lookup_range_at_commit_v2(
+            commit_seq,
+            axis,
+            lower,
+            upper,
+            coordinate_options,
+        )?;
+        let read = if let Some(range) = lookup.range() {
+            let selectors = self.coordinate_axis_range_selectors(axis, range.start, range.end)?;
+            Some(self.read_at_commit_with_options(commit_seq, &selectors, historical_options)?)
+        } else {
+            None
+        };
+        Ok(HistoricalCoordinateReadResult { lookup, read })
+    }
+
     /// Looks up the unique axis index for an inline validated i32 coordinate value.
     pub fn coordinate_index_i32(&self, axis: usize, value: i32) -> Result<u32> {
         self.validate_axis(axis)?;
@@ -13896,6 +13964,28 @@ impl TensorFile {
         } else {
             Ok(())
         }
+    }
+
+    fn coordinate_axis_range_selectors(
+        &self,
+        axis: usize,
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<EntrySelector>> {
+        let rank = self.rank()?;
+        if axis >= rank {
+            return Err(TioError::invalid_argument(format!(
+                "axis {axis} out of range for rank {rank}"
+            )));
+        }
+        if start > end {
+            return Err(TioError::invalid_argument(
+                "Coordinate v2 read range start must be <= end",
+            ));
+        }
+        let mut selectors = vec![EntrySelector::All; rank];
+        selectors[axis] = EntrySelector::Range { start, end };
+        Ok(selectors)
     }
 
     fn validate_append(&self, dtype: DType, data_len: usize, shape: &[u64]) -> Result<()> {
