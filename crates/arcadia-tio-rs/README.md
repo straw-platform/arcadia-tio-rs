@@ -83,7 +83,9 @@ wrapper marks `ColumnBundleFile` as `Send`/`Sync` for read-only multi-lane use.
 `ocb::cleanup_orphan_tail` truncates orphan tail bytes after the latest valid
 root, while `ocb::copy_selected_snapshot` copies the latest selected snapshot to
 a fresh destination and returns byte, generation, row-count, and fingerprint
-provenance. `OcbError` preserves the
+provenance. `ocb::build_manifest_from_files_with_options` returns an owned
+selected-snapshot manifest, and `ocb::validate_manifest_files_with_options`
+returns an owned compatibility report. `OcbError` preserves the
 ordinary C ABI error code plus OCB `ErrorKind` and optional `FailureCause` for
 machine-readable handling. Dictionary-coded reads return primitive codes; use
 `dictionary_values` for explicit decoded dictionary labels/bytes. OCB examples

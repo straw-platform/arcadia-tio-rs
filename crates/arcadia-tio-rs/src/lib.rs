@@ -16654,6 +16654,57 @@ pub mod ocb {
         }
     }
 
+    /// OCB manifest build options.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestBuildOptions {
+        /// Validation depth applied to each input file while building the manifest.
+        pub validation: OpenValidation,
+        /// Whether to compute and include full-file SHA-256 digests.
+        pub compute_file_digest: bool,
+        /// Optional tool name override recorded in `generated_by`.
+        pub generated_by_name: Option<String>,
+        /// Optional tool version override recorded in `generated_by`.
+        pub generated_by_version: Option<String>,
+        /// Optional generated-at timestamp override.
+        pub generated_at_unix_seconds: Option<u64>,
+    }
+
+    impl Default for ManifestBuildOptions {
+        fn default() -> Self {
+            Self {
+                validation: OpenValidation::MetadataGraph,
+                compute_file_digest: false,
+                generated_by_name: None,
+                generated_by_version: None,
+                generated_at_unix_seconds: None,
+            }
+        }
+    }
+
+    /// File-set compatibility status returned by OCB manifest validation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CompatibilityStatus {
+        /// Manifest entries match the current selected local snapshots.
+        Compatible,
+        /// One or more manifest entries do not match current local snapshots.
+        Incompatible,
+        /// Compatibility could not be fully determined.
+        Unknown,
+        /// Unknown forward-compatible raw value.
+        Other(i32),
+    }
+
+    impl CompatibilityStatus {
+        fn from_raw(raw: sys::ArcadiaTioOcbCompatibilityStatus) -> Self {
+            match raw {
+                sys::ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_COMPATIBLE => Self::Compatible,
+                sys::ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_INCOMPATIBLE => Self::Incompatible,
+                sys::ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_UNKNOWN => Self::Unknown,
+                other => Self::Other(other),
+            }
+        }
+    }
+
     /// Structured OCB error with the ordinary C ABI code plus OCB-specific metadata.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct OcbError {
@@ -17981,6 +18032,78 @@ pub mod ocb {
         pub fingerprints: SnapshotFingerprints,
     }
 
+    /// Manifest tool identity.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestTool {
+        pub name: String,
+        pub version: String,
+        pub generated_at_unix_seconds: u64,
+    }
+
+    /// Optional manifest file digest.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestDigest {
+        pub algorithm: String,
+        pub digest: String,
+    }
+
+    /// Deterministic OCB declaration fingerprints recorded in a manifest.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestFingerprints {
+        pub algorithm: String,
+        pub schema: String,
+        pub dictionaries: String,
+        pub ordering: String,
+        pub combined: String,
+    }
+
+    /// Manifest validation issue.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestIssue {
+        pub code: String,
+        pub field_path: Option<String>,
+        pub message: String,
+    }
+
+    /// Per-entry validation summary captured in a manifest.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestEntryValidation {
+        pub mode: String,
+        pub status: String,
+        pub issues: Vec<ManifestIssue>,
+    }
+
+    /// One selected-snapshot file entry in an OCB manifest.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestEntry {
+        pub path: String,
+        pub uri: Option<String>,
+        pub file_bytes: Option<u64>,
+        pub digest: Option<ManifestDigest>,
+        pub root_generation: u64,
+        pub row_count: u64,
+        pub row_group_count: u32,
+        pub fingerprints: ManifestFingerprints,
+        pub validation: ManifestEntryValidation,
+    }
+
+    /// Selected-snapshot OCB manifest with owned Rust values.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Manifest {
+        pub schema: String,
+        pub generated_by: ManifestTool,
+        pub entries: Vec<ManifestEntry>,
+    }
+
+    /// Report from validating a manifest against current selected local snapshots.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ManifestValidationReport {
+        pub status: CompatibilityStatus,
+        pub validation: OpenValidation,
+        pub entries_checked: usize,
+        pub issues: Vec<ManifestIssue>,
+    }
+
     /// OCB file handle bound to one selected committed snapshot.
     #[derive(Debug)]
     pub struct ColumnBundleFile {
@@ -18276,14 +18399,7 @@ pub mod ocb {
         options: OpenOptions,
     ) -> OcbResult<ColumnBundleFile> {
         let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
-        let mut raw_options = sys::ArcadiaTioOcbOpenOptions {
-            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
-            struct_size: mem::size_of::<sys::ArcadiaTioOcbOpenOptions>(),
-            validation: options.validation.to_raw(),
-            reserved: [0; 4],
-        };
-        unsafe { sys::arcadia_tio_ocb_open_options_init(&mut raw_options) };
-        raw_options.validation = options.validation.to_raw();
+        let raw_options = raw_open_options(options);
         let raw = unsafe { sys::arcadia_tio_ocb_open_with_options(path.as_ptr(), &raw_options) };
         NonNull::new(raw)
             .map(|raw| ColumnBundleFile { raw })
@@ -18364,6 +18480,97 @@ pub mod ocb {
             return Err(OcbError::last("OCB copy_selected_snapshot failed"));
         }
         unsafe { snapshot_export_report_from_raw(&guard.0) }
+    }
+
+    /// Build a generic selected-snapshot manifest from compatible local OCB files.
+    pub fn build_manifest_from_files<P, I>(
+        manifest_path: impl AsRef<Path>,
+        input_paths: I,
+    ) -> OcbResult<Manifest>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        build_manifest_from_files_with_options(
+            manifest_path,
+            input_paths,
+            ManifestBuildOptions::default(),
+        )
+    }
+
+    /// Build a generic selected-snapshot manifest with explicit build options.
+    pub fn build_manifest_from_files_with_options<P, I>(
+        manifest_path: impl AsRef<Path>,
+        input_paths: I,
+        options: ManifestBuildOptions,
+    ) -> OcbResult<Manifest>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = P>,
+    {
+        let manifest_path = path_to_cstring(manifest_path).map_err(OcbError::from_tio_error)?;
+        let input_path_strings = input_paths
+            .into_iter()
+            .map(|path| path_to_cstring(path).map_err(OcbError::from_tio_error))
+            .collect::<OcbResult<Vec<_>>>()?;
+        let input_path_ptrs = input_path_strings
+            .iter()
+            .map(|path| path.as_ptr())
+            .collect::<Vec<_>>();
+        let input_paths_ptr = if input_path_ptrs.is_empty() {
+            ptr::null()
+        } else {
+            input_path_ptrs.as_ptr()
+        };
+        let raw_options = RawManifestBuildOptions::new(&options)?;
+        let mut raw_manifest = empty_manifest();
+        let status = unsafe {
+            sys::arcadia_tio_ocb_manifest_build_from_files(
+                manifest_path.as_ptr(),
+                input_paths_ptr,
+                input_path_ptrs.len(),
+                &raw_options.raw,
+                &mut raw_manifest,
+            )
+        };
+        let guard = ManifestGuard(raw_manifest);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last("OCB manifest build_from_files failed"));
+        }
+        unsafe { manifest_from_raw(&guard.0) }
+    }
+
+    /// Validate a selected-snapshot manifest against current local files.
+    pub fn validate_manifest_files(
+        manifest_path: impl AsRef<Path>,
+        manifest: &Manifest,
+    ) -> OcbResult<ManifestValidationReport> {
+        validate_manifest_files_with_options(manifest_path, manifest, OpenOptions::default())
+    }
+
+    /// Validate a selected-snapshot manifest with explicit open-validation options.
+    pub fn validate_manifest_files_with_options(
+        manifest_path: impl AsRef<Path>,
+        manifest: &Manifest,
+        options: OpenOptions,
+    ) -> OcbResult<ManifestValidationReport> {
+        let manifest_path = path_to_cstring(manifest_path).map_err(OcbError::from_tio_error)?;
+        let raw_manifest = RawManifest::new(manifest)?;
+        let raw_options = raw_open_options(options);
+        let mut raw_report = empty_manifest_validation_report();
+        let status = unsafe {
+            sys::arcadia_tio_ocb_manifest_validate_files(
+                manifest_path.as_ptr(),
+                &raw_manifest.raw,
+                &raw_options,
+                &mut raw_report,
+            )
+        };
+        let guard = ManifestValidationReportGuard(raw_report);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last("OCB manifest validate_files failed"));
+        }
+        unsafe { manifest_validation_report_from_raw(&guard.0) }
     }
 
     fn write_path(
@@ -18936,15 +19143,334 @@ pub mod ocb {
         CString::new(value).map_err(|_| OcbError::invalid_input(format!("{label} contains NUL")))
     }
 
+    fn cstring_ptr(value: &CString) -> *mut c_char {
+        value.as_ptr() as *mut c_char
+    }
+
+    fn optional_cstring_ptr(value: &Option<CString>) -> *mut c_char {
+        value
+            .as_ref()
+            .map_or(ptr::null_mut(), |value| cstring_ptr(value))
+    }
+
+    struct RawManifestBuildOptions {
+        raw: sys::ArcadiaTioOcbManifestBuildOptions,
+        _generated_by_name: Option<CString>,
+        _generated_by_version: Option<CString>,
+    }
+
+    impl RawManifestBuildOptions {
+        fn new(options: &ManifestBuildOptions) -> OcbResult<Self> {
+            let generated_by_name = options
+                .generated_by_name
+                .as_deref()
+                .map(|value| cstring(value, "OCB manifest generated_by_name"))
+                .transpose()?;
+            let generated_by_version = options
+                .generated_by_version
+                .as_deref()
+                .map(|value| cstring(value, "OCB manifest generated_by_version"))
+                .transpose()?;
+            let mut raw = sys::ArcadiaTioOcbManifestBuildOptions {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestBuildOptions>(),
+                validation: sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH,
+                compute_file_digest: 0,
+                generated_by_name: ptr::null(),
+                generated_by_version: ptr::null(),
+                has_generated_at_unix_seconds: 0,
+                generated_at_unix_seconds: 0,
+                reserved: [0; 4],
+            };
+            unsafe { sys::arcadia_tio_ocb_manifest_build_options_init(&mut raw) };
+            raw.validation = options.validation.to_raw();
+            raw.compute_file_digest = u8::from(options.compute_file_digest);
+            raw.generated_by_name = generated_by_name
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr());
+            raw.generated_by_version = generated_by_version
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr());
+            raw.has_generated_at_unix_seconds =
+                u8::from(options.generated_at_unix_seconds.is_some());
+            raw.generated_at_unix_seconds = options.generated_at_unix_seconds.unwrap_or(0);
+            Ok(Self {
+                raw,
+                _generated_by_name: generated_by_name,
+                _generated_by_version: generated_by_version,
+            })
+        }
+    }
+
+    struct RawManifest {
+        raw: sys::ArcadiaTioOcbManifest,
+        _schema: CString,
+        _tool_name: CString,
+        _tool_version: CString,
+        _entry_paths: Vec<CString>,
+        _entry_uris: Vec<Option<CString>>,
+        _digest_algorithms: Vec<Option<CString>>,
+        _digest_values: Vec<Option<CString>>,
+        _fingerprint_algorithms: Vec<CString>,
+        _fingerprint_schemas: Vec<CString>,
+        _fingerprint_dictionaries: Vec<CString>,
+        _fingerprint_orderings: Vec<CString>,
+        _fingerprint_combined: Vec<CString>,
+        _validation_modes: Vec<CString>,
+        _validation_statuses: Vec<CString>,
+        _issue_codes: Vec<Vec<CString>>,
+        _issue_field_paths: Vec<Vec<Option<CString>>>,
+        _issue_messages: Vec<Vec<CString>>,
+        _raw_issue_rows: Vec<Vec<sys::ArcadiaTioOcbManifestIssue>>,
+        _raw_validations: Vec<sys::ArcadiaTioOcbManifestEntryValidation>,
+        _raw_entries: Vec<sys::ArcadiaTioOcbManifestEntry>,
+    }
+
+    impl RawManifest {
+        fn new(manifest: &Manifest) -> OcbResult<Self> {
+            let schema = cstring(&manifest.schema, "OCB manifest schema")?;
+            let tool_name = cstring(&manifest.generated_by.name, "OCB manifest tool name")?;
+            let tool_version =
+                cstring(&manifest.generated_by.version, "OCB manifest tool version")?;
+
+            let mut entry_paths = Vec::with_capacity(manifest.entries.len());
+            let mut entry_uris = Vec::with_capacity(manifest.entries.len());
+            let mut digest_algorithms = Vec::with_capacity(manifest.entries.len());
+            let mut digest_values = Vec::with_capacity(manifest.entries.len());
+            let mut fingerprint_algorithms = Vec::with_capacity(manifest.entries.len());
+            let mut fingerprint_schemas = Vec::with_capacity(manifest.entries.len());
+            let mut fingerprint_dictionaries = Vec::with_capacity(manifest.entries.len());
+            let mut fingerprint_orderings = Vec::with_capacity(manifest.entries.len());
+            let mut fingerprint_combined = Vec::with_capacity(manifest.entries.len());
+            let mut validation_modes = Vec::with_capacity(manifest.entries.len());
+            let mut validation_statuses = Vec::with_capacity(manifest.entries.len());
+            let mut issue_codes = Vec::with_capacity(manifest.entries.len());
+            let mut issue_field_paths = Vec::with_capacity(manifest.entries.len());
+            let mut issue_messages = Vec::with_capacity(manifest.entries.len());
+            let mut raw_issue_rows = Vec::with_capacity(manifest.entries.len());
+
+            for (entry_index, entry) in manifest.entries.iter().enumerate() {
+                entry_paths.push(cstring(&entry.path, "OCB manifest entry path")?);
+                entry_uris.push(
+                    entry
+                        .uri
+                        .as_deref()
+                        .map(|value| cstring(value, "OCB manifest entry URI"))
+                        .transpose()?,
+                );
+                digest_algorithms.push(
+                    entry
+                        .digest
+                        .as_ref()
+                        .map(|digest| cstring(&digest.algorithm, "OCB manifest digest algorithm"))
+                        .transpose()?,
+                );
+                digest_values.push(
+                    entry
+                        .digest
+                        .as_ref()
+                        .map(|digest| cstring(&digest.digest, "OCB manifest digest"))
+                        .transpose()?,
+                );
+                fingerprint_algorithms.push(cstring(
+                    &entry.fingerprints.algorithm,
+                    "OCB manifest fingerprint algorithm",
+                )?);
+                fingerprint_schemas.push(cstring(
+                    &entry.fingerprints.schema,
+                    "OCB manifest schema fingerprint",
+                )?);
+                fingerprint_dictionaries.push(cstring(
+                    &entry.fingerprints.dictionaries,
+                    "OCB manifest dictionaries fingerprint",
+                )?);
+                fingerprint_orderings.push(cstring(
+                    &entry.fingerprints.ordering,
+                    "OCB manifest ordering fingerprint",
+                )?);
+                fingerprint_combined.push(cstring(
+                    &entry.fingerprints.combined,
+                    "OCB manifest combined fingerprint",
+                )?);
+                validation_modes.push(cstring(
+                    &entry.validation.mode,
+                    "OCB manifest validation mode",
+                )?);
+                validation_statuses.push(cstring(
+                    &entry.validation.status,
+                    "OCB manifest validation status",
+                )?);
+
+                let codes = entry
+                    .validation
+                    .issues
+                    .iter()
+                    .map(|issue| cstring(&issue.code, "OCB manifest issue code"))
+                    .collect::<OcbResult<Vec<_>>>()?;
+                let field_paths = entry
+                    .validation
+                    .issues
+                    .iter()
+                    .map(|issue| {
+                        issue
+                            .field_path
+                            .as_deref()
+                            .map(|value| cstring(value, "OCB manifest issue field_path"))
+                            .transpose()
+                    })
+                    .collect::<OcbResult<Vec<_>>>()?;
+                let messages = entry
+                    .validation
+                    .issues
+                    .iter()
+                    .map(|issue| cstring(&issue.message, "OCB manifest issue message"))
+                    .collect::<OcbResult<Vec<_>>>()?;
+                issue_codes.push(codes);
+                issue_field_paths.push(field_paths);
+                issue_messages.push(messages);
+
+                let raw_issues = (0..entry.validation.issues.len())
+                    .map(|issue_index| sys::ArcadiaTioOcbManifestIssue {
+                        version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                        struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestIssue>(),
+                        code: cstring_ptr(&issue_codes[entry_index][issue_index]),
+                        field_path: optional_cstring_ptr(
+                            &issue_field_paths[entry_index][issue_index],
+                        ),
+                        message: cstring_ptr(&issue_messages[entry_index][issue_index]),
+                        reserved: [0; 4],
+                    })
+                    .collect::<Vec<_>>();
+                raw_issue_rows.push(raw_issues);
+            }
+
+            let raw_validations = manifest
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, _)| sys::ArcadiaTioOcbManifestEntryValidation {
+                    version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                    struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestEntryValidation>(),
+                    mode: cstring_ptr(&validation_modes[index]),
+                    status: cstring_ptr(&validation_statuses[index]),
+                    issues: if raw_issue_rows[index].is_empty() {
+                        ptr::null_mut()
+                    } else {
+                        raw_issue_rows[index].as_mut_ptr()
+                    },
+                    issues_len: raw_issue_rows[index].len(),
+                    reserved: [0; 4],
+                })
+                .collect::<Vec<_>>();
+
+            let mut raw_entries = manifest
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| sys::ArcadiaTioOcbManifestEntry {
+                    version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                    struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestEntry>(),
+                    path: cstring_ptr(&entry_paths[index]),
+                    uri: optional_cstring_ptr(&entry_uris[index]),
+                    has_file_bytes: u8::from(entry.file_bytes.is_some()),
+                    file_bytes: entry.file_bytes.unwrap_or(0),
+                    has_digest: u8::from(entry.digest.is_some()),
+                    digest: sys::ArcadiaTioOcbManifestDigest {
+                        version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                        struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestDigest>(),
+                        algorithm: optional_cstring_ptr(&digest_algorithms[index]),
+                        digest: optional_cstring_ptr(&digest_values[index]),
+                        reserved: [0; 4],
+                    },
+                    root_generation: entry.root_generation,
+                    row_count: entry.row_count,
+                    row_group_count: entry.row_group_count,
+                    fingerprints: sys::ArcadiaTioOcbManifestFingerprints {
+                        version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                        struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestFingerprints>(),
+                        algorithm: cstring_ptr(&fingerprint_algorithms[index]),
+                        schema: cstring_ptr(&fingerprint_schemas[index]),
+                        dictionaries: cstring_ptr(&fingerprint_dictionaries[index]),
+                        ordering: cstring_ptr(&fingerprint_orderings[index]),
+                        combined: cstring_ptr(&fingerprint_combined[index]),
+                        reserved: [0; 4],
+                    },
+                    validation: raw_validations[index],
+                    reserved: [0; 4],
+                })
+                .collect::<Vec<_>>();
+
+            let raw = sys::ArcadiaTioOcbManifest {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbManifest>(),
+                schema: cstring_ptr(&schema),
+                generated_by: sys::ArcadiaTioOcbManifestTool {
+                    version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                    struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestTool>(),
+                    name: cstring_ptr(&tool_name),
+                    version_text: cstring_ptr(&tool_version),
+                    generated_at_unix_seconds: manifest.generated_by.generated_at_unix_seconds,
+                    reserved: [0; 4],
+                },
+                entries: if raw_entries.is_empty() {
+                    ptr::null_mut()
+                } else {
+                    raw_entries.as_mut_ptr()
+                },
+                entries_len: raw_entries.len(),
+                reserved: [0; 4],
+            };
+
+            Ok(Self {
+                raw,
+                _schema: schema,
+                _tool_name: tool_name,
+                _tool_version: tool_version,
+                _entry_paths: entry_paths,
+                _entry_uris: entry_uris,
+                _digest_algorithms: digest_algorithms,
+                _digest_values: digest_values,
+                _fingerprint_algorithms: fingerprint_algorithms,
+                _fingerprint_schemas: fingerprint_schemas,
+                _fingerprint_dictionaries: fingerprint_dictionaries,
+                _fingerprint_orderings: fingerprint_orderings,
+                _fingerprint_combined: fingerprint_combined,
+                _validation_modes: validation_modes,
+                _validation_statuses: validation_statuses,
+                _issue_codes: issue_codes,
+                _issue_field_paths: issue_field_paths,
+                _issue_messages: issue_messages,
+                _raw_issue_rows: raw_issue_rows,
+                _raw_validations: raw_validations,
+                _raw_entries: raw_entries,
+            })
+        }
+    }
+
+    fn raw_open_options(options: OpenOptions) -> sys::ArcadiaTioOcbOpenOptions {
+        let mut raw = sys::ArcadiaTioOcbOpenOptions {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbOpenOptions>(),
+            validation: options.validation.to_raw(),
+            reserved: [0; 4],
+        };
+        unsafe { sys::arcadia_tio_ocb_open_options_init(&mut raw) };
+        raw.validation = options.validation.to_raw();
+        raw
+    }
+
     fn raw_snapshot_export_options(
         options: SnapshotExportOptions,
     ) -> sys::ArcadiaTioOcbSnapshotExportOptions {
-        sys::ArcadiaTioOcbSnapshotExportOptions {
+        let mut raw = sys::ArcadiaTioOcbSnapshotExportOptions {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
             struct_size: mem::size_of::<sys::ArcadiaTioOcbSnapshotExportOptions>(),
             validation: options.validation.to_raw(),
             reserved: [0; 4],
-        }
+        };
+        unsafe { sys::arcadia_tio_ocb_snapshot_export_options_init(&mut raw) };
+        raw.validation = options.validation.to_raw();
+        raw
     }
 
     fn empty_metadata() -> sys::ArcadiaTioOcbMetadata {
@@ -19006,6 +19532,38 @@ pub mod ocb {
             dictionaries_fingerprint: ptr::null_mut(),
             ordering_fingerprint: ptr::null_mut(),
             combined_fingerprint: ptr::null_mut(),
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_manifest() -> sys::ArcadiaTioOcbManifest {
+        sys::ArcadiaTioOcbManifest {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbManifest>(),
+            schema: ptr::null_mut(),
+            generated_by: sys::ArcadiaTioOcbManifestTool {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestTool>(),
+                name: ptr::null_mut(),
+                version_text: ptr::null_mut(),
+                generated_at_unix_seconds: 0,
+                reserved: [0; 4],
+            },
+            entries: ptr::null_mut(),
+            entries_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_manifest_validation_report() -> sys::ArcadiaTioOcbManifestValidationReport {
+        sys::ArcadiaTioOcbManifestValidationReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbManifestValidationReport>(),
+            status: sys::ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_UNKNOWN,
+            validation: sys::ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH,
+            entries_checked: 0,
+            issues: ptr::null_mut(),
+            issues_len: 0,
             reserved: [0; 4],
         }
     }
@@ -19160,6 +19718,20 @@ pub mod ocb {
     impl Drop for SnapshotExportReportGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_snapshot_export_report_free(&mut self.0) };
+        }
+    }
+
+    struct ManifestGuard(sys::ArcadiaTioOcbManifest);
+    impl Drop for ManifestGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_manifest_free(&mut self.0) };
+        }
+    }
+
+    struct ManifestValidationReportGuard(sys::ArcadiaTioOcbManifestValidationReport);
+    impl Drop for ManifestValidationReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_manifest_validation_report_free(&mut self.0) };
         }
     }
 
@@ -19568,6 +20140,96 @@ pub mod ocb {
                 ordering: raw_string(raw.ordering_fingerprint.cast()),
                 combined: raw_string(raw.combined_fingerprint.cast()),
             },
+        })
+    }
+
+    unsafe fn manifest_from_raw(raw: &sys::ArcadiaTioOcbManifest) -> OcbResult<Manifest> {
+        let entries = unsafe { raw_slice(raw.entries, raw.entries_len) }
+            .iter()
+            .map(|entry| unsafe { manifest_entry_from_raw(entry) })
+            .collect::<OcbResult<Vec<_>>>()?;
+        Ok(Manifest {
+            schema: raw_string(raw.schema.cast()),
+            generated_by: ManifestTool {
+                name: raw_string(raw.generated_by.name.cast()),
+                version: raw_string(raw.generated_by.version_text.cast()),
+                generated_at_unix_seconds: raw.generated_by.generated_at_unix_seconds,
+            },
+            entries,
+        })
+    }
+
+    unsafe fn manifest_entry_from_raw(
+        raw: &sys::ArcadiaTioOcbManifestEntry,
+    ) -> OcbResult<ManifestEntry> {
+        Ok(ManifestEntry {
+            path: raw_string(raw.path.cast()),
+            uri: raw_optional_string(raw.uri.cast()),
+            file_bytes: (raw.has_file_bytes != 0).then_some(raw.file_bytes),
+            digest: if raw.has_digest != 0 {
+                Some(manifest_digest_from_raw(&raw.digest))
+            } else {
+                None
+            },
+            root_generation: raw.root_generation,
+            row_count: raw.row_count,
+            row_group_count: raw.row_group_count,
+            fingerprints: manifest_fingerprints_from_raw(&raw.fingerprints),
+            validation: unsafe { manifest_entry_validation_from_raw(&raw.validation) },
+        })
+    }
+
+    fn manifest_digest_from_raw(raw: &sys::ArcadiaTioOcbManifestDigest) -> ManifestDigest {
+        ManifestDigest {
+            algorithm: raw_string(raw.algorithm.cast()),
+            digest: raw_string(raw.digest.cast()),
+        }
+    }
+
+    fn manifest_fingerprints_from_raw(
+        raw: &sys::ArcadiaTioOcbManifestFingerprints,
+    ) -> ManifestFingerprints {
+        ManifestFingerprints {
+            algorithm: raw_string(raw.algorithm.cast()),
+            schema: raw_string(raw.schema.cast()),
+            dictionaries: raw_string(raw.dictionaries.cast()),
+            ordering: raw_string(raw.ordering.cast()),
+            combined: raw_string(raw.combined.cast()),
+        }
+    }
+
+    unsafe fn manifest_entry_validation_from_raw(
+        raw: &sys::ArcadiaTioOcbManifestEntryValidation,
+    ) -> ManifestEntryValidation {
+        ManifestEntryValidation {
+            mode: raw_string(raw.mode.cast()),
+            status: raw_string(raw.status.cast()),
+            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) },
+        }
+    }
+
+    unsafe fn manifest_issues_from_raw(
+        ptr: *const sys::ArcadiaTioOcbManifestIssue,
+        len: usize,
+    ) -> Vec<ManifestIssue> {
+        unsafe { raw_slice(ptr, len) }
+            .iter()
+            .map(|issue| ManifestIssue {
+                code: raw_string(issue.code.cast()),
+                field_path: raw_optional_string(issue.field_path.cast()),
+                message: raw_string(issue.message.cast()),
+            })
+            .collect()
+    }
+
+    unsafe fn manifest_validation_report_from_raw(
+        raw: &sys::ArcadiaTioOcbManifestValidationReport,
+    ) -> OcbResult<ManifestValidationReport> {
+        Ok(ManifestValidationReport {
+            status: CompatibilityStatus::from_raw(raw.status),
+            validation: OpenValidation::from_raw(raw.validation)?,
+            entries_checked: raw.entries_checked,
+            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) },
         })
     }
 

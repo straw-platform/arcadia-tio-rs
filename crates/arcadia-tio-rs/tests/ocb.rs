@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arcadia_tio_rs::ocb::{
-    self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec,
-    DecodedDictionaryValues, DictionaryValueKind, LogicalKind, NullOrder,
+    self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec, CompatibilityStatus,
+    DecodedDictionaryValues, DictionaryValueKind, LogicalKind, ManifestBuildOptions, NullOrder,
     OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
     PhysicalType, PredicateValue, PrimitiveValues, Projection, ReadRequest, RowGroupPredicate,
     WriteColumn, WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup,
@@ -21,8 +21,12 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
 
     let path = unique_path("ocb-safe-wrapper-roundtrip.ocb");
     let export_path = unique_path("ocb-safe-wrapper-roundtrip-export.ocb");
+    let manifest_copy_path = unique_path("ocb-safe-wrapper-roundtrip-manifest-copy.ocb");
+    let manifest_path = unique_path("ocb-safe-wrapper-roundtrip-manifest.json");
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&export_path);
+    let _ = fs::remove_file(&manifest_copy_path);
+    let _ = fs::remove_file(&manifest_path);
 
     ocb::create_with_options(
         &path,
@@ -371,6 +375,73 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         .contains("fixed-binary")
     );
 
+    ocb::create_with_options(
+        &manifest_copy_path,
+        &write_spec(&[20, 21], &[0, 1], &[5.5, 6.5]),
+        WriteOptions::zstd(3).with_write_threads(2),
+    )
+    .expect("create manifest-compatible OCB");
+    ocb::append_with_options(
+        &manifest_copy_path,
+        &write_spec(&[22, 23], &[1, 0], &[7.5, 8.5]),
+        WriteOptions::zstd(3).with_write_threads(2),
+    )
+    .expect("append manifest-compatible OCB");
+    let manifest = ocb::build_manifest_from_files_with_options(
+        &manifest_path,
+        [&path, &manifest_copy_path],
+        ManifestBuildOptions {
+            validation: OpenValidation::FullPayload,
+            compute_file_digest: true,
+            generated_by_name: Some("rust_safe_wrapper_test".to_string()),
+            generated_by_version: Some("1".to_string()),
+            generated_at_unix_seconds: Some(1),
+        },
+    )
+    .expect("build selected-snapshot manifest");
+    assert_eq!(manifest.schema, "arcadia-tio.ocb.manifest.v1");
+    assert_eq!(manifest.generated_by.name, "rust_safe_wrapper_test");
+    assert_eq!(manifest.generated_by.version, "1");
+    assert_eq!(manifest.generated_by.generated_at_unix_seconds, 1);
+    assert_eq!(manifest.entries.len(), 2);
+    assert!(manifest.entries[0].file_bytes.is_some());
+    assert_eq!(
+        manifest.entries[0]
+            .digest
+            .as_ref()
+            .expect("digest")
+            .algorithm,
+        "sha256"
+    );
+    assert!(!manifest.entries[0].fingerprints.combined.is_empty());
+    assert_eq!(manifest.entries[0].validation.status, "valid");
+
+    let report = ocb::validate_manifest_files_with_options(
+        &manifest_path,
+        &manifest,
+        OcbOpenOptions {
+            validation: OpenValidation::FullPayload,
+        },
+    )
+    .expect("validate selected-snapshot manifest");
+    assert_eq!(report.status, CompatibilityStatus::Compatible);
+    assert_eq!(report.validation, OpenValidation::FullPayload);
+    assert_eq!(report.entries_checked, 2);
+    assert!(report.issues.is_empty());
+
+    let mut missing_manifest = manifest.clone();
+    missing_manifest.entries[0].path =
+        "rust-safe-wrapper-missing-manifest-entry-does-not-exist.ocb".to_string();
+    let missing_report = ocb::validate_manifest_files(&manifest_path, &missing_manifest)
+        .expect("missing file is an in-band manifest issue");
+    assert_eq!(missing_report.status, CompatibilityStatus::Incompatible);
+    assert_eq!(missing_report.entries_checked, 2);
+    assert!(missing_report.issues.iter().any(|issue| {
+        issue.code == "ocb.io.failure"
+            && issue.field_path.as_deref() == Some("entries[0].path")
+            && !issue.message.is_empty()
+    }));
+
     drop(cloned_reader);
     drop(file);
     drop(create_snapshot);
@@ -433,6 +504,8 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
 
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(export_path);
+    let _ = fs::remove_file(manifest_copy_path);
+    let _ = fs::remove_file(manifest_path);
 }
 
 #[test]
