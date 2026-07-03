@@ -16705,6 +16705,30 @@ pub mod ocb {
         }
     }
 
+    /// Generic health status returned by OCB maintenance analysis.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HealthStatus {
+        /// The selected snapshot is valid.
+        Valid,
+        /// The file is invalid or no selected snapshot could be bound.
+        Invalid,
+        /// Health could not be fully determined.
+        Unknown,
+        /// Unknown forward-compatible raw value.
+        Other(i32),
+    }
+
+    impl HealthStatus {
+        fn from_raw(raw: sys::ArcadiaTioOcbHealthStatus) -> Self {
+            match raw {
+                sys::ARCADIA_TIO_OCB_HEALTH_STATUS_VALID => Self::Valid,
+                sys::ARCADIA_TIO_OCB_HEALTH_STATUS_INVALID => Self::Invalid,
+                sys::ARCADIA_TIO_OCB_HEALTH_STATUS_UNKNOWN => Self::Unknown,
+                other => Self::Other(other),
+            }
+        }
+    }
+
     /// Structured OCB error with the ordinary C ABI code plus OCB-specific metadata.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct OcbError {
@@ -17988,6 +18012,92 @@ pub mod ocb {
         pub truncated: bool,
     }
 
+    /// Generic diagnostic issue in an OCB report.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Issue {
+        /// Stable reason code string.
+        pub code: String,
+        /// Optional field path for the diagnostic.
+        pub field_path: Option<String>,
+        /// Human-readable diagnostic message.
+        pub message: String,
+    }
+
+    /// Rejected appendable-root candidate observed during maintenance analysis.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RootCandidateDiagnostic {
+        /// Candidate root slot id when available.
+        pub slot_id: Option<u16>,
+        /// Candidate root generation when available.
+        pub generation: Option<u64>,
+        /// Rejection diagnostic.
+        pub issue: Issue,
+    }
+
+    /// Read-only OCB maintenance report.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MaintenanceReport {
+        /// Path copied from the native report.
+        pub path: PathBuf,
+        /// Selected-snapshot health status.
+        pub status: HealthStatus,
+        /// Observed file length when available.
+        pub file_bytes: Option<u64>,
+        /// Selected root generation when available.
+        pub selected_root_generation: Option<u64>,
+        /// Previous selected root generation when available.
+        pub previous_root_generation: Option<u64>,
+        /// Selected root slot id when available.
+        pub selected_slot_id: Option<u16>,
+        /// End offset of the selected root object when available.
+        pub selected_root_end_offset: Option<u64>,
+        /// End offset of the selected snapshot when available.
+        pub selected_snapshot_end_offset: Option<u64>,
+        /// Unreachable trailing bytes after the selected snapshot when available.
+        pub orphan_tail_bytes: Option<u64>,
+        /// Whether explicit orphan-tail cleanup is recommended.
+        pub cleanup_recommended: bool,
+        /// Whether rejected root candidates were observed.
+        pub root_candidate_rejection_observed: bool,
+        /// Number of rejected root candidates observed.
+        pub rejected_root_candidate_count: usize,
+        /// Rejected root-candidate diagnostics.
+        pub rejected_root_candidates: Vec<RootCandidateDiagnostic>,
+        /// Top-level report issues.
+        pub issues: Vec<Issue>,
+    }
+
+    /// Report from explicit orphan-tail cleanup.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CleanupReport {
+        /// Path copied from the native report.
+        pub path: PathBuf,
+        /// File length before cleanup.
+        pub before_file_bytes: u64,
+        /// File length after cleanup.
+        pub after_file_bytes: u64,
+        /// Selected root generation.
+        pub selected_root_generation: u64,
+        /// Previous selected root generation when available.
+        pub previous_root_generation: Option<u64>,
+        /// Selected root slot id.
+        pub selected_slot_id: u16,
+        /// End offset of the selected root object.
+        pub selected_root_end_offset: u64,
+        /// End offset of the selected snapshot.
+        pub selected_snapshot_end_offset: u64,
+        /// Orphan-tail bytes before cleanup.
+        pub orphan_tail_bytes_before: u64,
+        /// Orphan-tail bytes after cleanup.
+        pub orphan_tail_bytes_after: u64,
+        /// Bytes removed by cleanup.
+        pub bytes_removed: u64,
+        /// Whether cleanup shortened the file.
+        pub truncated: bool,
+        /// Top-level report issues.
+        pub issues: Vec<Issue>,
+    }
+
     /// Deterministic OCB declaration fingerprints returned by export-copy.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SnapshotFingerprints {
@@ -18451,6 +18561,33 @@ pub mod ocb {
         } else {
             Err(OcbError::last("OCB cleanup_orphan_tail failed"))
         }
+    }
+
+    /// Analyze selected-snapshot root state and orphan-tail cleanup need without mutation.
+    pub fn maintenance_analyze(path: impl AsRef<Path>) -> OcbResult<MaintenanceReport> {
+        let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
+        let mut raw_report = empty_maintenance_report();
+        let status =
+            unsafe { sys::arcadia_tio_ocb_maintenance_analyze(path.as_ptr(), &mut raw_report) };
+        let guard = MaintenanceReportGuard(raw_report);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last("OCB maintenance_analyze failed"));
+        }
+        unsafe { maintenance_report_from_raw(&guard.0) }
+    }
+
+    /// Truncate orphan tail bytes and return a structured cleanup report.
+    pub fn cleanup_orphan_tail_report(path: impl AsRef<Path>) -> OcbResult<CleanupReport> {
+        let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
+        let mut raw_report = empty_cleanup_report();
+        let status = unsafe {
+            sys::arcadia_tio_ocb_cleanup_orphan_tail_report(path.as_ptr(), &mut raw_report)
+        };
+        let guard = CleanupReportGuard(raw_report);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last("OCB cleanup_orphan_tail_report failed"));
+        }
+        unsafe { cleanup_report_from_raw(&guard.0) }
     }
 
     /// Copy one source file's selected committed OCB snapshot to a new destination file.
@@ -19511,6 +19648,60 @@ pub mod ocb {
         }
     }
 
+    fn empty_maintenance_report() -> sys::ArcadiaTioOcbMaintenanceReport {
+        sys::ArcadiaTioOcbMaintenanceReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbMaintenanceReport>(),
+            path: ptr::null_mut(),
+            status: sys::ARCADIA_TIO_OCB_HEALTH_STATUS_UNKNOWN,
+            has_file_bytes: 0,
+            file_bytes: 0,
+            has_selected_root_generation: 0,
+            selected_root_generation: 0,
+            has_previous_root_generation: 0,
+            previous_root_generation: 0,
+            has_selected_slot_id: 0,
+            selected_slot_id: 0,
+            has_selected_root_end_offset: 0,
+            selected_root_end_offset: 0,
+            has_selected_snapshot_end_offset: 0,
+            selected_snapshot_end_offset: 0,
+            has_orphan_tail_bytes: 0,
+            orphan_tail_bytes: 0,
+            cleanup_recommended: 0,
+            root_candidate_rejection_observed: 0,
+            rejected_root_candidate_count: 0,
+            rejected_root_candidates: ptr::null_mut(),
+            rejected_root_candidates_len: 0,
+            issues: ptr::null_mut(),
+            issues_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_cleanup_report() -> sys::ArcadiaTioOcbCleanupReport {
+        sys::ArcadiaTioOcbCleanupReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbCleanupReport>(),
+            path: ptr::null_mut(),
+            before_file_bytes: 0,
+            after_file_bytes: 0,
+            selected_root_generation: 0,
+            has_previous_root_generation: 0,
+            previous_root_generation: 0,
+            selected_slot_id: 0,
+            selected_root_end_offset: 0,
+            selected_snapshot_end_offset: 0,
+            orphan_tail_bytes_before: 0,
+            orphan_tail_bytes_after: 0,
+            bytes_removed: 0,
+            truncated: 0,
+            issues: ptr::null_mut(),
+            issues_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
     fn empty_snapshot_export_report() -> sys::ArcadiaTioOcbSnapshotExportReport {
         sys::ArcadiaTioOcbSnapshotExportReport {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -19718,6 +19909,20 @@ pub mod ocb {
     impl Drop for SnapshotExportReportGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_snapshot_export_report_free(&mut self.0) };
+        }
+    }
+
+    struct MaintenanceReportGuard(sys::ArcadiaTioOcbMaintenanceReport);
+    impl Drop for MaintenanceReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_maintenance_report_free(&mut self.0) };
+        }
+    }
+
+    struct CleanupReportGuard(sys::ArcadiaTioOcbCleanupReport);
+    impl Drop for CleanupReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_cleanup_report_free(&mut self.0) };
         }
     }
 
@@ -20114,6 +20319,86 @@ pub mod ocb {
             pruned_row_groups: raw.pruned_row_groups,
             selected_column_chunks: raw.selected_column_chunks,
             fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
+        }
+    }
+
+    unsafe fn maintenance_report_from_raw(
+        raw: &sys::ArcadiaTioOcbMaintenanceReport,
+    ) -> OcbResult<MaintenanceReport> {
+        Ok(MaintenanceReport {
+            path: PathBuf::from(raw_string(raw.path.cast())),
+            status: HealthStatus::from_raw(raw.status),
+            file_bytes: (raw.has_file_bytes != 0).then_some(raw.file_bytes),
+            selected_root_generation: (raw.has_selected_root_generation != 0)
+                .then_some(raw.selected_root_generation),
+            previous_root_generation: (raw.has_previous_root_generation != 0)
+                .then_some(raw.previous_root_generation),
+            selected_slot_id: (raw.has_selected_slot_id != 0).then_some(raw.selected_slot_id),
+            selected_root_end_offset: (raw.has_selected_root_end_offset != 0)
+                .then_some(raw.selected_root_end_offset),
+            selected_snapshot_end_offset: (raw.has_selected_snapshot_end_offset != 0)
+                .then_some(raw.selected_snapshot_end_offset),
+            orphan_tail_bytes: (raw.has_orphan_tail_bytes != 0).then_some(raw.orphan_tail_bytes),
+            cleanup_recommended: raw.cleanup_recommended != 0,
+            root_candidate_rejection_observed: raw.root_candidate_rejection_observed != 0,
+            rejected_root_candidate_count: raw.rejected_root_candidate_count,
+            rejected_root_candidates: unsafe {
+                root_candidate_diagnostics_from_raw(
+                    raw.rejected_root_candidates,
+                    raw.rejected_root_candidates_len,
+                )
+            },
+            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) },
+        })
+    }
+
+    unsafe fn cleanup_report_from_raw(
+        raw: &sys::ArcadiaTioOcbCleanupReport,
+    ) -> OcbResult<CleanupReport> {
+        Ok(CleanupReport {
+            path: PathBuf::from(raw_string(raw.path.cast())),
+            before_file_bytes: raw.before_file_bytes,
+            after_file_bytes: raw.after_file_bytes,
+            selected_root_generation: raw.selected_root_generation,
+            previous_root_generation: (raw.has_previous_root_generation != 0)
+                .then_some(raw.previous_root_generation),
+            selected_slot_id: raw.selected_slot_id,
+            selected_root_end_offset: raw.selected_root_end_offset,
+            selected_snapshot_end_offset: raw.selected_snapshot_end_offset,
+            orphan_tail_bytes_before: raw.orphan_tail_bytes_before,
+            orphan_tail_bytes_after: raw.orphan_tail_bytes_after,
+            bytes_removed: raw.bytes_removed,
+            truncated: raw.truncated != 0,
+            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) },
+        })
+    }
+
+    unsafe fn root_candidate_diagnostics_from_raw(
+        ptr: *const sys::ArcadiaTioOcbRootCandidateDiagnostic,
+        len: usize,
+    ) -> Vec<RootCandidateDiagnostic> {
+        unsafe { raw_slice(ptr, len) }
+            .iter()
+            .map(|diagnostic| RootCandidateDiagnostic {
+                slot_id: (diagnostic.has_slot_id != 0).then_some(diagnostic.slot_id),
+                generation: (diagnostic.has_generation != 0).then_some(diagnostic.generation),
+                issue: issue_from_raw(&diagnostic.issue),
+            })
+            .collect()
+    }
+
+    unsafe fn issues_from_raw(ptr: *const sys::ArcadiaTioOcbIssue, len: usize) -> Vec<Issue> {
+        unsafe { raw_slice(ptr, len) }
+            .iter()
+            .map(issue_from_raw)
+            .collect()
+    }
+
+    fn issue_from_raw(raw: &sys::ArcadiaTioOcbIssue) -> Issue {
+        Issue {
+            code: raw_string(raw.code.cast()),
+            field_path: raw_optional_string(raw.field_path.cast()),
+            message: raw_string(raw.message.cast()),
         }
     }
 

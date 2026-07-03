@@ -85,7 +85,10 @@ root, while `ocb::copy_selected_snapshot` copies the latest selected snapshot to
 a fresh destination and returns byte, generation, row-count, and fingerprint
 provenance. `ocb::build_manifest_from_files_with_options` returns an owned
 selected-snapshot manifest, and `ocb::validate_manifest_files_with_options`
-returns an owned compatibility report. `OcbError` preserves the
+returns an owned compatibility report. `ocb::maintenance_analyze` returns a
+read-only owned health/cleanup-recommendation report, and
+`ocb::cleanup_orphan_tail_report` performs explicit orphan-tail cleanup while
+returning before/after byte counts and structured issues. `OcbError` preserves the
 ordinary C ABI error code plus OCB `ErrorKind` and optional `FailureCause` for
 machine-readable handling. Dictionary-coded reads return primitive codes; use
 `dictionary_values` for explicit decoded dictionary labels/bytes. OCB examples

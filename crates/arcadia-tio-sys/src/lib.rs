@@ -49,6 +49,9 @@ pub type ArcadiaTioOcbOpenValidation = c_int;
 /// OCB manifest/file-set compatibility status.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbCompatibilityStatus = c_int;
+/// OCB selected-snapshot health status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbHealthStatus = c_int;
 /// OCB column physical type value.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbPhysicalType = c_int;
@@ -236,6 +239,12 @@ raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_COMPATIBLE: ArcadiaTioOcbComp
 raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_INCOMPATIBLE: ArcadiaTioOcbCompatibilityStatus = 1);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_UNKNOWN: ArcadiaTioOcbCompatibilityStatus = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_VALID: ArcadiaTioOcbHealthStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_INVALID: ArcadiaTioOcbHealthStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_UNKNOWN: ArcadiaTioOcbHealthStatus = 2);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32: ArcadiaTioOcbPhysicalType = 0);
 #[cfg(feature = "format-ocb")]
@@ -920,6 +929,150 @@ pub struct ArcadiaTioOcbCleanupResult {
     pub truncated: u8,
     /// Reserved words; callers set to zero.
     pub reserved: [u64; 3],
+}
+
+/// Generic OCB report issue.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbIssue {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned reason code string.
+    pub code: *mut c_char,
+    /// Native-owned optional field path string.
+    pub field_path: *mut c_char,
+    /// Native-owned diagnostic message string.
+    pub message: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Rejected OCB root-candidate diagnostic.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbRootCandidateDiagnostic {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Nonzero when slot_id is meaningful.
+    pub has_slot_id: u8,
+    /// Candidate root slot id.
+    pub slot_id: u16,
+    /// Nonzero when generation is meaningful.
+    pub has_generation: u8,
+    /// Candidate root generation.
+    pub generation: u64,
+    /// Diagnostic issue.
+    pub issue: ArcadiaTioOcbIssue,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Read-only OCB maintenance report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbMaintenanceReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned path string.
+    pub path: *mut c_char,
+    /// Selected-snapshot health status.
+    pub status: ArcadiaTioOcbHealthStatus,
+    /// Nonzero when file_bytes is meaningful.
+    pub has_file_bytes: u8,
+    /// Observed file length.
+    pub file_bytes: u64,
+    /// Nonzero when selected_root_generation is meaningful.
+    pub has_selected_root_generation: u8,
+    /// Selected root generation.
+    pub selected_root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous root generation.
+    pub previous_root_generation: u64,
+    /// Nonzero when selected_slot_id is meaningful.
+    pub has_selected_slot_id: u8,
+    /// Selected root slot id.
+    pub selected_slot_id: u16,
+    /// Nonzero when selected_root_end_offset is meaningful.
+    pub has_selected_root_end_offset: u8,
+    /// End offset of the selected root object.
+    pub selected_root_end_offset: u64,
+    /// Nonzero when selected_snapshot_end_offset is meaningful.
+    pub has_selected_snapshot_end_offset: u8,
+    /// End offset of the selected snapshot.
+    pub selected_snapshot_end_offset: u64,
+    /// Nonzero when orphan_tail_bytes is meaningful.
+    pub has_orphan_tail_bytes: u8,
+    /// Unreachable trailing bytes after the selected snapshot.
+    pub orphan_tail_bytes: u64,
+    /// Nonzero when cleanup is recommended.
+    pub cleanup_recommended: u8,
+    /// Nonzero when rejected root candidates were observed.
+    pub root_candidate_rejection_observed: u8,
+    /// Number of rejected root candidates observed.
+    pub rejected_root_candidate_count: usize,
+    /// Native-owned rejected root-candidate diagnostics.
+    pub rejected_root_candidates: *mut ArcadiaTioOcbRootCandidateDiagnostic,
+    /// Number of rejected root-candidate diagnostics returned.
+    pub rejected_root_candidates_len: usize,
+    /// Native-owned report issues.
+    pub issues: *mut ArcadiaTioOcbIssue,
+    /// Number of report issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Report-bearing orphan-tail cleanup result.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCleanupReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned path string.
+    pub path: *mut c_char,
+    /// File length before cleanup.
+    pub before_file_bytes: u64,
+    /// File length after cleanup.
+    pub after_file_bytes: u64,
+    /// Selected root generation.
+    pub selected_root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous root generation.
+    pub previous_root_generation: u64,
+    /// Selected root slot id.
+    pub selected_slot_id: u16,
+    /// End offset of the selected root object.
+    pub selected_root_end_offset: u64,
+    /// End offset of the selected snapshot.
+    pub selected_snapshot_end_offset: u64,
+    /// Orphan-tail bytes before cleanup.
+    pub orphan_tail_bytes_before: u64,
+    /// Orphan-tail bytes after cleanup.
+    pub orphan_tail_bytes_after: u64,
+    /// Bytes removed by cleanup.
+    pub bytes_removed: u64,
+    /// Nonzero when the file was shortened.
+    pub truncated: u8,
+    /// Native-owned report issues.
+    pub issues: *mut ArcadiaTioOcbIssue,
+    /// Number of report issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
 }
 
 /// OCB selected-snapshot export-copy options.
@@ -3718,6 +3871,12 @@ unsafe extern "C" {
     /// Initializes an OCB cleanup result.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_cleanup_result_init(result: *mut ArcadiaTioOcbCleanupResult);
+    /// Initializes an OCB maintenance report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_maintenance_report_init(report: *mut ArcadiaTioOcbMaintenanceReport);
+    /// Initializes an OCB cleanup report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_cleanup_report_init(report: *mut ArcadiaTioOcbCleanupReport);
     /// Initializes OCB selected-snapshot export-copy options.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_snapshot_export_options_init(
@@ -3815,6 +3974,24 @@ unsafe extern "C" {
         path: *const c_char,
         out_result: *mut ArcadiaTioOcbCleanupResult,
     ) -> ArcadiaTioErrorCode;
+    /// Analyzes OCB selected-snapshot maintenance state without mutating the file.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_maintenance_analyze(
+        path: *const c_char,
+        out_report: *mut ArcadiaTioOcbMaintenanceReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Truncates orphan tail bytes and returns a structured cleanup report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_cleanup_orphan_tail_report(
+        path: *const c_char,
+        out_report: *mut ArcadiaTioOcbCleanupReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Frees native-owned OCB maintenance report data.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_maintenance_report_free(report: *mut ArcadiaTioOcbMaintenanceReport);
+    /// Frees native-owned OCB cleanup report data.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_cleanup_report_free(report: *mut ArcadiaTioOcbCleanupReport);
     /// Copies one source file's selected committed OCB snapshot to a new destination.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_copy_selected_snapshot(

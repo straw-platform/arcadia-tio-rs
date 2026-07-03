@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arcadia_tio_rs::ocb::{
     self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec, CompatibilityStatus,
-    DecodedDictionaryValues, DictionaryValueKind, LogicalKind, ManifestBuildOptions, NullOrder,
-    OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
+    DecodedDictionaryValues, DictionaryValueKind, HealthStatus, LogicalKind, ManifestBuildOptions,
+    NullOrder, OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
     PhysicalType, PredicateValue, PrimitiveValues, Projection, ReadRequest, RowGroupPredicate,
     WriteColumn, WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup,
     WriteSpec,
@@ -491,8 +491,36 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
             .message()
             .contains("destination path already exists")
     );
+    let maintenance = ocb::maintenance_analyze(&path).expect("maintenance analyze");
+    assert_eq!(maintenance.status, HealthStatus::Valid);
+    assert_eq!(maintenance.selected_root_generation, Some(2));
+    assert_eq!(maintenance.previous_root_generation, Some(1));
+    assert!(maintenance.selected_slot_id.is_some());
+    assert!(maintenance.selected_root_end_offset.is_some());
+    assert!(maintenance.selected_snapshot_end_offset.is_some());
+    assert!(maintenance.orphan_tail_bytes.unwrap_or_default() > 0);
+    assert!(maintenance.cleanup_recommended);
+    assert!(!maintenance.root_candidate_rejection_observed);
+    assert_eq!(maintenance.rejected_root_candidate_count, 0);
+    assert!(maintenance.rejected_root_candidates.is_empty());
+    assert!(maintenance.issues.is_empty());
+    let cleanup_report =
+        ocb::cleanup_orphan_tail_report(&path).expect("cleanup orphan tail report");
+    assert!(cleanup_report.truncated);
+    assert_eq!(cleanup_report.selected_root_generation, 2);
+    assert_eq!(cleanup_report.previous_root_generation, Some(1));
+    assert_eq!(
+        cleanup_report.orphan_tail_bytes_before,
+        maintenance.orphan_tail_bytes.unwrap()
+    );
+    assert_eq!(cleanup_report.orphan_tail_bytes_after, 0);
+    assert_eq!(
+        cleanup_report.bytes_removed,
+        maintenance.orphan_tail_bytes.unwrap()
+    );
+    assert!(cleanup_report.issues.is_empty());
     let cleanup = ocb::cleanup_orphan_tail(&path).expect("cleanup orphan tail");
-    assert!(cleanup.truncated);
+    assert!(!cleanup.truncated);
     assert_eq!(
         ColumnBundleFile::open(&path)
             .expect("reopen after cleanup")
