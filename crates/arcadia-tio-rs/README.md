@@ -28,7 +28,7 @@ It also exposes opt-in current-read query-attribution helpers
 (`read_with_options_attributed` and `read_with_options_dense_attributed`) that
 return the normal tensor/dense output plus native diagnostic trace JSON copied
 into Rust-owned memory, plus bounded low-level interop helpers for native
-`read_index` / `read_index_dense` selection and Arrow C Data value export. Optional non-default
+current and retained-historical `read_index` / dense indexed selection and Arrow C Data value export. Optional non-default
 `arrow`, `ndarray`, `csv`, and `parquet` Cargo features add owned-copy
 `Tensor` conversion gates for dense f32/f64/i32/i64 payloads: Arrow
 `RecordBatch`/IPC bytes, Rust `ndarray::ArrayD<T>`, and companion CSV/Parquet
@@ -498,6 +498,8 @@ let indexed_dense = file.read_index_dense(&[
 ], -1.0)?;
 assert_eq!(indexed_dense.value.tensor.data, TensorData::F64(vec![2.0, 3.0]));
 assert_eq!(indexed_dense.value.mask.as_deref(), Some(&[1, 1][..]));
+// Retained historical snapshots also expose options-only read_index helpers:
+// read_index_at_commit_with_options(...) and read_index_at_commit_with_options_dense(...).
 
 let head = file.head_commit()?;
 let visible_commits = file.list_commits(Some(8))?;
@@ -596,8 +598,8 @@ index checkpoint/chunk-plan administration, non-precise reform/compaction
 workflows including retained-history compaction reports, and V4
 diagnostics/precise-accounting report APIs. Diagnostic current
 query-attribution helpers are available as API-completeness access to native
-trace JSON, bounded read-index/Arrow C Data helpers expose native interop
-vocabulary outside the original 17-family score, and optional Arrow/ndarray plus
+trace JSON, bounded current/historical read-index and Arrow C Data helpers
+expose native interop vocabulary outside the original 17-family score, and optional Arrow/ndarray plus
 CSV/Parquet feature conversions expose owned-copy Rust ecosystem and companion
 format handoffs. These remain
 outside benchmark/performance evidence. Tensor ops, typed wrappers, and

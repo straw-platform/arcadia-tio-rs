@@ -2326,6 +2326,42 @@ pub struct ArcadiaTioHistoricalReadExecutionReport {
     pub query_commit_seq: u64,
 }
 
+/// Historical read-index execution and lowering report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadIndexReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub requested_mode: ArcadiaTioReadExecutionMode,
+    /// Requested maximum query threads.
+    pub query_max_threads: usize,
+    /// Effective execution mode used by the query.
+    pub query_effective_mode: ArcadiaTioReadExecutionMode,
+    /// Effective thread count used by the query.
+    pub query_effective_threads: usize,
+    /// Native-owned query parallel runtime string.
+    pub query_parallel_runtime: *mut c_char,
+    /// Native-owned query parallel fallback reason string.
+    pub query_parallel_fallback_reason: *mut c_char,
+    /// Native-owned query parallel reason code string.
+    pub query_parallel_reason_code: *mut c_char,
+    /// Native-owned query parallel reason-code taxonomy string.
+    pub query_parallel_reason_code_taxonomy: *mut c_char,
+    /// Historical query source kind.
+    pub query_source_kind: ArcadiaTioHistoricalQuerySourceKind,
+    /// Commit sequence used for the historical query.
+    pub query_commit_seq: u64,
+    /// Lowering strategy selected by native code.
+    pub lowering_kind: ArcadiaTioReadIndexLoweringKind,
+    /// Nonzero when native code used a full-tensor fallback.
+    pub used_full_tensor_fallback: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+}
+
 /// Chunk plan returned by metadata APIs.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -4589,6 +4625,10 @@ unsafe extern "C" {
     pub fn arcadia_tio_historical_read_execution_report_free(
         report: *mut ArcadiaTioHistoricalReadExecutionReport,
     );
+    /// Frees native-owned strings in a historical read-index report.
+    pub fn arcadia_tio_historical_read_index_report_free(
+        report: *mut ArcadiaTioHistoricalReadIndexReport,
+    );
     /// Frees native-owned strings in a read-index report.
     pub fn arcadia_tio_read_index_report_free(report: *mut ArcadiaTioReadIndexReport);
     /// Reads data through low-level read-index items into an owned tensor.
@@ -4608,6 +4648,28 @@ unsafe extern "C" {
         out_tensor: *mut ArcadiaTioTensor,
         out_mask: *mut ArcadiaTioMask,
         out_report: *mut ArcadiaTioReadIndexReport,
+    ) -> c_int;
+    /// Reads historical data through low-level read-index items with execution options.
+    pub fn arcadia_tio_read_index_at_commit_with_options(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioHistoricalReadIndexReport,
+    ) -> c_int;
+    /// Reads historical data through low-level read-index items into a dense tensor and optional mask.
+    pub fn arcadia_tio_read_index_at_commit_with_options_dense(
+        handle: *mut ArcadiaTioHandle,
+        commit_seq: u64,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioHistoricalReadWithOptionsOptions,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioHistoricalReadIndexReport,
     ) -> c_int;
     /// Reads current selector data with execution options into an owned tensor.
     pub fn arcadia_tio_read_with_options(

@@ -5764,6 +5764,33 @@ pub struct ReadIndexDenseResult {
     pub report: ReadIndexReport,
 }
 
+/// Historical read-index execution and lowering metadata copied from native output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoricalReadIndexReport {
+    /// Historical execution metadata.
+    pub execution: HistoricalReadExecutionReport,
+    /// Read-index lowering metadata.
+    pub read_index: ReadIndexReport,
+}
+
+/// Historical read-index value with execution and lowering metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalReadIndexResult {
+    /// Read value.
+    pub value: Tensor,
+    /// Historical execution and lowering metadata.
+    pub report: HistoricalReadIndexReport,
+}
+
+/// Historical dense read-index value with validity mask plus execution and lowering metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalReadIndexDenseResult {
+    /// Dense read value and optional validity mask.
+    pub value: DenseTensor,
+    /// Historical execution and lowering metadata.
+    pub report: HistoricalReadIndexReport,
+}
+
 /// RAII owner for an Arrow C Data array/schema pair returned by native full-value export.
 ///
 /// The pointers exposed by [`ArrowCData::array`] and [`ArrowCData::schema`] are borrowed and remain
@@ -13399,6 +13426,110 @@ impl TensorFile {
         })
     }
 
+    /// Reads retained historical data through the native basic read-index lowering API.
+    pub fn read_index_at_commit_with_options(
+        &self,
+        commit_seq: u64,
+        items: &[ReadIndexItem],
+        options: HistoricalReadWithOptions,
+    ) -> Result<HistoricalReadIndexResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedHistoricalReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut report = new_historical_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_at_commit_with_options(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                &mut raw_tensor,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_historical_read_index_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read at commit with read_index",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let copied_report = copy_historical_read_index_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_historical_read_index_report_free(&mut report);
+        }
+        Ok(HistoricalReadIndexResult {
+            value: tensor?,
+            report: copied_report?,
+        })
+    }
+
+    /// Reads retained historical data through the native basic read-index API with dense fill materialization.
+    pub fn read_index_at_commit_with_options_dense(
+        &self,
+        commit_seq: u64,
+        items: &[ReadIndexItem],
+        options: HistoricalReadWithOptions,
+        fill_value: f64,
+    ) -> Result<HistoricalReadIndexDenseResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedHistoricalReadWithOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut report = new_historical_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_at_commit_with_options_dense(
+                self.raw.as_ptr(),
+                commit_seq,
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_historical_read_index_report_free(&mut report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor at commit with read_index",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let copied_report = copy_historical_read_index_report(&report);
+        // SAFETY: Native-owned outputs are freed exactly once.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_historical_read_index_report_free(&mut report);
+        }
+        Ok(HistoricalReadIndexDenseResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            report: copied_report?,
+        })
+    }
+
     /// Reads selector data at a retained commit with a shape policy and execution metadata.
     pub fn read_at_commit_with_shape_policy(
         &self,
@@ -14069,6 +14200,26 @@ fn new_historical_read_execution_report() -> sys::ArcadiaTioHistoricalReadExecut
     }
 }
 
+fn new_historical_read_index_report() -> sys::ArcadiaTioHistoricalReadIndexReport {
+    sys::ArcadiaTioHistoricalReadIndexReport {
+        version: 1,
+        struct_size: mem::size_of::<sys::ArcadiaTioHistoricalReadIndexReport>(),
+        requested_mode: sys::ARCADIA_TIO_READ_EXECUTION_SERIAL,
+        query_max_threads: 0,
+        query_effective_mode: sys::ARCADIA_TIO_READ_EXECUTION_SERIAL,
+        query_effective_threads: 0,
+        query_parallel_runtime: ptr::null_mut(),
+        query_parallel_fallback_reason: ptr::null_mut(),
+        query_parallel_reason_code: ptr::null_mut(),
+        query_parallel_reason_code_taxonomy: ptr::null_mut(),
+        query_source_kind: sys::ARCADIA_TIO_HISTORICAL_QUERY_SOURCE_RETAINED_VISIBLE_COMMIT,
+        query_commit_seq: 0,
+        lowering_kind: sys::ARCADIA_TIO_READ_INDEX_LOWERING_UNKNOWN,
+        used_full_tensor_fallback: 0,
+        reserved0: [0; 7],
+    }
+}
+
 fn copy_read_execution_report(
     raw: &sys::ArcadiaTioReadExecutionReport,
 ) -> Result<ReadExecutionReport> {
@@ -14122,6 +14273,39 @@ fn copy_historical_read_execution_report(
         execution,
         query_source_kind: HistoricalQuerySourceKind::from_raw(raw.query_source_kind)?,
         query_commit_seq: raw.query_commit_seq,
+    })
+}
+
+fn copy_historical_read_index_report(
+    raw: &sys::ArcadiaTioHistoricalReadIndexReport,
+) -> Result<HistoricalReadIndexReport> {
+    let execution = ReadExecutionReport {
+        requested_mode: ReadExecutionMode::from_raw(raw.requested_mode, raw.query_max_threads)?,
+        query_max_threads: raw.query_max_threads,
+        query_effective_mode: ReadExecutionMode::from_raw(
+            raw.query_effective_mode,
+            raw.query_effective_threads,
+        )?,
+        query_effective_threads: raw.query_effective_threads,
+        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const()),
+        query_parallel_fallback_reason: optional_c_string(
+            raw.query_parallel_fallback_reason.cast_const(),
+        ),
+        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const()),
+        query_parallel_reason_code_taxonomy: optional_c_string(
+            raw.query_parallel_reason_code_taxonomy.cast_const(),
+        ),
+    };
+    Ok(HistoricalReadIndexReport {
+        execution: HistoricalReadExecutionReport {
+            execution,
+            query_source_kind: HistoricalQuerySourceKind::from_raw(raw.query_source_kind)?,
+            query_commit_seq: raw.query_commit_seq,
+        },
+        read_index: ReadIndexReport {
+            lowering_kind: ReadIndexLoweringKind::from_raw(raw.lowering_kind)?,
+            used_full_tensor_fallback: raw.used_full_tensor_fallback != 0,
+        },
     })
 }
 

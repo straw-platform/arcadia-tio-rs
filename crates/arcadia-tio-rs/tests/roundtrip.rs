@@ -1345,6 +1345,104 @@ fn safe_wrapper_read_index_matches_basic_native_semantics() {
 }
 
 #[test]
+fn safe_wrapper_historical_read_index_binds_target_commit() {
+    let path = unique_path("safe-wrapper-historical-read-index.tio");
+    let options = CreateOptions::streaming(
+        DType::F32,
+        vec![
+            DimSpec::new(AxisKind::Time, 0),
+            DimSpec::new(AxisKind::Channel, 2),
+        ],
+        0,
+    );
+    {
+        let mut file =
+            TensorFile::create(&path, options).expect("create historical read_index file");
+        file.append_f32(&[1.0, 2.0], &[1, 2])
+            .expect("append first historical row");
+        file.append_f32(&[3.0, 4.0], &[1, 2])
+            .expect("append second historical row");
+        file.append_f32(&[5.0, 6.0], &[1, 2])
+            .expect("append third historical row");
+    }
+
+    let file = TensorFile::open(&path).expect("open historical read_index file");
+    assert_eq!(file.head_commit().expect("head commit").commit_seq, 3);
+    let tail_at_commit_two = file
+        .read_index_at_commit_with_options(
+            2,
+            &[
+                ReadIndexItem::slice(Some(-1), None, 1).expect("valid target tail slice"),
+                ReadIndexItem::all(),
+            ],
+            HistoricalReadWithOptions::serial(),
+        )
+        .expect("historical read_index target tail");
+    assert_eq!(tail_at_commit_two.value.shape, vec![1, 2]);
+    assert_eq!(
+        tail_at_commit_two.value.data,
+        TensorData::F32(vec![3.0, 4.0])
+    );
+    assert_eq!(
+        tail_at_commit_two.report.execution.query_source_kind,
+        HistoricalQuerySourceKind::RetainedVisibleCommit
+    );
+    assert_eq!(tail_at_commit_two.report.execution.query_commit_seq, 2);
+    assert_eq!(
+        tail_at_commit_two.report.read_index.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(
+        !tail_at_commit_two
+            .report
+            .read_index
+            .used_full_tensor_fallback
+    );
+
+    let dense_last_column = file
+        .read_index_at_commit_with_options_dense(
+            2,
+            &[
+                ReadIndexItem::new_axis(),
+                ReadIndexItem::ellipsis(),
+                ReadIndexItem::index(-1),
+            ],
+            HistoricalReadWithOptions::serial(),
+            -9.0,
+        )
+        .expect("historical dense read_index target last column");
+    assert_eq!(dense_last_column.value.tensor.shape, vec![1, 2]);
+    assert_eq!(
+        dense_last_column.value.tensor.data,
+        TensorData::F32(vec![2.0, 4.0])
+    );
+    assert_eq!(dense_last_column.value.mask.as_deref(), Some(&[1, 1][..]));
+    assert_eq!(dense_last_column.report.execution.query_commit_seq, 2);
+    assert_eq!(
+        dense_last_column.report.read_index.lowering_kind,
+        ReadIndexLoweringKind::SelectorReadWithShapePostprocess
+    );
+    assert!(
+        !dense_last_column
+            .report
+            .read_index
+            .used_full_tensor_fallback
+    );
+
+    let err = file
+        .read_index_at_commit_with_options(
+            2,
+            &[ReadIndexItem::index(0), ReadIndexItem::index(1)],
+            HistoricalReadWithOptions::serial(),
+        )
+        .expect_err("historical scalar read_index rejects before FFI");
+    assert_eq!(err.code(), ErrorCode::InvalidArgument);
+
+    drop(file);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn safe_wrapper_exports_arrow_c_data_and_allows_later_reads() {
     let path = unique_path("safe-wrapper-arrow.tio");
     let options = CreateOptions::streaming(
