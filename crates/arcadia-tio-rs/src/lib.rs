@@ -12611,6 +12611,106 @@ impl TensorFile {
         })
     }
 
+    /// Reads current data through the native basic read-index API with a shape-policy domain.
+    pub fn read_index_with_shape_policy(
+        &self,
+        items: &[ReadIndexItem],
+        options: ReadWithShapePolicyOptions,
+    ) -> Result<ReadIndexResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedReadWithShapePolicyOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_report = new_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_with_shape_policy(
+                self.raw.as_ptr(),
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                &mut raw_tensor,
+                &mut raw_report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_read_index_report_free(&mut raw_report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read with read_index shape policy",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let report = copy_read_index_report(&raw_report);
+        // SAFETY: Native-owned outputs are freed exactly once after copying.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_read_index_report_free(&mut raw_report);
+        }
+        Ok(ReadIndexResult {
+            value: tensor?,
+            report: report?,
+        })
+    }
+
+    /// Reads current data through the native basic read-index API with a shape-policy domain and dense fill materialization.
+    pub fn read_index_with_shape_policy_dense(
+        &self,
+        items: &[ReadIndexItem],
+        options: ReadWithShapePolicyOptions,
+        fill_value: f64,
+    ) -> Result<ReadIndexDenseResult> {
+        let prepared_items = PreparedReadIndexItems::new(items, self.rank()?)?;
+        let prepared_options = PreparedReadWithShapePolicyOptions::new(&options)?;
+        let mut raw_tensor = sys::ArcadiaTioTensor::default();
+        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut raw_report = new_read_index_report();
+        let raw_options = prepared_options.raw_options();
+        // SAFETY: Prepared item and option buffers outlive the call; outputs are valid.
+        let status = unsafe {
+            sys::arcadia_tio_read_index_with_shape_policy_dense(
+                self.raw.as_ptr(),
+                prepared_items.ptr(),
+                prepared_items.len(),
+                &raw_options,
+                fill_value,
+                &mut raw_tensor,
+                &mut raw_mask,
+                &mut raw_report,
+            )
+        };
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            // SAFETY: Outputs were initialized by this wrapper and may be partially populated.
+            unsafe {
+                sys::arcadia_tio_tensor_free(&mut raw_tensor);
+                sys::arcadia_tio_mask_free(&mut raw_mask);
+                sys::arcadia_tio_read_index_report_free(&mut raw_report);
+            }
+            return Err(TioError::from_last_error(
+                "failed to read dense tensor with read_index shape policy",
+            ));
+        }
+        let tensor = copy_tensor(&raw_tensor);
+        let mask = copy_mask(&raw_mask);
+        let report = copy_read_index_report(&raw_report);
+        // SAFETY: Native-owned outputs are freed exactly once after copying.
+        unsafe {
+            sys::arcadia_tio_tensor_free(&mut raw_tensor);
+            sys::arcadia_tio_mask_free(&mut raw_mask);
+            sys::arcadia_tio_read_index_report_free(&mut raw_report);
+        }
+        Ok(ReadIndexDenseResult {
+            value: DenseTensor {
+                tensor: tensor?,
+                mask,
+            },
+            report: report?,
+        })
+    }
+
     /// Reads an axis range into Rust-owned buffers.
     pub fn read_axis_range(&self, axis: usize, start: u32, end: u32) -> Result<Tensor> {
         if start > end {

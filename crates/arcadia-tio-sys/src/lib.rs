@@ -5419,6 +5419,26 @@ unsafe extern "C" {
         out_mask: *mut ArcadiaTioMask,
         out_report: *mut ArcadiaTioReadIndexReport,
     ) -> c_int;
+    /// Reads current data through low-level read-index items with a shape-policy domain.
+    pub fn arcadia_tio_read_index_with_shape_policy(
+        handle: *mut ArcadiaTioHandle,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioReadWithShapePolicyOptions,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_report: *mut ArcadiaTioReadIndexReport,
+    ) -> c_int;
+    /// Reads current data through low-level read-index items with a shape-policy domain into a dense tensor and optional mask.
+    pub fn arcadia_tio_read_index_with_shape_policy_dense(
+        handle: *mut ArcadiaTioHandle,
+        items: *const ArcadiaTioReadIndexItem,
+        items_len: usize,
+        options: *const ArcadiaTioReadWithShapePolicyOptions,
+        fill_value: c_double,
+        out_tensor: *mut ArcadiaTioTensor,
+        out_mask: *mut ArcadiaTioMask,
+        out_report: *mut ArcadiaTioReadIndexReport,
+    ) -> c_int;
     /// Reads historical data through low-level read-index items with execution options.
     pub fn arcadia_tio_read_index_at_commit_with_options(
         handle: *mut ArcadiaTioHandle,

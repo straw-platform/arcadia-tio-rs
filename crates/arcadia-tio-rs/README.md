@@ -28,7 +28,8 @@ It also exposes opt-in current-read query-attribution helpers
 (`read_with_options_attributed` and `read_with_options_dense_attributed`) that
 return the normal tensor/dense output plus native diagnostic trace JSON copied
 into Rust-owned memory, plus bounded low-level interop helpers for native
-current and retained-historical `read_index` / dense indexed selection and Arrow C Data value export. Optional non-default
+current and retained-historical `read_index` / dense / shape-policy indexed
+selection and Arrow C Data value export. Optional non-default
 `arrow`, `ndarray`, `csv`, and `parquet` Cargo features add owned-copy
 `Tensor` conversion gates for dense f32/f64/i32/i64 payloads: Arrow
 `RecordBatch`/IPC bytes, Rust `ndarray::ArrayD<T>`, and companion CSV/Parquet
@@ -124,7 +125,8 @@ the duration of one bulk FFI call, validate dtype/rank/shape/data length before
 crossing the ABI where possible, and return or surface the native status. Read
 and report helpers copy
 native-owned tensor/mask/report/trace outputs into Rust-owned values and
-immediately free the C allocation. Historical `read_index` helpers support both
+immediately free the C allocation. Current `read_index` helpers support basic
+shape-policy domain reads; historical `read_index` helpers support both
 execution-options-only reads and shape-policy domain reads. `read_values_arrow` is the exception: it
 returns an `ArrowCData` RAII owner for the Arrow C Data release callbacks;
 borrowed Arrow pointers are valid only while that owner is alive and are
@@ -523,8 +525,8 @@ let indexed_dense = file.read_index_dense(&[
 ], -1.0)?;
 assert_eq!(indexed_dense.value.tensor.data, TensorData::F64(vec![2.0, 3.0]));
 assert_eq!(indexed_dense.value.mask.as_deref(), Some(&[1, 1][..]));
-// Retained historical snapshots also expose read_index helpers with execution
-// options or explicit shape-policy domains.
+// Current and retained historical snapshots also expose read_index helpers with
+// explicit shape-policy domains.
 
 let head = file.head_commit()?;
 let visible_commits = file.list_commits(Some(8))?;

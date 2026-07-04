@@ -1750,6 +1750,51 @@ fn safe_wrapper_read_index_matches_basic_native_semantics() {
     );
     assert_eq!(dense_sliced.value.mask.as_deref(), Some(&[1, 1, 1, 1][..]));
 
+    let shape_policy_sliced = file
+        .read_index_with_shape_policy(
+            &[
+                ReadIndexItem::slice(Some(1), Some(3), 1).expect("valid shape-policy slice"),
+                ReadIndexItem::all(),
+            ],
+            ReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![1])),
+        )
+        .expect("shape-policy slice read_index");
+    assert_eq!(
+        shape_policy_sliced.report.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(!shape_policy_sliced.report.used_full_tensor_fallback);
+    assert_eq!(shape_policy_sliced.value.shape, vec![2, 1]);
+    assert_eq!(
+        shape_policy_sliced.value.data,
+        TensorData::F64(vec![3.0, 5.0])
+    );
+
+    let dense_shape_policy_sliced = file
+        .read_index_with_shape_policy_dense(
+            &[
+                ReadIndexItem::slice(Some(1), Some(3), 1).expect("valid shape-policy slice"),
+                ReadIndexItem::all(),
+            ],
+            ReadWithShapePolicyOptions::serial(ReadShapePolicy::ExplicitExtents(vec![1])),
+            -9.0,
+        )
+        .expect("dense shape-policy slice read_index");
+    assert_eq!(
+        dense_shape_policy_sliced.report.lowering_kind,
+        ReadIndexLoweringKind::SelectorRead
+    );
+    assert!(!dense_shape_policy_sliced.report.used_full_tensor_fallback);
+    assert_eq!(dense_shape_policy_sliced.value.tensor.shape, vec![2, 1]);
+    assert_eq!(
+        dense_shape_policy_sliced.value.tensor.data,
+        TensorData::F64(vec![3.0, 5.0])
+    );
+    assert_eq!(
+        dense_shape_policy_sliced.value.mask.as_deref(),
+        Some(&[1, 1][..])
+    );
+
     let postprocessed = file
         .read_index(&[
             ReadIndexItem::index(1),
