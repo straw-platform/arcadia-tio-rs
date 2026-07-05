@@ -440,6 +440,44 @@ fn representative_raw_layouts_are_pointer_compatible() {
                 offset_of!(ArcadiaTioOcbCompactL2CertificationReport, channels),
                 72
             );
+            assert_eq!(size_of::<ArcadiaTioOcbCompactL2PhysicalV2LayoutFacts>(), 72);
+            assert_eq!(
+                size_of::<ArcadiaTioOcbCompactL2PhysicalV2CertificationOptions>(),
+                88
+            );
+            assert_eq!(
+                size_of::<ArcadiaTioOcbCompactL2PhysicalV2ChannelCertificationReport>(),
+                160
+            );
+            assert_eq!(
+                size_of::<ArcadiaTioOcbCompactL2PhysicalV2CertificationReport>(),
+                144
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbCompactL2PhysicalV2LayoutFacts, artifact_format),
+                16
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbCompactL2PhysicalV2CertificationOptions,
+                    max_rows
+                ),
+                32
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbCompactL2PhysicalV2ChannelCertificationReport,
+                    selected_compressed_bytes
+                ),
+                96
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbCompactL2PhysicalV2CertificationReport,
+                    channels
+                ),
+                96
+            );
         }
     }
 
