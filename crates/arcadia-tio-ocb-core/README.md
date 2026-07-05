@@ -16,6 +16,28 @@ replay, owner assignment, factor/KOB logic, shm-ring transport, production LIVE
 orchestration, native libraries, release artifacts, or performance/storage
 claims.
 
+## 0.3.1 release boundary
+
+The 0.3.1 public Rust workspace source boundary adds compact-L2
+`compact-l2-physical-v2` support as an explicit, additive physical layout
+candidate. It does not replace `compact-fixed-binary-l2-v1` and does not make
+physical-v2 the downstream runtime default.
+
+The OCB core owns only physical facts for this layout:
+
+- stable physical-v2 column names and v1 fixed-binary lane mapping;
+- exact in-memory reconstruction of the legacy 168-byte payload for
+  compatibility and certification;
+- artifact and manifest certification helpers for physical-v2 channel-sharded
+  OCB sets;
+- a bounded channel-parallel typed reader helper for physical-v2 manifests.
+
+The layout is intentionally physical, not a unified order/trade business
+schema. `record_kind` tells downstream code how to interpret the shared body
+lanes. Downstream still owns replay, owner assignment, order-book mutation,
+factor/KOB logic, scheduling, runtime policy, rollout/fallback, and any
+production-readiness claim.
+
 ## 0.3.0 release boundary
 
 The 0.3.0 public Rust workspace tag is a source release of the OCB core reader

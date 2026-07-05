@@ -1,5 +1,60 @@
 # Release notes
 
+## 0.3.1 — compact-L2 physical-v2 OCB core candidate
+
+Tag: `0.3.1`
+Commit: see `git rev-parse 0.3.1`
+
+### Scope
+
+This is a source-only release of the public Rust wrapper workspace focused on
+the C-ABI-free `arcadia-tio-ocb-core` crate:
+
+- Adds compact-L2 `compact-l2-physical-v2` support as an explicit additive
+  physical layout candidate.
+- Adds stable physical-v2 column constants and v1 fixed-binary lane mapping.
+- Adds exact in-memory reconstruction of the legacy 168-byte payload for
+  compatibility and certification.
+- Adds physical-v2 artifact and manifest certification helpers for
+  channel-sharded OCB sets.
+- Adds a bounded channel-parallel typed reader helper for physical-v2
+  manifests.
+- Adds path-redacted compact-L2 size-attribution and physical-v2 certification
+  examples for private/operator diagnostics.
+
+### OCB-core guidance
+
+- Physical-v2 is a physical storage layout, not a unified order/trade business
+  schema. `record_kind` tells downstream code how to interpret the shared body
+  lanes.
+- Physical-v2 is additive and does not replace `compact-fixed-binary-l2-v1` or
+  make itself the downstream runtime default.
+- Downstream still owns replay scheduling, owner assignment, order-book
+  mutation, factor/KOB logic, shm-ring transport, LIVE orchestration, rollout
+  policy, fallback policy, and production-readiness claims.
+- Public reports and examples must remain aggregate/path-redacted and must not
+  log raw private records or payload bytes.
+
+### Non-goals
+
+This release does not publish crates.io packages, native libraries, signed
+artifacts, package-manager/system installs, benchmark evidence, storage/capacity
+claims, Arcadia LOB replay semantics, or production/default runtime readiness.
+It does not change the C ABI, Python binding, C++ wrapper, or Haskell wrapper
+surface.
+
+### Validation summary
+
+Maintainer validation before tagging included:
+
+- `cargo fmt --all -- --check`;
+- `cargo check -p arcadia-tio-ocb-core`;
+- `cargo check -p arcadia-tio-ocb-core --examples`;
+- `cargo test -p arcadia-tio-ocb-core`;
+- `cargo test -p arcadia-tio-ocb-core --no-default-features`;
+- `cargo make test-core-reader-tree`;
+- `cargo make test-core-reader-no-cabi`.
+
 ## 0.3.0 — channel-sharded compact-L2 OCB certification
 
 Tag: `0.3.0`

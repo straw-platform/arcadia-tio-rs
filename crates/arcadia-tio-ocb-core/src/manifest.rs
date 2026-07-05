@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compact_l2::{
     CHANNEL_SHARDED_MANIFEST_SCHEMA_VERSION_V1, COMPACT_L2_FIXED_BINARY_ARTIFACT_FORMAT_V1,
+    COMPACT_L2_PHYSICAL_V2_ARTIFACT_FORMAT,
 };
 use crate::{ArcadiaTioError, OcbErrorKind, Result};
 
@@ -83,13 +84,13 @@ pub struct ChannelShardedManifestCountsV1 {
 /// Explicit non-readiness/performance claim flags preserved for path-safe reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ChannelShardedManifestClaimsV1 {
-    /// Must remain false for source-format certification manifests.
+    /// Must remain false for certification manifests.
     #[serde(default)]
     pub default_readiness: bool,
-    /// Must remain false for source-format certification manifests.
+    /// Must remain false for certification manifests.
     #[serde(default)]
     pub runtime_readiness: bool,
-    /// Must remain false for source-format certification manifests.
+    /// Must remain false for certification manifests.
     #[serde(default)]
     pub performance_dominance: bool,
 }
@@ -103,7 +104,9 @@ pub struct ChannelShardedManifestV1 {
     pub schema_version: u16,
     /// Trading day as `YYYYMMDD`.
     pub trading_day: u32,
-    /// Artifact format/layout label.
+    /// Artifact format/layout label. The manifest model can describe either
+    /// compact fixed-binary v1 or compact-L2 physical-v2 artifacts; each
+    /// certification entry point still validates the exact layout it accepts.
     #[serde(alias = "layout", default = "default_artifact_format")]
     pub artifact_format: String,
     /// Optional aggregate root hash as lowercase hex.
@@ -171,7 +174,7 @@ impl ChannelShardedManifestV1 {
         if self.trading_day == 0 {
             return invalid_manifest("channel-sharded OCB manifest trading day is zero");
         }
-        if self.artifact_format != COMPACT_L2_FIXED_BINARY_ARTIFACT_FORMAT_V1 {
+        if !is_supported_artifact_format(&self.artifact_format) {
             return invalid_manifest("unsupported channel-sharded OCB artifact format");
         }
         if let Some(false) = self.channel_indivisible {
@@ -398,6 +401,13 @@ fn invalid_manifest(message: &'static str) -> Result<()> {
 
 fn default_artifact_format() -> String {
     COMPACT_L2_FIXED_BINARY_ARTIFACT_FORMAT_V1.to_owned()
+}
+
+fn is_supported_artifact_format(value: &str) -> bool {
+    matches!(
+        value,
+        COMPACT_L2_FIXED_BINARY_ARTIFACT_FORMAT_V1 | COMPACT_L2_PHYSICAL_V2_ARTIFACT_FORMAT
+    )
 }
 
 fn deserialize_manifest_schema_version<'de, D>(
