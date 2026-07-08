@@ -8,10 +8,12 @@ library. It does not depend on the private Rust implementation crates and does
 not provide safe high-level TensorFile behavior. With the optional
 `format-ocb` feature enabled, the crate exposes raw appendable OCB C ABI
 constants, `repr(C)` metadata/read/write structs, opaque file handles,
-init/free helpers, manifest build/validate carriers, and
-open/create/append/read/dictionary/cleanup/manifest declarations. Generic write
-report/timing carriers are scalar initialized outputs and do not require a free
-helper; callers must still uphold the C header ownership and lifetime contract.
+init/free helpers, manifest build/validate carriers, compact-L2 physical-v2
+artifact certification carriers, and
+open/create/append/read/dictionary/cleanup/manifest/certification declarations.
+Generic write report/timing carriers are scalar initialized outputs and do not
+require a free helper; callers must still uphold the C header ownership and
+lifetime contract.
 The raw sys surface
 also includes the copy-only `arcadia_tio_tensor_*` structural tensor operations
 and the float-only elementwise tensor operations over borrowed

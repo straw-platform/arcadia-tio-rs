@@ -17148,6 +17148,80 @@ pub mod ocb {
         pub timings: WritePhaseTimings,
     }
 
+    /// Options for certifying one local compact-L2 physical-v2 OCB artifact.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CompactL2PhysicalV2ArtifactCertificationOptions {
+        /// Optional expected total row count.
+        pub expected_row_count: Option<u64>,
+        /// Optional expected trading day encoded in the artifact rows.
+        pub expected_trading_day: Option<u32>,
+        /// Optional expected channel id encoded in the artifact rows.
+        pub expected_channel_id: Option<u32>,
+        /// Optional expected first BizIndex.
+        pub expected_first_biz_index: Option<u64>,
+        /// Optional expected last BizIndex.
+        pub expected_last_biz_index: Option<u64>,
+        /// Validate row-level scalar values and gap-free BizIndex continuity.
+        pub verify_scalar_continuity: bool,
+        /// Reconstruct legacy 168-byte payloads while scanning rows.
+        pub verify_legacy_reconstruction: bool,
+        /// Optional expected FNV-1a64 hash over reconstructed legacy payload bytes.
+        pub expected_legacy_payload_hash_fnv1a64: Option<String>,
+        /// Optional aggregate row cap.
+        pub max_rows: Option<u64>,
+        /// Requested OCB read threads.
+        pub read_threads: usize,
+        /// Maximum row groups read at once.
+        pub max_in_flight_row_groups: usize,
+    }
+
+    impl CompactL2PhysicalV2ArtifactCertificationOptions {
+        /// Defaults matching the native physical-v2 artifact certifier.
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl Default for CompactL2PhysicalV2ArtifactCertificationOptions {
+        fn default() -> Self {
+            Self {
+                expected_row_count: None,
+                expected_trading_day: None,
+                expected_channel_id: None,
+                expected_first_biz_index: None,
+                expected_last_biz_index: None,
+                verify_scalar_continuity: true,
+                verify_legacy_reconstruction: false,
+                expected_legacy_payload_hash_fnv1a64: None,
+                max_rows: None,
+                read_threads: 1,
+                max_in_flight_row_groups: 1,
+            }
+        }
+    }
+
+    /// Path-redacted report for one compact-L2 physical-v2 artifact certification.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CompactL2PhysicalV2ArtifactCertificationReport {
+        pub row_count: u64,
+        pub row_group_count: u32,
+        pub required_column_count: usize,
+        pub selected_column_chunk_count: u64,
+        pub selected_compressed_bytes: u64,
+        pub selected_uncompressed_bytes: u64,
+        pub first_biz_index: Option<u64>,
+        pub last_biz_index: Option<u64>,
+        pub min_receive_nano: Option<i64>,
+        pub max_receive_nano: Option<i64>,
+        pub order_record_count: Option<u64>,
+        pub trade_record_count: Option<u64>,
+        pub legacy_payload_hash_fnv1a64: Option<String>,
+        pub legacy_payload_hash_verified: bool,
+        pub certified: bool,
+        pub path_redacted: bool,
+        pub writes_transformed_artifacts: bool,
+    }
+
     /// Primitive physical type supported by OCB columns.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PhysicalType {
@@ -18707,6 +18781,44 @@ pub mod ocb {
         write_path_report(path, spec, false, options)
     }
 
+    /// Certify one local compact-L2 physical-v2 OCB artifact.
+    ///
+    /// This is a read-only control-plane check. It does not expose hot typed
+    /// reads, manifest expansion, remote fetch, or performance claims.
+    pub fn certify_compact_l2_physical_v2_artifact(
+        path: impl AsRef<Path>,
+        options: CompactL2PhysicalV2ArtifactCertificationOptions,
+    ) -> OcbResult<CompactL2PhysicalV2ArtifactCertificationReport> {
+        let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
+        let expected_hash = options
+            .expected_legacy_payload_hash_fnv1a64
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| OcbError::invalid_input("expected legacy payload hash contains NUL"))?;
+        let raw_options = raw_compact_l2_physical_v2_artifact_certification_options(
+            &options,
+            expected_hash
+                .as_ref()
+                .map_or(ptr::null(), |hash| hash.as_ptr()),
+        );
+        let mut raw_report = empty_compact_l2_physical_v2_artifact_certification_report();
+        let status = unsafe {
+            sys::arcadia_tio_ocb_certify_compact_l2_physical_v2_artifact(
+                path.as_ptr(),
+                &raw_options,
+                &mut raw_report,
+            )
+        };
+        let guard = CompactL2PhysicalV2ArtifactCertificationReportGuard(raw_report);
+        if status != sys::ARCADIA_TIO_ERROR_OK {
+            return Err(OcbError::last(
+                "OCB compact-L2 physical-v2 artifact certification failed",
+            ));
+        }
+        unsafe { compact_l2_physical_v2_artifact_certification_report_from_raw(&guard.0) }
+    }
+
     /// Truncate orphan tail bytes after the latest valid appendable OCB root.
     pub fn cleanup_orphan_tail(path: impl AsRef<Path>) -> OcbResult<CleanupResult> {
         let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
@@ -19813,6 +19925,59 @@ pub mod ocb {
         raw
     }
 
+    fn raw_compact_l2_physical_v2_artifact_certification_options(
+        options: &CompactL2PhysicalV2ArtifactCertificationOptions,
+        expected_legacy_payload_hash_fnv1a64: *const c_char,
+    ) -> sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationOptions {
+        let mut raw = sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationOptions {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<
+                sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationOptions,
+            >(),
+            has_expected_row_count: u8::from(options.expected_row_count.is_some()),
+            has_expected_trading_day: u8::from(options.expected_trading_day.is_some()),
+            has_expected_channel_id: u8::from(options.expected_channel_id.is_some()),
+            has_expected_first_biz_index: u8::from(options.expected_first_biz_index.is_some()),
+            has_expected_last_biz_index: u8::from(options.expected_last_biz_index.is_some()),
+            verify_scalar_continuity: u8::from(options.verify_scalar_continuity),
+            verify_legacy_reconstruction: u8::from(options.verify_legacy_reconstruction),
+            has_max_rows: u8::from(options.max_rows.is_some()),
+            expected_row_count: options.expected_row_count.unwrap_or(0),
+            expected_trading_day: options.expected_trading_day.unwrap_or(0),
+            expected_channel_id: options.expected_channel_id.unwrap_or(0),
+            expected_first_biz_index: options.expected_first_biz_index.unwrap_or(0),
+            expected_last_biz_index: options.expected_last_biz_index.unwrap_or(0),
+            max_rows: options.max_rows.unwrap_or(0),
+            read_threads: options.read_threads,
+            max_in_flight_row_groups: options.max_in_flight_row_groups,
+            expected_legacy_payload_hash_fnv1a64,
+            reserved: [0; 4],
+        };
+        unsafe {
+            sys::arcadia_tio_ocb_compact_l2_physical_v2_artifact_certification_options_init(
+                &mut raw,
+            )
+        };
+        raw.has_expected_row_count = u8::from(options.expected_row_count.is_some());
+        raw.has_expected_trading_day = u8::from(options.expected_trading_day.is_some());
+        raw.has_expected_channel_id = u8::from(options.expected_channel_id.is_some());
+        raw.has_expected_first_biz_index = u8::from(options.expected_first_biz_index.is_some());
+        raw.has_expected_last_biz_index = u8::from(options.expected_last_biz_index.is_some());
+        raw.verify_scalar_continuity = u8::from(options.verify_scalar_continuity);
+        raw.verify_legacy_reconstruction = u8::from(options.verify_legacy_reconstruction);
+        raw.has_max_rows = u8::from(options.max_rows.is_some());
+        raw.expected_row_count = options.expected_row_count.unwrap_or(0);
+        raw.expected_trading_day = options.expected_trading_day.unwrap_or(0);
+        raw.expected_channel_id = options.expected_channel_id.unwrap_or(0);
+        raw.expected_first_biz_index = options.expected_first_biz_index.unwrap_or(0);
+        raw.expected_last_biz_index = options.expected_last_biz_index.unwrap_or(0);
+        raw.max_rows = options.max_rows.unwrap_or(0);
+        raw.read_threads = options.read_threads;
+        raw.max_in_flight_row_groups = options.max_in_flight_row_groups;
+        raw.expected_legacy_payload_hash_fnv1a64 = expected_legacy_payload_hash_fnv1a64;
+        raw
+    }
+
     fn empty_metadata() -> sys::ArcadiaTioOcbMetadata {
         sys::ArcadiaTioOcbMetadata {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -19897,6 +20062,45 @@ pub mod ocb {
             reserved: [0; 4],
         };
         unsafe { sys::arcadia_tio_ocb_write_report_init(&mut raw) };
+        raw
+    }
+
+    fn empty_compact_l2_physical_v2_artifact_certification_report()
+    -> sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport {
+        let mut raw = sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<
+                sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport,
+            >(),
+            row_count: 0,
+            row_group_count: 0,
+            required_column_count: 0,
+            selected_column_chunk_count: 0,
+            selected_compressed_bytes: 0,
+            selected_uncompressed_bytes: 0,
+            first_biz_index: 0,
+            last_biz_index: 0,
+            min_receive_nano: 0,
+            max_receive_nano: 0,
+            order_record_count: 0,
+            trade_record_count: 0,
+            legacy_payload_hash_fnv1a64: ptr::null_mut(),
+            has_first_biz_index: 0,
+            has_last_biz_index: 0,
+            has_min_receive_nano: 0,
+            has_max_receive_nano: 0,
+            has_order_record_count: 0,
+            has_trade_record_count: 0,
+            has_legacy_payload_hash_fnv1a64: 0,
+            legacy_payload_hash_verified: 0,
+            certified: 0,
+            path_redacted: 1,
+            writes_transformed_artifacts: 0,
+            reserved: [0; 4],
+        };
+        unsafe {
+            sys::arcadia_tio_ocb_compact_l2_physical_v2_artifact_certification_report_init(&mut raw)
+        };
         raw
     }
 
@@ -20161,6 +20365,19 @@ pub mod ocb {
     impl Drop for SnapshotExportReportGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_snapshot_export_report_free(&mut self.0) };
+        }
+    }
+
+    struct CompactL2PhysicalV2ArtifactCertificationReportGuard(
+        sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport,
+    );
+    impl Drop for CompactL2PhysicalV2ArtifactCertificationReportGuard {
+        fn drop(&mut self) {
+            unsafe {
+                sys::arcadia_tio_ocb_compact_l2_physical_v2_artifact_certification_report_free(
+                    &mut self.0,
+                )
+            };
         }
     }
 
@@ -20449,6 +20666,32 @@ pub mod ocb {
                 parent_sync_ns: raw.timings.parent_sync_ns,
             },
         }
+    }
+
+    unsafe fn compact_l2_physical_v2_artifact_certification_report_from_raw(
+        raw: &sys::ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport,
+    ) -> OcbResult<CompactL2PhysicalV2ArtifactCertificationReport> {
+        Ok(CompactL2PhysicalV2ArtifactCertificationReport {
+            row_count: raw.row_count,
+            row_group_count: raw.row_group_count,
+            required_column_count: raw.required_column_count,
+            selected_column_chunk_count: raw.selected_column_chunk_count,
+            selected_compressed_bytes: raw.selected_compressed_bytes,
+            selected_uncompressed_bytes: raw.selected_uncompressed_bytes,
+            first_biz_index: (raw.has_first_biz_index != 0).then_some(raw.first_biz_index),
+            last_biz_index: (raw.has_last_biz_index != 0).then_some(raw.last_biz_index),
+            min_receive_nano: (raw.has_min_receive_nano != 0).then_some(raw.min_receive_nano),
+            max_receive_nano: (raw.has_max_receive_nano != 0).then_some(raw.max_receive_nano),
+            order_record_count: (raw.has_order_record_count != 0).then_some(raw.order_record_count),
+            trade_record_count: (raw.has_trade_record_count != 0).then_some(raw.trade_record_count),
+            legacy_payload_hash_fnv1a64: (raw.has_legacy_payload_hash_fnv1a64 != 0
+                && !raw.legacy_payload_hash_fnv1a64.is_null())
+            .then(|| raw_string(raw.legacy_payload_hash_fnv1a64.cast())),
+            legacy_payload_hash_verified: raw.legacy_payload_hash_verified != 0,
+            certified: raw.certified != 0,
+            path_redacted: raw.path_redacted != 0,
+            writes_transformed_artifacts: raw.writes_transformed_artifacts != 0,
+        })
     }
 
     unsafe fn row_group_summaries_from_raw(

@@ -88,8 +88,12 @@ root, while `ocb::copy_selected_snapshot` copies the latest selected snapshot to
 a fresh destination and returns byte, generation, row-count, and fingerprint
 provenance. `ocb::build_manifest_from_files_with_options` returns an owned
 selected-snapshot manifest, and `ocb::validate_manifest_files_with_options`
-returns an owned compatibility report. `ocb::maintenance_analyze` returns a
-read-only owned health/cleanup-recommendation report, and
+returns an owned compatibility report.
+`ocb::certify_compact_l2_physical_v2_artifact` validates one local
+compact-L2 physical-v2 artifact with optional expected row/day/channel/BizIndex
+and legacy hash bounds, returning a path-redacted owned report for
+control-plane certification only. `ocb::maintenance_analyze` returns a read-only
+owned health/cleanup-recommendation report, and
 `ocb::cleanup_orphan_tail_report` performs explicit orphan-tail cleanup while
 returning before/after byte counts and structured issues. `OcbError` preserves the
 ordinary C ABI error code plus OCB `ErrorKind` and optional `FailureCause` for

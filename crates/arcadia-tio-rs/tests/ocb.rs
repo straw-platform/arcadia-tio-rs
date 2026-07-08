@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arcadia_tio_rs::ocb::{
-    self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec, CompatibilityStatus,
-    DecodedDictionaryValues, DictionaryValueKind, HealthStatus, LogicalKind, ManifestBuildOptions,
-    NullOrder, OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
+    self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec,
+    CompactL2PhysicalV2ArtifactCertificationOptions, CompatibilityStatus, DecodedDictionaryValues,
+    DictionaryValueKind, HealthStatus, LogicalKind, ManifestBuildOptions, NullOrder,
+    OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
     PhysicalType, PredicateValue, PrimitiveValues, Projection, ReadRequest, RowGroupPredicate,
     WriteColumn, WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup,
     WriteSpec,
@@ -622,6 +623,55 @@ fn ocb_safe_wrapper_fixed_binary_roundtrip_and_fill() {
 }
 
 #[test]
+fn ocb_safe_wrapper_certifies_compact_l2_physical_v2_artifact() {
+    let path = unique_path("ocb-safe-wrapper-physical-v2-artifact.ocb");
+    let _ = fs::remove_file(&path);
+
+    ocb::create(&path, &compact_l2_physical_v2_spec(7, &[1, 2]))
+        .expect("create physical-v2 artifact");
+
+    let report = ocb::certify_compact_l2_physical_v2_artifact(
+        &path,
+        CompactL2PhysicalV2ArtifactCertificationOptions {
+            expected_row_count: Some(2),
+            expected_trading_day: Some(20260702),
+            expected_channel_id: Some(7),
+            expected_first_biz_index: Some(1),
+            expected_last_biz_index: Some(2),
+            ..CompactL2PhysicalV2ArtifactCertificationOptions::default()
+        },
+    )
+    .expect("certify physical-v2 artifact");
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.row_group_count, 1);
+    assert_eq!(report.required_column_count, 20);
+    assert!(report.selected_column_chunk_count > 0);
+    assert!(report.selected_compressed_bytes > 0);
+    assert!(report.selected_uncompressed_bytes > 0);
+    assert_eq!(report.first_biz_index, Some(1));
+    assert_eq!(report.last_biz_index, Some(2));
+    assert_eq!(report.min_receive_nano, Some(1001));
+    assert_eq!(report.max_receive_nano, Some(1002));
+    assert_eq!(report.order_record_count, Some(2));
+    assert_eq!(report.trade_record_count, Some(0));
+    assert!(report.certified);
+    assert!(report.path_redacted);
+    assert!(!report.writes_transformed_artifacts);
+
+    let err = ocb::certify_compact_l2_physical_v2_artifact(
+        &path,
+        CompactL2PhysicalV2ArtifactCertificationOptions {
+            expected_channel_id: Some(8),
+            ..CompactL2PhysicalV2ArtifactCertificationOptions::default()
+        },
+    )
+    .expect_err("channel mismatch rejects");
+    assert!(err.message().contains("ChannelID mismatch"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn ocb_safe_wrapper_rejects_invalid_fixed_binary_writes_before_ffi() {
     let path = unique_path("ocb-safe-wrapper-bad-fixed-binary.ocb");
     let _ = fs::remove_file(&path);
@@ -645,6 +695,185 @@ fn ocb_safe_wrapper_rejects_invalid_fixed_binary_writes_before_ffi() {
     assert!(err.message().contains("not divisible by width"));
 
     assert!(!path.exists());
+}
+
+fn compact_l2_physical_v2_spec(channel_id: i64, biz_indexes: &[i64]) -> WriteSpec {
+    let row_count = biz_indexes.len();
+    let zero_words = vec![0; row_count];
+
+    WriteSpec {
+        columns: vec![
+            physical_v2_column("day_key", PhysicalType::I32),
+            physical_v2_column("channel_id", PhysicalType::I64),
+            physical_v2_column("biz_index", PhysicalType::I64),
+            physical_v2_column("receive_nano", PhysicalType::I64),
+            physical_v2_column("source_ordinal", PhysicalType::I64),
+            physical_v2_column("record_kind", PhysicalType::I32),
+            physical_v2_column(
+                "payload_header_bytes_11_12",
+                PhysicalType::FixedBinary { width: 2 },
+            ),
+            physical_v2_column("payload_exchange_time", PhysicalType::I64),
+            physical_v2_column("payload_symbol", PhysicalType::FixedBinary { width: 9 }),
+            physical_v2_column(
+                "payload_body_bytes_80_86",
+                PhysicalType::FixedBinary { width: 7 },
+            ),
+            physical_v2_column("payload_body_word_88", PhysicalType::I64),
+            physical_v2_column("payload_body_word_96", PhysicalType::I64),
+            physical_v2_column("payload_body_word_104", PhysicalType::I64),
+            physical_v2_column("payload_body_word_112", PhysicalType::I64),
+            physical_v2_column("payload_body_word_120", PhysicalType::I64),
+            physical_v2_column("payload_body_word_128", PhysicalType::I64),
+            physical_v2_column("payload_body_word_136", PhysicalType::I64),
+            physical_v2_column("payload_body_word_144", PhysicalType::I64),
+            physical_v2_column("payload_body_word_152", PhysicalType::I64),
+            physical_v2_column("payload_body_word_160", PhysicalType::I64),
+        ],
+        dictionaries: Vec::new(),
+        row_groups: vec![WriteRowGroup {
+            columns: vec![
+                WriteColumnChunk {
+                    column_id: 0,
+                    values: PrimitiveValues::I32(vec![20260702; row_count]),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 1,
+                    values: PrimitiveValues::I64(vec![channel_id; row_count]),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 2,
+                    values: PrimitiveValues::I64(biz_indexes.to_vec()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 3,
+                    values: PrimitiveValues::I64(
+                        biz_indexes.iter().map(|value| value + 1000).collect(),
+                    ),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 4,
+                    values: PrimitiveValues::I64(biz_indexes.to_vec()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 5,
+                    values: PrimitiveValues::I32(vec![1; row_count]),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 6,
+                    values: PrimitiveValues::FixedBinary {
+                        width: 2,
+                        bytes: biz_indexes.iter().flat_map(|_| [3, 0]).collect(),
+                    },
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 7,
+                    values: PrimitiveValues::I64(
+                        biz_indexes.iter().map(|value| value + 2000).collect(),
+                    ),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 8,
+                    values: PrimitiveValues::FixedBinary {
+                        width: 9,
+                        bytes: vec![0; row_count * 9],
+                    },
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 9,
+                    values: PrimitiveValues::FixedBinary {
+                        width: 7,
+                        bytes: vec![0; row_count * 7],
+                    },
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 10,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 11,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 12,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 13,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 14,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 15,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 16,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 17,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 18,
+                    values: PrimitiveValues::I64(zero_words.clone()),
+                    validity: None,
+                },
+                WriteColumnChunk {
+                    column_id: 19,
+                    values: PrimitiveValues::I64(zero_words),
+                    validity: None,
+                },
+            ],
+        }],
+        ordering_keys: vec![
+            physical_v2_ordering_key(0),
+            physical_v2_ordering_key(1),
+            physical_v2_ordering_key(2),
+            physical_v2_ordering_key(4),
+        ],
+    }
+}
+
+fn physical_v2_column(name: &str, physical_type: PhysicalType) -> WriteColumn {
+    WriteColumn {
+        name: name.to_string(),
+        physical_type,
+        logical_kind: LogicalKind::Plain,
+        dictionary_id: None,
+        scale: 0,
+        nullable: false,
+    }
+}
+
+fn physical_v2_ordering_key(column_id: u32) -> WriteOrderingKey {
+    WriteOrderingKey {
+        column_id,
+        direction: OrderingDirection::Ascending,
+        null_order: NullOrder::NoNulls,
+    }
 }
 
 fn fixed_binary_spec(keys: &[i64], payload: Vec<u8>) -> WriteSpec {

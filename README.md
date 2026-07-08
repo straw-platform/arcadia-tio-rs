@@ -157,10 +157,12 @@ explicit dtype/shape/order metadata; they are not native `.tio` storage formats
 or file-to-file native conversion shortcuts. `format-ocb` exposes
 `arcadia_tio_rs::ocb` safe wrappers and matching raw sys declarations for OCB
 create/append/open/metadata/dictionary/summary/read/cleanup, selected-snapshot
-export-copy, and manifest build/validate. OCB read requests can be built from
-generic ordering-key ranges for row-group pruning. OCB read results, manifests,
-and validation reports own copied Rust values, dictionary-coded columns return
-primitive codes, and decoded dictionaries are explicit via `dictionary_values`.
+export-copy, manifest build/validate, and compact-L2 physical-v2 artifact
+certification. OCB read requests can be built from generic ordering-key ranges
+for row-group pruning. OCB read results, manifests, validation reports, and
+artifact certification reports own copied Rust values, dictionary-coded columns
+return primitive codes, and decoded dictionaries are explicit via
+`dictionary_values`.
 OCB fixed-binary payload columns are available as `PhysicalType::FixedBinary { width }` and
 `PrimitiveValues::FixedBinary { width, bytes }`, with `bytes.len() == rows *
 width`; predicates and ordering remain scalar-column responsibilities in this
