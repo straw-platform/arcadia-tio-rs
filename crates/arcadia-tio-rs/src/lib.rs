@@ -17103,6 +17103,51 @@ pub mod ocb {
         }
     }
 
+    /// Diagnostic phase timings for one OCB create/append operation.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct WritePhaseTimings {
+        pub to_internal_ns: u64,
+        pub validate_spec_ns: u64,
+        pub validate_dictionary_codes_ns: u64,
+        pub validate_ordering_ns: u64,
+        pub append_base_read_ns: u64,
+        pub append_base_validate_ns: u64,
+        pub row_group_encode_ns: u64,
+        pub row_group_merge_ns: u64,
+        pub metadata_encode_ns: u64,
+        pub file_write_ns: u64,
+        pub sync_data_ns: u64,
+        pub commit_validate_ns: u64,
+        pub slot_publish_ns: u64,
+        pub sync_all_ns: u64,
+        pub rename_ns: u64,
+        pub parent_sync_ns: u64,
+    }
+
+    /// Diagnostic counters for one OCB create/append operation.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct WriteReport {
+        pub requested_write_threads: usize,
+        pub effective_write_threads: usize,
+        pub row_count: u64,
+        pub row_group_count: u32,
+        pub column_count: u32,
+        pub dictionary_count: u32,
+        pub dictionary_coded_column_count: u32,
+        pub column_chunk_count: u32,
+        pub stat_count: u32,
+        pub payload_bytes: u64,
+        pub validity_bytes: u64,
+        pub row_group_object_bytes: u64,
+        pub file_bytes: u64,
+        pub tail_bytes: u64,
+        pub root_generation: u64,
+        pub previous_root_generation: u64,
+        pub parallel_batches: usize,
+        pub worker_count: usize,
+        pub timings: WritePhaseTimings,
+    }
+
     /// Primitive physical type supported by OCB columns.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum PhysicalType {
@@ -18630,6 +18675,15 @@ pub mod ocb {
         write_path(path, spec, true, Some(options))
     }
 
+    /// Create an appendable OCB file and return diagnostic counters.
+    pub fn create_with_report(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        options: WriteOptions,
+    ) -> OcbResult<WriteReport> {
+        write_path_report(path, spec, true, options)
+    }
+
     /// Append one sorted suffix commit to an existing appendable OCB file.
     pub fn append(path: impl AsRef<Path>, spec: &WriteSpec) -> OcbResult<()> {
         write_path(path, spec, false, None)
@@ -18642,6 +18696,15 @@ pub mod ocb {
         options: WriteOptions,
     ) -> OcbResult<()> {
         write_path(path, spec, false, Some(options))
+    }
+
+    /// Append one sorted suffix commit and return diagnostic counters.
+    pub fn append_with_report(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        options: WriteOptions,
+    ) -> OcbResult<WriteReport> {
+        write_path_report(path, spec, false, options)
     }
 
     /// Truncate orphan tail bytes after the latest valid appendable OCB root.
@@ -18836,6 +18899,46 @@ pub mod ocb {
                 "OCB create failed"
             } else {
                 "OCB append failed"
+            }))
+        }
+    }
+
+    fn write_path_report(
+        path: impl AsRef<Path>,
+        spec: &WriteSpec,
+        create_file: bool,
+        options: WriteOptions,
+    ) -> OcbResult<WriteReport> {
+        let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
+        let raw = RawWriteSpec::new(spec)?;
+        let raw_options = options.to_raw();
+        let mut raw_report = empty_write_report();
+        let status = if create_file {
+            unsafe {
+                sys::arcadia_tio_ocb_create_with_options_and_report(
+                    path.as_ptr(),
+                    &raw.raw,
+                    &raw_options,
+                    &mut raw_report,
+                )
+            }
+        } else {
+            unsafe {
+                sys::arcadia_tio_ocb_append_with_options_and_report(
+                    path.as_ptr(),
+                    &raw.raw,
+                    &raw_options,
+                    &mut raw_report,
+                )
+            }
+        };
+        if status == sys::ARCADIA_TIO_ERROR_OK {
+            Ok(write_report_from_raw(&raw_report))
+        } else {
+            Err(OcbError::last(if create_file {
+                "OCB create_with_report failed"
+            } else {
+                "OCB append_with_report failed"
             }))
         }
     }
@@ -19748,6 +19851,55 @@ pub mod ocb {
         }
     }
 
+    fn empty_write_report() -> sys::ArcadiaTioOcbWriteReport {
+        let mut raw = sys::ArcadiaTioOcbWriteReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbWriteReport>(),
+            requested_write_threads: 0,
+            effective_write_threads: 0,
+            row_count: 0,
+            row_group_count: 0,
+            column_count: 0,
+            dictionary_count: 0,
+            dictionary_coded_column_count: 0,
+            column_chunk_count: 0,
+            stat_count: 0,
+            payload_bytes: 0,
+            validity_bytes: 0,
+            row_group_object_bytes: 0,
+            file_bytes: 0,
+            tail_bytes: 0,
+            root_generation: 0,
+            previous_root_generation: 0,
+            parallel_batches: 0,
+            worker_count: 0,
+            timings: sys::ArcadiaTioOcbWritePhaseTimings {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbWritePhaseTimings>(),
+                to_internal_ns: 0,
+                validate_spec_ns: 0,
+                validate_dictionary_codes_ns: 0,
+                validate_ordering_ns: 0,
+                append_base_read_ns: 0,
+                append_base_validate_ns: 0,
+                row_group_encode_ns: 0,
+                row_group_merge_ns: 0,
+                metadata_encode_ns: 0,
+                file_write_ns: 0,
+                sync_data_ns: 0,
+                commit_validate_ns: 0,
+                slot_publish_ns: 0,
+                sync_all_ns: 0,
+                rename_ns: 0,
+                parent_sync_ns: 0,
+                reserved: [0; 4],
+            },
+            reserved: [0; 4],
+        };
+        unsafe { sys::arcadia_tio_ocb_write_report_init(&mut raw) };
+        raw
+    }
+
     fn empty_maintenance_report() -> sys::ArcadiaTioOcbMaintenanceReport {
         sys::ArcadiaTioOcbMaintenanceReport {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -20256,6 +20408,47 @@ pub mod ocb {
             name: raw_string(raw.name.cast()),
             values,
         })
+    }
+
+    fn write_report_from_raw(raw: &sys::ArcadiaTioOcbWriteReport) -> WriteReport {
+        WriteReport {
+            requested_write_threads: raw.requested_write_threads,
+            effective_write_threads: raw.effective_write_threads,
+            row_count: raw.row_count,
+            row_group_count: raw.row_group_count,
+            column_count: raw.column_count,
+            dictionary_count: raw.dictionary_count,
+            dictionary_coded_column_count: raw.dictionary_coded_column_count,
+            column_chunk_count: raw.column_chunk_count,
+            stat_count: raw.stat_count,
+            payload_bytes: raw.payload_bytes,
+            validity_bytes: raw.validity_bytes,
+            row_group_object_bytes: raw.row_group_object_bytes,
+            file_bytes: raw.file_bytes,
+            tail_bytes: raw.tail_bytes,
+            root_generation: raw.root_generation,
+            previous_root_generation: raw.previous_root_generation,
+            parallel_batches: raw.parallel_batches,
+            worker_count: raw.worker_count,
+            timings: WritePhaseTimings {
+                to_internal_ns: raw.timings.to_internal_ns,
+                validate_spec_ns: raw.timings.validate_spec_ns,
+                validate_dictionary_codes_ns: raw.timings.validate_dictionary_codes_ns,
+                validate_ordering_ns: raw.timings.validate_ordering_ns,
+                append_base_read_ns: raw.timings.append_base_read_ns,
+                append_base_validate_ns: raw.timings.append_base_validate_ns,
+                row_group_encode_ns: raw.timings.row_group_encode_ns,
+                row_group_merge_ns: raw.timings.row_group_merge_ns,
+                metadata_encode_ns: raw.timings.metadata_encode_ns,
+                file_write_ns: raw.timings.file_write_ns,
+                sync_data_ns: raw.timings.sync_data_ns,
+                commit_validate_ns: raw.timings.commit_validate_ns,
+                slot_publish_ns: raw.timings.slot_publish_ns,
+                sync_all_ns: raw.timings.sync_all_ns,
+                rename_ns: raw.timings.rename_ns,
+                parent_sync_ns: raw.timings.parent_sync_ns,
+            },
+        }
     }
 
     unsafe fn row_group_summaries_from_raw(

@@ -916,6 +916,63 @@ pub struct ArcadiaTioOcbWriteOptions {
     pub reserved: [u64; 4],
 }
 
+/// OCB write phase timings in nanoseconds.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWritePhaseTimings {
+    pub version: u32,
+    pub struct_size: usize,
+    pub to_internal_ns: u64,
+    pub validate_spec_ns: u64,
+    pub validate_dictionary_codes_ns: u64,
+    pub validate_ordering_ns: u64,
+    pub append_base_read_ns: u64,
+    pub append_base_validate_ns: u64,
+    pub row_group_encode_ns: u64,
+    pub row_group_merge_ns: u64,
+    pub metadata_encode_ns: u64,
+    pub file_write_ns: u64,
+    pub sync_data_ns: u64,
+    pub commit_validate_ns: u64,
+    pub slot_publish_ns: u64,
+    pub sync_all_ns: u64,
+    pub rename_ns: u64,
+    pub parent_sync_ns: u64,
+    pub reserved: [u64; 4],
+}
+
+/// OCB write diagnostic counters and phase timings.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWriteReport {
+    pub version: u32,
+    pub struct_size: usize,
+    pub requested_write_threads: usize,
+    pub effective_write_threads: usize,
+    pub row_count: u64,
+    pub row_group_count: u32,
+    pub column_count: u32,
+    pub dictionary_count: u32,
+    pub dictionary_coded_column_count: u32,
+    pub column_chunk_count: u32,
+    pub stat_count: u32,
+    pub payload_bytes: u64,
+    pub validity_bytes: u64,
+    pub row_group_object_bytes: u64,
+    pub file_bytes: u64,
+    pub tail_bytes: u64,
+    pub root_generation: u64,
+    pub previous_root_generation: u64,
+    pub parallel_batches: usize,
+    pub worker_count: usize,
+    pub timings: ArcadiaTioOcbWritePhaseTimings,
+    pub reserved: [u64; 4],
+}
+
 /// OCB cleanup result.
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -4016,6 +4073,9 @@ unsafe extern "C" {
     /// Initializes OCB write options.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_write_options_init(options: *mut ArcadiaTioOcbWriteOptions);
+    /// Initializes an OCB write report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_write_report_init(report: *mut ArcadiaTioOcbWriteReport);
     /// Initializes an OCB row-group summary output container.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_row_group_summaries_init(summaries: *mut ArcadiaTioOcbRowGroupSummaries);
@@ -4124,6 +4184,14 @@ unsafe extern "C" {
         spec: *const ArcadiaTioOcbWriteSpec,
         options: *const ArcadiaTioOcbWriteOptions,
     ) -> ArcadiaTioErrorCode;
+    /// Creates an appendable OCB file and returns diagnostic counters.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_create_with_options_and_report(
+        path: *const c_char,
+        spec: *const ArcadiaTioOcbWriteSpec,
+        options: *const ArcadiaTioOcbWriteOptions,
+        out_report: *mut ArcadiaTioOcbWriteReport,
+    ) -> ArcadiaTioErrorCode;
     /// Appends one sorted suffix commit to an existing appendable OCB file.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_append(
@@ -4136,6 +4204,14 @@ unsafe extern "C" {
         path: *const c_char,
         spec: *const ArcadiaTioOcbWriteSpec,
         options: *const ArcadiaTioOcbWriteOptions,
+    ) -> ArcadiaTioErrorCode;
+    /// Appends to an OCB file and returns diagnostic counters.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_append_with_options_and_report(
+        path: *const c_char,
+        spec: *const ArcadiaTioOcbWriteSpec,
+        options: *const ArcadiaTioOcbWriteOptions,
+        out_report: *mut ArcadiaTioOcbWriteReport,
     ) -> ArcadiaTioErrorCode;
     /// Truncates orphan tail bytes after the latest valid OCB root.
     #[cfg(feature = "format-ocb")]

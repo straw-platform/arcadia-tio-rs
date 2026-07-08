@@ -54,6 +54,8 @@ The non-default `format-ocb` feature exposes the appendable OCB (Ordered Column
 Bundle) API in `arcadia_tio_rs::ocb`. Use `ocb::create` with a `WriteSpec` to
 publish the first root, `ocb::create_with_options` / `ocb::append_with_options`
 to select bounded writer threads and `none`/`zstd` chunk compression explicitly,
+`ocb::create_with_report` / `ocb::append_with_report` to copy generic scalar
+write diagnostics for one create/append operation,
 `ocb::append` to add sorted suffix commits that repeat the frozen
 schema/dictionary/order declarations, `ColumnBundleFile::open` to bind a handle
 to one committed snapshot, `open_with_options` when explicit full-payload

@@ -9,8 +9,10 @@ not provide safe high-level TensorFile behavior. With the optional
 `format-ocb` feature enabled, the crate exposes raw appendable OCB C ABI
 constants, `repr(C)` metadata/read/write structs, opaque file handles,
 init/free helpers, manifest build/validate carriers, and
-open/create/append/read/dictionary/cleanup/manifest declarations; callers must
-still uphold the C header ownership and lifetime contract. The raw sys surface
+open/create/append/read/dictionary/cleanup/manifest declarations. Generic write
+report/timing carriers are scalar initialized outputs and do not require a free
+helper; callers must still uphold the C header ownership and lifetime contract.
+The raw sys surface
 also includes the copy-only `arcadia_tio_tensor_*` structural tensor operations
 and the float-only elementwise tensor operations over borrowed
 `ArcadiaTioTensor` inputs and native-owned tensor outputs freed with

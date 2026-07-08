@@ -28,12 +28,23 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     let _ = fs::remove_file(&manifest_copy_path);
     let _ = fs::remove_file(&manifest_path);
 
-    ocb::create_with_options(
+    let create_report = ocb::create_with_report(
         &path,
         &write_spec(&[10, 11], &[0, 1], &[1.5, 2.5]),
         WriteOptions::zstd(3).with_write_threads(2),
     )
     .expect("create OCB");
+    assert_eq!(create_report.requested_write_threads, 2);
+    assert!(create_report.effective_write_threads >= 1);
+    assert_eq!(create_report.row_count, 2);
+    assert_eq!(create_report.row_group_count, 1);
+    assert_eq!(create_report.column_count, 3);
+    assert_eq!(create_report.column_chunk_count, 3);
+    assert!(create_report.payload_bytes > 0);
+    assert!(create_report.row_group_object_bytes > 0);
+    assert!(create_report.file_bytes > 0);
+    assert_eq!(create_report.root_generation, 1);
+    assert_eq!(create_report.previous_root_generation, 0);
     let create_snapshot = ColumnBundleFile::open(&path).expect("open create snapshot");
     let create_meta = create_snapshot.metadata().expect("create metadata");
     assert_eq!(create_meta.format_name, "OCB");
@@ -45,12 +56,24 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert_eq!(create_meta.dictionaries.len(), 1);
     assert_eq!(create_meta.ordering_keys.len(), 1);
 
-    ocb::append_with_options(
+    let append_report = ocb::append_with_report(
         &path,
         &write_spec(&[12, 13], &[1, 0], &[3.5, 4.5]),
         WriteOptions::zstd(3).with_write_threads(2),
     )
     .expect("append OCB");
+    assert_eq!(append_report.requested_write_threads, 2);
+    assert!(append_report.effective_write_threads >= 1);
+    assert_eq!(append_report.row_count, 2);
+    assert_eq!(append_report.row_group_count, 1);
+    assert_eq!(append_report.column_count, 3);
+    assert_eq!(append_report.column_chunk_count, 3);
+    assert!(append_report.payload_bytes > 0);
+    assert!(append_report.row_group_object_bytes > 0);
+    assert!(append_report.file_bytes > 0);
+    assert!(append_report.tail_bytes > 0);
+    assert_eq!(append_report.root_generation, 2);
+    assert_eq!(append_report.previous_root_generation, 1);
     assert_eq!(
         create_snapshot
             .metadata()
