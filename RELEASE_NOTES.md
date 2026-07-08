@@ -1,5 +1,38 @@
 # Release notes
 
+## 0.3.2 — compact-L2 physical-v2 cross-language parity
+
+Tag: `0.3.2`
+Commit: see `git rev-parse 0.3.2`
+
+### Scope
+
+This is a source-only release of the public Rust wrapper workspace focused on
+aligning the public Rust source boundary with the OCB certification APIs exposed
+through the private C ABI and other language wrappers:
+
+- Keeps the C-ABI-free `arcadia-tio-ocb-core` physical-v2 reader and
+  certification surface from the 0.3.1 candidate.
+- Aligns workspace and crate package metadata to `0.3.2`.
+- Keeps `arcadia-tio-sys` and `arcadia-tio-rs` version constraints consistent
+  with the workspace source tag.
+
+### Non-goals
+
+This release does not publish crates.io packages, native libraries, signed
+artifacts, package-manager/system installs, benchmark evidence, storage/capacity
+claims, Arcadia LOB replay semantics, or production/default runtime readiness.
+
+### Validation summary
+
+Maintainer validation before tagging should include:
+
+- `cargo fmt --all -- --check`;
+- `cargo metadata --format-version 1 --no-deps`;
+- `cargo check -p arcadia-tio-ocb-core`;
+- native-library-backed wrapper checks when an operator-approved C ABI library
+  is supplied.
+
 ## 0.3.1 — compact-L2 physical-v2 OCB core candidate
 
 Tag: `0.3.1`

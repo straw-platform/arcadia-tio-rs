@@ -39,9 +39,9 @@ surfaces only: they are not benchmark evidence and do not create performance,
 phase-percentage, zero-copy, storage, cache, layout, external-format, or
 release-readiness claims.
 
-## 0.2.0 source-release posture
+## 0.3.2 source-release posture
 
-The 0.2.0 public Rust workspace tag is source-only: it does not publish native
+The 0.3.2 public Rust workspace tag is source-only: it does not publish native
 libraries, package-manager artifacts, signatures, benchmark evidence, or a
 default/production runtime readiness claim. Consumers of this C-ABI-backed crate
 must still supply an operator-approved `arcadia_tio_capi` native library for the

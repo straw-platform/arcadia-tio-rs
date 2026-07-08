@@ -16,9 +16,9 @@ replay, owner assignment, factor/KOB logic, shm-ring transport, production LIVE
 orchestration, native libraries, release artifacts, or performance/storage
 claims.
 
-## 0.3.1 release boundary
+## 0.3.2 release boundary
 
-The 0.3.1 public Rust workspace source boundary adds compact-L2
+The 0.3.2 public Rust workspace source boundary includes compact-L2
 `compact-l2-physical-v2` support as an explicit, additive physical layout
 candidate. It does not replace `compact-fixed-binary-l2-v1` and does not make
 physical-v2 the downstream runtime default.
