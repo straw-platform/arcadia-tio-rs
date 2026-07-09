@@ -29,6 +29,15 @@ native-link build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
+## 0.3.3 maintenance release
+
+The 0.3.3 public Rust workspace tag is a source-only maintenance release after
+the 0.3.2 OCB Rust-core reader boundary. It preserves the public API surface
+while refreshing package metadata, documentation routing, and project-structure
+notes. It does not publish crates.io packages, native libraries, signed
+artifacts, benchmark evidence, storage/capacity/performance claims, or
+production/default runtime readiness.
+
 ## 0.3.2 release boundary
 
 The 0.3.2 public Rust workspace tag is a source release for the OCB Rust-core
@@ -119,11 +128,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the 0.3.2 public source tag:
+Or use the 0.3.3 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.2", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.3", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -133,11 +142,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the 0.3.2 public source tag:
+Or use the 0.3.3 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.2" }
+arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.3" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

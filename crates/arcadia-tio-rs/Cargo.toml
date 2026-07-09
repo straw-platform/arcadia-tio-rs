@@ -1,6 +1,6 @@
 [package]
 name = "arcadia-tio-rs"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
@@ -20,7 +20,7 @@ ndarray = ["dep:ndarray"]
 parquet = ["dep:bytes", "dep:parquet", "parquet/zstd"]
 
 [dependencies]
-arcadia-tio-sys = { path = "../arcadia-tio-sys", version = "0.3.2" }
+arcadia-tio-sys = { path = "../arcadia-tio-sys", version = "0.3.3" }
 arrow-array = { version = "57.2.0", optional = true }
 arrow-ipc = { version = "57.2.0", optional = true }
 arrow-schema = { version = "57.2.0", optional = true }

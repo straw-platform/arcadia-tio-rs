@@ -1,5 +1,36 @@
 # Release notes
 
+## 0.3.3 — documentation and project-structure cleanup
+
+Tag: `0.3.3`
+Commit: see `git rev-parse 0.3.3`
+
+### Scope
+
+This is a source-only maintenance release of the public Rust wrapper workspace
+after the 0.3.2 stable source boundary:
+
+- Aligns workspace and crate package metadata to `0.3.3`.
+- Refreshes public README dependency instructions to use the `0.3.3` source
+  tag.
+- Preserves the 0.3.2 OCB Rust-core reader boundary and C-ABI-backed wrapper
+  API surface with no intentional public API or ABI changes.
+
+### Non-goals
+
+This release does not publish crates.io packages, native libraries, signed
+artifacts, package-manager/system installs, benchmark evidence, storage/capacity
+claims, Arcadia LOB replay semantics, or production/default runtime readiness.
+
+### Validation summary
+
+Maintainer validation before tagging should include:
+
+- `cargo fmt --all -- --check`;
+- `cargo metadata --format-version 1 --no-deps`;
+- native-library-backed `cargo make ci` when an operator-approved C ABI library
+  is supplied.
+
 ## 0.3.2 — compact-L2 physical-v2 cross-language parity
 
 Tag: `0.3.2`
