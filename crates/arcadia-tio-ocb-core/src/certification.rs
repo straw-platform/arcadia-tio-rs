@@ -1683,6 +1683,44 @@ mod tests {
     }
 
     #[test]
+    fn physical_v2_cross_row_group_biz_index_failures_fail_closed() {
+        for (case, biz_indexes, expected_kind) in [
+            ("gap", vec![1, 2, 4], OcbErrorKind::BizIndexGap),
+            ("duplicate", vec![1, 2, 2], OcbErrorKind::BizIndexDuplicate),
+        ] {
+            let root = fixture_root(&format!("physical_v2_cross_row_group_{case}"));
+            let artifact = root.join("channel_2011.typed-split-v2.ocb");
+            let records = biz_indexes
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, biz_index)| {
+                    compact_l2_record(
+                        20260702,
+                        2011,
+                        biz_index,
+                        if ordinal % 2 == 0 {
+                            COMPACT_L2_RECORD_KIND_ORDER
+                        } else {
+                            COMPACT_L2_RECORD_KIND_TRADE
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            // The fixture writer uses two rows per row group, so the invalid
+            // third row exercises continuity across the row-group boundary.
+            write_compact_l2_physical_v2_fixture(&artifact, &records, None);
+
+            let error = certify_compact_l2_physical_v2_artifact(
+                &artifact,
+                &CompactL2PhysicalV2CertificationOptions::default(),
+            )
+            .expect_err("cross-row-group BizIndex failure must fail closed");
+            assert_eq!(OcbErrorKind::from_error(&error), Some(expected_kind));
+            cleanup_root(&root);
+        }
+    }
+
+    #[test]
     fn physical_v2_manifest_certifies_channel_artifact_set() {
         let root = fixture_root("physical_v2_manifest_certifies");
         let artifact = root.join("channels/2011/l2_mutations.physical-v2.ocb");

@@ -22,21 +22,22 @@ helpers and projected visitors, read-plan certification summaries/fingerprints,
 channel-sharded compact-L2 manifest parsing, fixed-ingress header validation,
 artifact certification helpers, compact-L2 physical-v2 physical column facts,
 legacy 168-byte payload reconstruction helpers, channel-parallel physical-v2
-typed reads, fixed-payload projection attribution, callback-wall attribution,
-observed max-in-flight reporting, and stable structured OCB error kinds. It
-does not depend on `arcadia-tio-sys`, `arcadia-tio-capi`, a native library, or
-native-link build scripts. See
+typed reads, bounded parallel row-group preparation with ordered commit,
+fixed-payload projection attribution, callback-wall attribution, observed
+max-in-flight reporting, and stable structured OCB error kinds. It does not
+depend on `arcadia-tio-sys`, `arcadia-tio-capi`, a native library, or native-link
+build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
-## 0.3.3 maintenance release
+## 0.3.4 bounded parallel preparation release
 
-The 0.3.3 public Rust workspace tag is a source-only maintenance release after
-the 0.3.2 OCB Rust-core reader boundary. It preserves the public API surface
-while refreshing package metadata, documentation routing, and project-structure
-notes. It does not publish crates.io packages, native libraries, signed
-artifacts, benchmark evidence, storage/capacity/performance claims, or
-production/default runtime readiness.
+The 0.3.4 public Rust workspace tag adds opt-in bounded parallel row-group
+preparation with deterministic caller-thread ordered commit to the C-ABI-free
+OCB core reader. Existing read paths and the C-ABI-backed wrapper surface remain
+compatible. This source-only release does not publish crates.io packages,
+native libraries, signed artifacts, benchmark evidence, storage/capacity/
+performance claims, or production/default runtime readiness.
 
 ## 0.3.2 release boundary
 
@@ -128,11 +129,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the 0.3.3 public source tag:
+Or use the 0.3.4 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.3", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.4", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -142,11 +143,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the 0.3.3 public source tag:
+Or use the 0.3.4 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.3" }
+arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.4" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

@@ -16,6 +16,16 @@ replay, owner assignment, factor/KOB logic, shm-ring transport, production LIVE
 orchestration, native libraries, release artifacts, or performance/storage
 claims.
 
+## 0.3.4 release boundary
+
+The 0.3.4 public Rust workspace source boundary adds opt-in bounded parallel
+row-group preparation with deterministic caller-thread ordered commit. Worker
+callbacks borrow decoded batches only for the callback invocation and return
+owned `Send + 'static` results. One in-flight row-group cap bounds queued,
+active, completed, and pending work by count; consumers that require an
+absolute memory limit must also enforce a per-result byte budget. Existing
+reader paths and all C ABI-backed language surfaces remain unchanged.
+
 ## 0.3.2 release boundary
 
 The 0.3.2 public Rust workspace source boundary includes compact-L2
@@ -81,6 +91,74 @@ Batches are yielded in original plan order, not caller subset order. Decoded
 materialization is bounded by `min(max_in_flight_row_groups, effective_threads)`.
 `callback_wall_ns` and `max_in_flight_row_groups_observed` are available for
 visitor diagnostics.
+
+`ColumnBundleFile::parallel_prepare_plan_row_groups(...)` is the additive
+fixed-pool path for caller-owned row-group preparation. It uses the read plan's
+`max_threads` as its only worker budget and applies one
+`max_in_flight_row_groups` admission window across queued tasks, active decoded
+batches, bounded results, and the ordered pending map. Worker preparation gets
+deterministic row-group context plus a callback-lifetime `ColumnBatch` borrow and
+must return an owned `Send + 'static` result. A single caller-thread `FnMut`
+callback releases those results in selected-plan order. Later worker failures
+remain pending until every earlier ordinal resolves, so the earliest selected
+row-group error wins deterministically. `Stop` commits the current result but
+leaves `ordered_terminal_completed` false.
+
+The ordered callback is a sequencing boundary, not a transaction or publication
+hook. It can run for earlier ordinals before a later worker failure is known, and
+TIO cannot roll back side effects performed by that callback. A fail-closed
+consumer must therefore write callback output only into invocation-local staging,
+publish that staging only after the call returns `Ok(report)` with
+`report.ordered_terminal_completed == true`, and discard it on `Err` or on an
+`Ok` report with terminal completion false. This is also the required pattern for
+replay-visible state: `Stop` and failure must never publish the partial stage.
+
+The returned `ColumnBundleParallelPrepareReport` retains the existing OCB
+read/checksum/decompression/decode attribution and adds requested/started/max
+active workers, queued/completed/ordered-committed row groups, bounded in-flight
+and pending maxima, capacity and queue pressure, ordered-frontier waits, and
+per-worker read/preparation totals. The singular
+`parallel_prepare_compact_l2_physical_v2_channel(...)` helper adds ChannelID to
+the same context and validates the physical-v2 view inside the worker. It does
+not call the channel-parallel reader and therefore does not create a nested
+worker pool.
+
+Parallel-prepare instrumentation has the following stable interpretation for
+downstream reports:
+
+- every `*_ns` value is monotonic elapsed time in nanoseconds;
+- `attribution.execute_wall_ns` is the invocation wall span after planning;
+  `ordered_commit_ns` and `attribution.callback_wall_ns` describe the same
+  caller-thread ordered-callback bucket and must not be added together;
+- summing each worker report's `row_group_read_ns + caller_prepare_ns` gives
+  aggregate worker read-and-prepare elapsed time. It excludes worker idle and
+  bounded result-queue publication wait. The measured buckets overlap across
+  workers, may exceed invocation wall time, and are not operating-system thread
+  CPU time;
+- TIO does not report process CPU. A consumer that measures it must keep a
+  separately named and unit-bearing field such as `process_cpu_seconds` or
+  `process_cpu_ns`; it must not relabel aggregate worker elapsed time as CPU;
+- capacity, task-queue, result-queue, and ordered-frontier wait buckets can
+  overlap, so they are diagnostic series rather than additive phase totals;
+- `worker_reports` is sorted by stable invocation-local `worker_id`; requested,
+  started, active, queued, completed, ordered-committed, in-flight, and pending
+  counters retain their field meanings across consumers.
+
+The global admission window is a stable row-group-count bound, not an absolute
+byte allocator. `max_pending_rows_observed` counts decoded rows in completed
+results waiting at or beyond the result boundary; it does not include the byte
+size of arbitrary caller-owned `T`. Launched row groups are bounded by
+`max_in_flight_row_groups` only while they have not yet retired through the
+ordered boundary; total `row_groups_queued` over a completed call can be larger.
+The consumer remains responsible for a per-result row/byte budget. Consequently,
+a downstream absolute temporary-memory contract must combine that per-result
+budget with the TIO in-flight cap and must report its own observed temporary rows
+and bytes. Before ordered handoff, the in-flight caller-result portion is bounded by
+`max_in_flight_row_groups * per_result_bound` when that per-result bound is
+enforced. Results moved into invocation-local staging have crossed the TIO
+retirement boundary and are no longer covered by that cap; the consumer must
+separately bound, stream, aggregate, or account for the staged state before
+claiming an absolute temporary-memory bound.
 
 For lower-copy reads, allocate a reusable pool with
 `ColumnBundleFile::reusable_buffer_pool_for_plan(...)` and call

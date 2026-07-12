@@ -20,6 +20,10 @@ use crate::format::{
     OcbNullabilityV1, OcbOrderingDirectionV1, OcbPhysicalTypeV1, OcbRowGroupDescV1,
     OcbStatScalarV1, crc32c,
 };
+use crate::parallel_prepare::{
+    ColumnBundleParallelPrepareContext, ColumnBundleParallelPrepareOptions,
+    ColumnBundleParallelPrepareReport, ParallelPrepareTaskSpec, execute_parallel_prepare,
+};
 use crate::read::{
     OcbMetadataV1, OcbOpenValidationMode, OcbReadObjectAttribution, read_column_chunk,
     read_metadata, read_metadata_with_validation, read_object_bytes,
@@ -3304,6 +3308,112 @@ impl ColumnBundleFile {
         self.visit_execution_plan_with_attribution(&execution_plan, cursor_options, 0, visitor)
     }
 
+    /// Read and prepare selected row groups on a fixed worker budget, then
+    /// release caller-owned results through a deterministic ordered boundary.
+    ///
+    /// The sole worker budget is the plan's original
+    /// [`ColumnBundleReadOptions::max_threads`] request. The additional
+    /// `max_in_flight_row_groups` cap bounds queued tasks, active decoded
+    /// batches, the result queue, and out-of-order pending results together.
+    /// The worker `prepare` callback receives a borrowed batch that is valid
+    /// only for that invocation and must return an owned `Send + 'static`
+    /// result. `ordered_commit` runs only on the calling thread and always in
+    /// the selected plan's row-group order.
+    ///
+    /// `row_group_ids` are validated and restored to original plan order before
+    /// any payload read. If multiple workers fail, the error for the earliest
+    /// selected ordinal is returned only after every earlier ordinal resolves.
+    /// [`ColumnBundleVisitControl::Stop`] commits the current result, prevents
+    /// ordered terminal completion, and returns a coherent partial report.
+    ///
+    /// The callback name describes its ordered sequencing boundary; the call is
+    /// not transactional and cannot roll back callback side effects. A consumer
+    /// that requires fail-closed publication must use invocation-local staging,
+    /// publish it only after `Ok(report)` with
+    /// `report.ordered_terminal_completed == true`, and discard it after `Err`
+    /// or non-terminal `Ok`. In particular, replay-visible state must not be
+    /// published directly from this callback.
+    ///
+    /// A preparation result cannot borrow the callback-lifetime batch:
+    ///
+    /// ```compile_fail
+    /// use arcadia_tio_ocb_core::{
+    ///     ColumnBundleFile, ColumnBundleParallelPrepareOptions,
+    ///     ColumnBundleReadPlan, ColumnBundleVisitControl,
+    /// };
+    ///
+    /// fn borrowed_result_cannot_escape(
+    ///     file: &ColumnBundleFile,
+    ///     plan: &ColumnBundleReadPlan,
+    /// ) {
+    ///     let _ = file.parallel_prepare_plan_row_groups(
+    ///         plan,
+    ///         &plan.row_group_ids,
+    ///         ColumnBundleParallelPrepareOptions::default(),
+    ///         |_, batch| Ok(&batch.columns),
+    ///         |_, _| Ok(ColumnBundleVisitControl::Continue),
+    ///     );
+    /// }
+    /// ```
+    pub fn parallel_prepare_plan_row_groups<T, Prepare, Commit>(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        row_group_ids: &[u32],
+        options: ColumnBundleParallelPrepareOptions,
+        prepare: Prepare,
+        ordered_commit: Commit,
+    ) -> Result<ColumnBundleParallelPrepareReport>
+    where
+        T: Send + 'static,
+        Prepare: Fn(ColumnBundleParallelPrepareContext, &ColumnBatch) -> Result<T> + Sync,
+        Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+    {
+        self.validate_read_plan(plan)?;
+        let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
+        let report = execution_report_for_plan(plan, selected_row_group_ids.len());
+        let mut tasks = Vec::with_capacity(selected_row_group_ids.len());
+        for (selected_row_group_ordinal, row_group_id) in
+            selected_row_group_ids.iter().copied().enumerate()
+        {
+            let row_group = self
+                .metadata
+                .row_group_index
+                .row_groups
+                .iter()
+                .find(|row_group| row_group.row_group_id == row_group_id)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB parallel prepare row group not found",
+                ))?;
+            let row_end = row_group.base_row.checked_add(row_group.row_count).ok_or(
+                ArcadiaTioError::ocb_corrupt_file("OCB parallel prepare row range overflows"),
+            )?;
+            tasks.push(ParallelPrepareTaskSpec {
+                selected_row_group_ordinal,
+                row_group_id,
+                base_row: row_group.base_row,
+                row_end,
+                row_count: row_group.row_count,
+            });
+        }
+        execute_parallel_prepare(
+            tasks,
+            report,
+            0,
+            options,
+            |row_group_id| {
+                read_row_group_with_attribution(
+                    &self.path,
+                    &self.metadata,
+                    &self.columns,
+                    row_group_id,
+                    &plan.projected_column_ids,
+                )
+            },
+            prepare,
+            ordered_commit,
+        )
+    }
+
     /// Visit an explicit row-group subset into caller-owned reusable buffers.
     ///
     /// This lower-copy visitor keeps decoded values in `buffers` and gives the
@@ -5458,7 +5568,7 @@ fn validate_metadata(metadata: &OcbMetadataV1) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ReadAttributionAccumulator {
+pub(crate) struct ReadAttributionAccumulator {
     row_group_read: Duration,
     read_io: Duration,
     checksum: Duration,
@@ -5475,7 +5585,7 @@ struct ReadAttributionAccumulator {
 }
 
 impl ReadAttributionAccumulator {
-    fn add(&mut self, other: Self) {
+    pub(crate) fn add(&mut self, other: Self) {
         self.row_group_read += other.row_group_read;
         self.read_io += other.read_io;
         self.checksum += other.checksum;
@@ -5502,9 +5612,13 @@ impl ReadAttributionAccumulator {
         self.checksum += object.checksum;
         self.bytes_read = self.bytes_read.saturating_add(object.bytes_read);
     }
+
+    pub(crate) fn add_callback(&mut self, duration: Duration) {
+        self.callback += duration;
+    }
 }
 
-fn duration_to_ns(duration: Duration) -> u64 {
+pub(crate) fn duration_to_ns(duration: Duration) -> u64 {
     duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
@@ -5519,7 +5633,7 @@ fn record_value_materialization_time(
     }
 }
 
-fn attribution_from_accumulator(
+pub(crate) fn attribution_from_accumulator(
     accumulator: ReadAttributionAccumulator,
     report: &ColumnBundleReadReport,
     plan_ns: u64,
@@ -7520,6 +7634,118 @@ mod tests {
                 .to_string()
                 .contains(OCB_READ_PLAN_SUBSET_UNKNOWN_ROW_GROUP_ERROR)
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn column_bundle_parallel_prepare_matches_worker_counts_and_plan_order() {
+        let path = fixture_path("column_bundle_parallel_prepare");
+        write_fixture(&path);
+        let bundle = ColumnBundleFile::open(&path).expect("open OCB fixture");
+        let mut expected = None;
+
+        for workers in [1, 2, 4, 8] {
+            let plan = bundle
+                .plan_read(&ColumnBundleReadRequest {
+                    projection: ColumnProjection::names(["partition_key", "order_key"]),
+                    predicates: Vec::new(),
+                    options: ColumnBundleReadOptions::parallel(workers),
+                })
+                .expect("plan parallel preparation");
+            let mut committed = Vec::new();
+            let report = bundle
+                .parallel_prepare_plan_row_groups(
+                    &plan,
+                    &[1, 0],
+                    ColumnBundleParallelPrepareOptions {
+                        max_in_flight_row_groups: 2,
+                    },
+                    |context, batch| {
+                        assert_eq!(context.row_group_id, batch.row_group_id);
+                        assert_eq!(context.base_row, batch.base_row);
+                        assert_eq!(context.row_count, batch.row_count);
+                        assert_eq!(context.row_end, batch.base_row + batch.row_count);
+                        let order_keys = match &batch.columns[1].values {
+                            PrimitiveColumnValues::I64(values) => values.clone(),
+                            _ => panic!("order key must be i64"),
+                        };
+                        Ok((
+                            context.selected_row_group_ordinal,
+                            context.row_group_id,
+                            context.base_row,
+                            context.row_end,
+                            context.row_count,
+                            order_keys,
+                        ))
+                    },
+                    |context, prepared| {
+                        assert_eq!(context.selected_row_group_ordinal, prepared.0);
+                        committed.push(prepared);
+                        Ok(ColumnBundleVisitControl::Continue)
+                    },
+                )
+                .expect("parallel prepare row groups");
+            assert_eq!(
+                committed
+                    .iter()
+                    .map(|prepared| prepared.1)
+                    .collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+            if let Some(expected) = &expected {
+                assert_eq!(&committed, expected);
+            } else {
+                expected = Some(committed);
+            }
+            assert_eq!(report.requested_workers, workers);
+            assert_eq!(report.started_workers, workers.min(2));
+            assert_eq!(report.row_groups_queued, 2);
+            assert_eq!(report.row_groups_completed, 2);
+            assert_eq!(report.row_groups_ordered_committed, 2);
+            assert_eq!(report.rows_ordered_committed, 6);
+            assert!(report.ordered_terminal_completed);
+            assert!(!report.cursor_report.cancelled);
+            assert_eq!(report.attribution.selected_row_groups, 2);
+            assert_eq!(report.attribution.selected_column_chunks, 4);
+            assert!(report.attribution.read_io_ns > 0);
+            assert!(report.attribution.primitive_decode_ns > 0);
+            assert_eq!(
+                report.caller_prepare_ns,
+                report
+                    .worker_reports
+                    .iter()
+                    .map(|worker| worker.caller_prepare_ns)
+                    .sum::<u64>()
+            );
+        }
+
+        let plan = bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::parallel(4),
+            })
+            .expect("plan stopped preparation");
+        let stopped = bundle
+            .parallel_prepare_plan_row_groups(
+                &plan,
+                &plan.row_group_ids,
+                ColumnBundleParallelPrepareOptions {
+                    max_in_flight_row_groups: 2,
+                },
+                |context, _| Ok(context.row_group_id),
+                |context, row_group_id| {
+                    assert_eq!(context.row_group_id, row_group_id);
+                    Ok(ColumnBundleVisitControl::Stop)
+                },
+            )
+            .expect("stop ordered commit");
+        assert!(stopped.cursor_report.cancelled);
+        assert_eq!(stopped.row_groups_ordered_committed, 1);
+        assert!(!stopped.ordered_terminal_completed);
+        assert!(stopped.row_groups_ordered_committed <= stopped.row_groups_completed);
+        assert!(stopped.row_groups_completed <= stopped.row_groups_queued);
 
         cleanup(&path);
     }

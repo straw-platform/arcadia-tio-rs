@@ -1,5 +1,58 @@
 # Release notes
 
+## 0.3.4 — bounded parallel OCB preparation
+
+Tag: `0.3.4`
+Commit: see `git rev-parse 0.3.4`
+
+### Scope
+
+This source-only public Rust release adds an opt-in bounded worker path to the
+C-ABI-free `arcadia-tio-ocb-core` crate:
+
+- Adds generic row-group parallel preparation with deterministic caller-thread
+  ordered commit.
+- Adds a one-channel compact-L2 physical-v2 preparation helper without nested
+  channel and row-group worker pools.
+- Requires worker callbacks to return owned `Send + 'static` results so decoded
+  batch borrows cannot escape their invocation.
+- Adds boundedness, worker, queue-pressure, attribution, cancellation, panic,
+  deterministic-error, and external-consumer contract coverage.
+- Preserves existing reader behavior and the C ABI-backed Rust wrapper API.
+
+The calibrated public OCB-core user-facing surface moves from **270** items in
+0.3.3 to **279** in 0.3.4: eight crate-root exports and
+`ColumnBundleFile::parallel_prepare_plan_row_groups`. This count is separate
+from the existing **776-item** C-ABI-backed safe wrapper and does not change the
+17-family cross-language parity score. C ABI coverage remains **522 / 522**;
+Haskell remains **498 wrapped / 24 not applicable / 0 gaps**.
+
+### Operational contract
+
+The in-flight option bounds row groups by count, not arbitrary caller-owned
+result bytes. Consumers needing an absolute temporary-memory limit must enforce
+a per-result byte budget. Ordered commit is a sequencing boundary rather than a
+transaction; fail-closed consumers must publish invocation-local staging only
+after a terminally completed successful report.
+
+### Non-goals
+
+This release does not change the C ABI, Python bindings, C++ wrapper, or Haskell
+wrapper. It does not publish crates.io packages, native libraries, signed
+artifacts, benchmark evidence, storage/capacity claims, or production/default
+runtime readiness.
+
+### Validation summary
+
+Maintainer validation before tagging includes:
+
+- `cargo fmt --all -- --check`;
+- `cargo metadata --format-version 1 --no-deps`;
+- `cargo test -p arcadia-tio-ocb-core`;
+- `cargo check -p arcadia-tio-ocb-core --examples`;
+- `cargo make test-core-reader-tree`;
+- `cargo make ci` when the operator-approved native C ABI library is available.
+
 ## 0.3.3 — documentation and project-structure cleanup
 
 Tag: `0.3.3`

@@ -15,6 +15,7 @@ mod compact_l2;
 mod error;
 mod format;
 mod manifest;
+mod parallel_prepare;
 mod parallel_read;
 mod read;
 
@@ -84,9 +85,15 @@ pub use crate::manifest::{
     ChannelShardedManifestCountsV1, ChannelShardedManifestV1, SafeManifestSummary,
     resolve_manifest_relative_artifact_path, validate_manifest_relative_path,
 };
+pub use crate::parallel_prepare::{
+    ColumnBundleParallelPrepareContext, ColumnBundleParallelPrepareOptions,
+    ColumnBundleParallelPrepareReport, ColumnBundleParallelPrepareWorkerReport,
+};
 pub use crate::parallel_read::{
     COMPACT_L2_PHYSICAL_V2_DEFAULT_CHANNEL_WORKERS, CompactL2PhysicalV2ChannelReadInput,
-    CompactL2PhysicalV2ChannelReadReport, CompactL2PhysicalV2ParallelReadOptions,
-    CompactL2PhysicalV2ParallelReadReport, CompactL2PhysicalV2ReadBatch,
-    compact_l2_physical_v2_inputs_from_manifest, read_compact_l2_physical_v2_channels,
+    CompactL2PhysicalV2ChannelReadReport, CompactL2PhysicalV2ParallelPrepareContext,
+    CompactL2PhysicalV2ParallelPrepareOptions, CompactL2PhysicalV2ParallelPrepareReport,
+    CompactL2PhysicalV2ParallelReadOptions, CompactL2PhysicalV2ParallelReadReport,
+    CompactL2PhysicalV2ReadBatch, compact_l2_physical_v2_inputs_from_manifest,
+    parallel_prepare_compact_l2_physical_v2_channel, read_compact_l2_physical_v2_channels,
 };

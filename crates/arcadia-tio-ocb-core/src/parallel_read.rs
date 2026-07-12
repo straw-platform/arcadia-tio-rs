@@ -25,6 +25,10 @@ use crate::compact_l2::{
     CompactL2PhysicalV2BatchView,
 };
 use crate::manifest::{ChannelShardedManifestV1, resolve_manifest_relative_artifact_path};
+use crate::parallel_prepare::{
+    ColumnBundleParallelPrepareContext, ColumnBundleParallelPrepareOptions,
+    ColumnBundleParallelPrepareReport,
+};
 use crate::{ArcadiaTioError, OcbErrorKind, Result};
 
 /// Default channel worker count for compact-L2 physical-v2 reads.
@@ -93,7 +97,8 @@ impl Default for CompactL2PhysicalV2ParallelReadOptions {
 }
 
 impl CompactL2PhysicalV2ParallelReadOptions {
-    /// Conservative low-contention read options for channel-parallel scans.
+    /// Conservative low-contention read options from the private full-day
+    /// parallelism experiment.
     pub fn channel_parallel_default() -> Self {
         Self::default()
     }
@@ -181,6 +186,64 @@ pub struct CompactL2PhysicalV2ParallelReadReport {
     pub channel_reports: Vec<CompactL2PhysicalV2ChannelReadReport>,
 }
 
+/// Options for one-channel compact-L2 physical-v2 parallel preparation.
+///
+/// This is a single fixed row-group worker budget. It is not layered under the
+/// channel-parallel reader and therefore cannot create a nested worker pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactL2PhysicalV2ParallelPrepareOptions {
+    /// Fixed row-group worker budget.
+    pub workers: usize,
+    /// Global cap across queued, active, completed, and pending row groups.
+    pub max_in_flight_row_groups: usize,
+    /// Whether chunk checksums are validated during reads.
+    pub validate_checksums: bool,
+}
+
+impl Default for CompactL2PhysicalV2ParallelPrepareOptions {
+    fn default() -> Self {
+        Self {
+            workers: COMPACT_L2_PHYSICAL_V2_DEFAULT_CHANNEL_WORKERS,
+            max_in_flight_row_groups: COMPACT_L2_PHYSICAL_V2_DEFAULT_CHANNEL_WORKERS,
+            validate_checksums: true,
+        }
+    }
+}
+
+impl CompactL2PhysicalV2ParallelPrepareOptions {
+    fn validate(self) -> Result<()> {
+        if self.workers == 0 {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "compact-L2 physical-v2 parallel-prepare workers must be greater than zero",
+            ));
+        }
+        if self.max_in_flight_row_groups == 0 {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "compact-L2 physical-v2 parallel-prepare max_in_flight_row_groups must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Compact-L2 context supplied to worker preparation and ordered commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactL2PhysicalV2ParallelPrepareContext {
+    /// Source ChannelID for this one-channel invocation.
+    pub channel_id: u32,
+    /// Generic deterministic row-group context, including stable worker id.
+    pub row_group: ColumnBundleParallelPrepareContext,
+}
+
+/// Report for one-channel compact-L2 physical-v2 parallel preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactL2PhysicalV2ParallelPrepareReport {
+    /// Source ChannelID.
+    pub channel_id: u32,
+    /// Generic bounded preparation and ordered-commit report.
+    pub parallel_prepare: ColumnBundleParallelPrepareReport,
+}
+
 /// Build channel read inputs from a physical-v2 channel-sharded manifest.
 pub fn compact_l2_physical_v2_inputs_from_manifest(
     manifest_path: impl AsRef<Path>,
@@ -207,6 +270,118 @@ pub fn compact_l2_physical_v2_inputs_from_manifest(
             })
         })
         .collect()
+}
+
+/// Read and prepare one compact-L2 physical-v2 channel on a fixed worker set,
+/// then release owned results in selected-plan row-group order.
+///
+/// Physical-v2 column shape and the constant input ChannelID are validated on
+/// each worker before caller preparation. The borrowed batch view cannot leave
+/// the worker callback; caller preparation must return owned `Send + 'static`
+/// output. Whole-channel ownership remains a downstream responsibility. A
+/// fail-closed consumer must stage ordered callback output locally and publish
+/// replay-visible state only after a terminally completed `Ok` report; it must
+/// discard the stage on failure or `Stop` because callback side effects cannot
+/// be rolled back by TIO.
+pub fn parallel_prepare_compact_l2_physical_v2_channel<T, Prepare, Commit>(
+    input: CompactL2PhysicalV2ChannelReadInput,
+    options: CompactL2PhysicalV2ParallelPrepareOptions,
+    prepare: Prepare,
+    mut ordered_commit: Commit,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
+where
+    T: Send + 'static,
+    Prepare: for<'a> Fn(
+            CompactL2PhysicalV2ParallelPrepareContext,
+            CompactL2PhysicalV2BatchView<'a>,
+        ) -> Result<T>
+        + Sync,
+    Commit: FnMut(CompactL2PhysicalV2ParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    options.validate()?;
+    let mut inputs = normalize_inputs([input])?;
+    let input = inputs.pop().expect("one normalized channel input");
+    let expected_channel_id = i32::try_from(input.channel_id).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 physical-v2 parallel-prepare ChannelID does not fit i32",
+        )
+    })?;
+    let file = ColumnBundleFile::open(&input.path)?;
+    let full_channel_selection = input.row_group_ids.is_none();
+    if let Some(expected_rows) = input
+        .expected_rows
+        .filter(|expected_rows| full_channel_selection && file.row_count() != *expected_rows)
+    {
+        return Err(ArcadiaTioError::ocb_diagnostic(
+            OcbErrorKind::RowCountMismatch,
+            format!(
+                "compact-L2 physical-v2 parallel-prepare metadata row count mismatch: expected={expected_rows} observed={}",
+                file.row_count()
+            ),
+        ));
+    }
+    let request = ColumnBundleReadRequest {
+        projection: compact_l2_physical_v2_projection(),
+        predicates: Vec::new(),
+        options: ColumnBundleReadOptions {
+            max_threads: options.workers,
+            validate_checksums: options.validate_checksums,
+            decode_dictionaries: false,
+        },
+    };
+    let plan_started = Instant::now();
+    let plan = file.plan_read(&request)?;
+    let plan_ns = duration_to_ns(plan_started.elapsed());
+    let row_group_ids = input
+        .row_group_ids
+        .clone()
+        .unwrap_or_else(|| plan.row_group_ids.clone());
+    let channel_id = input.channel_id;
+    let expected_channel_id = i64::from(expected_channel_id);
+    let mut report = file.parallel_prepare_plan_row_groups(
+        &plan,
+        &row_group_ids,
+        ColumnBundleParallelPrepareOptions {
+            max_in_flight_row_groups: options.max_in_flight_row_groups,
+        },
+        |context, batch| {
+            let view = CompactL2PhysicalV2BatchView::from_column_batch(batch)?;
+            view.validate()?;
+            if view
+                .channel_id
+                .iter()
+                .any(|observed| *observed != expected_channel_id)
+            {
+                return Err(ArcadiaTioError::ocb_diagnostic(
+                    OcbErrorKind::ChannelIdMismatch,
+                    format!(
+                        "compact-L2 physical-v2 worker ChannelID mismatch: expected={channel_id}"
+                    ),
+                ));
+            }
+            prepare(
+                CompactL2PhysicalV2ParallelPrepareContext {
+                    channel_id,
+                    row_group: context,
+                },
+                view,
+            )
+        },
+        |context, prepared| {
+            ordered_commit(
+                CompactL2PhysicalV2ParallelPrepareContext {
+                    channel_id,
+                    row_group: context,
+                },
+                prepared,
+            )
+        },
+    )?;
+    report.attribution.plan_ns = plan_ns;
+    Ok(CompactL2PhysicalV2ParallelPrepareReport {
+        channel_id,
+        parallel_prepare: report,
+    })
 }
 
 /// Read compact-L2 physical-v2 channel artifacts with bounded channel-level
@@ -576,6 +751,152 @@ mod tests {
         assert_eq!(err.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
     }
 
+    #[test]
+    fn compact_parallel_prepare_matches_worker_counts_and_carries_context() {
+        let root = fixture_root("compact_parallel_prepare_context");
+        let channel_id = 2011;
+        let records = (0..10)
+            .map(|offset| {
+                compact_l2_record(
+                    20260705,
+                    channel_id,
+                    offset + 1,
+                    if offset % 2 == 0 {
+                        COMPACT_L2_RECORD_KIND_ORDER
+                    } else {
+                        COMPACT_L2_RECORD_KIND_TRADE
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let path = root.join("channel_2011.ocb");
+        write_compact_l2_physical_v2_fixture(&path, &records);
+        let input = CompactL2PhysicalV2ChannelReadInput::new(channel_id, path)
+            .with_expected_rows(records.len() as u64);
+        let mut expected = None;
+
+        for workers in [1, 2, 4, 8] {
+            let mut committed = Vec::new();
+            let report = parallel_prepare_compact_l2_physical_v2_channel(
+                input.clone(),
+                CompactL2PhysicalV2ParallelPrepareOptions {
+                    workers,
+                    max_in_flight_row_groups: 5,
+                    validate_checksums: true,
+                },
+                |context, view| {
+                    assert_eq!(context.channel_id, channel_id);
+                    assert!(context.row_group.worker_id < workers.min(5));
+                    assert_eq!(view.row_count as u64, context.row_group.row_count);
+                    assert!(
+                        view.channel_id
+                            .iter()
+                            .all(|observed| *observed == i64::from(channel_id))
+                    );
+                    Ok((
+                        context.row_group.selected_row_group_ordinal,
+                        context.row_group.row_group_id,
+                        context.row_group.base_row,
+                        context.row_group.row_end,
+                        context.row_group.row_count,
+                        view.biz_index.to_vec(),
+                    ))
+                },
+                |context, prepared| {
+                    assert_eq!(context.channel_id, channel_id);
+                    assert_eq!(context.row_group.selected_row_group_ordinal, prepared.0);
+                    committed.push(prepared);
+                    Ok(ColumnBundleVisitControl::Continue)
+                },
+            )
+            .expect("compact parallel prepare");
+            assert_eq!(report.channel_id, channel_id);
+            assert_eq!(report.parallel_prepare.requested_workers, workers);
+            assert_eq!(report.parallel_prepare.started_workers, workers.min(5));
+            assert_eq!(report.parallel_prepare.row_groups_queued, 5);
+            assert_eq!(report.parallel_prepare.row_groups_completed, 5);
+            assert_eq!(report.parallel_prepare.row_groups_ordered_committed, 5);
+            assert_eq!(report.parallel_prepare.rows_ordered_committed, 10);
+            assert!(report.parallel_prepare.ordered_terminal_completed);
+            assert_eq!(
+                committed
+                    .iter()
+                    .map(|prepared| prepared.1)
+                    .collect::<Vec<_>>(),
+                vec![0, 1, 2, 3, 4]
+            );
+            assert_eq!(
+                committed
+                    .iter()
+                    .map(|prepared| prepared.2)
+                    .collect::<Vec<_>>(),
+                vec![0, 2, 4, 6, 8]
+            );
+            if let Some(expected) = &expected {
+                assert_eq!(&committed, expected);
+            } else {
+                expected = Some(committed);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_parallel_prepare_fails_closed_for_channel_and_view_mismatch() {
+        let root = fixture_root("compact_parallel_prepare_malformed");
+        let records = (0..4)
+            .map(|offset| {
+                compact_l2_record(20260705, 2011, offset + 1, COMPACT_L2_RECORD_KIND_ORDER)
+            })
+            .collect::<Vec<_>>();
+        let path = root.join("channel_2011.ocb");
+        write_compact_l2_physical_v2_fixture(&path, &records);
+        let mut committed = 0usize;
+        let error = parallel_prepare_compact_l2_physical_v2_channel(
+            CompactL2PhysicalV2ChannelReadInput::new(2011, &path).with_expected_rows(999),
+            CompactL2PhysicalV2ParallelPrepareOptions::default(),
+            |_, _| Ok(()),
+            |_, _| {
+                committed += 1;
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect_err("metadata row mismatch must fail before commit");
+        assert_eq!(
+            OcbErrorKind::from_error(&error),
+            Some(OcbErrorKind::RowCountMismatch)
+        );
+        assert_eq!(committed, 0);
+
+        let error = parallel_prepare_compact_l2_physical_v2_channel(
+            CompactL2PhysicalV2ChannelReadInput::new(2012, &path),
+            CompactL2PhysicalV2ParallelPrepareOptions::default(),
+            |_, _| Ok(()),
+            |_, _| Ok(ColumnBundleVisitControl::Continue),
+        )
+        .expect_err("mismatched channel must fail closed");
+        assert_eq!(error.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
+        assert_eq!(
+            OcbErrorKind::from_error(&error),
+            Some(OcbErrorKind::ChannelIdMismatch)
+        );
+
+        let malformed_path = root.join("channel_2011_bad_symbol.ocb");
+        write_compact_l2_physical_v2_fixture_with_symbol_width(&malformed_path, &records, 8);
+        let mut committed = 0usize;
+        let error = parallel_prepare_compact_l2_physical_v2_channel(
+            CompactL2PhysicalV2ChannelReadInput::new(2011, malformed_path),
+            CompactL2PhysicalV2ParallelPrepareOptions::default(),
+            |_, _| Ok(()),
+            |_, _| {
+                committed += 1;
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect_err("malformed physical-v2 view must fail closed");
+        assert_eq!(error.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
+        assert_eq!(committed, 0);
+    }
+
     fn read_fingerprint(
         inputs: &[CompactL2PhysicalV2ChannelReadInput],
         channel_workers: usize,
@@ -667,6 +988,14 @@ mod tests {
     }
 
     fn write_compact_l2_physical_v2_fixture(path: &Path, records: &[[u8; 168]]) {
+        write_compact_l2_physical_v2_fixture_with_symbol_width(path, records, 9);
+    }
+
+    fn write_compact_l2_physical_v2_fixture_with_symbol_width(
+        path: &Path,
+        records: &[[u8; 168]],
+        symbol_width: u32,
+    ) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create physical-v2 parent");
         }
@@ -827,10 +1156,12 @@ mod tests {
             append_encoded_object(&mut file_bytes, OcbBodyKindV1::StringTable, |buf| {
                 string_table.write_to(buf)
             });
+        let mut column_descs = physical_v2_column_descs();
+        column_descs[8].fixed_binary_width = symbol_width;
         let schema = OcbSchemaV1 {
             version: 1,
             string_table_ref,
-            columns: physical_v2_column_descs(),
+            columns: column_descs,
             crc32c: 0,
         };
         let schema_ref = append_encoded_object(&mut file_bytes, OcbBodyKindV1::Schema, |buf| {
