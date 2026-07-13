@@ -150,7 +150,7 @@ Or use the 0.3.5 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.5", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.5", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -164,7 +164,7 @@ Or use the 0.3.5 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.5" }
+arcadia-tio-rs = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.5" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

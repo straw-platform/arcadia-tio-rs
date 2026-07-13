@@ -4,8 +4,8 @@ version = "0.3.5"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
-repository = "https://github.com/Jacobbishopxy/arcadia-tio-rs"
-homepage = "https://github.com/Jacobbishopxy/arcadia-tio-rs"
+repository = "https://github.com/straw-platform/arcadia-tio-rs"
+homepage = "https://github.com/straw-platform/arcadia-tio-rs"
 description = "Safe Rust wrapper over the Arcadia TIO C ABI binary library."
 
 [lib]
