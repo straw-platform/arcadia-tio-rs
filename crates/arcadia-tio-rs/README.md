@@ -39,6 +39,13 @@ surfaces only: they are not benchmark evidence and do not create performance,
 phase-percentage, zero-copy, storage, cache, layout, external-format, or
 release-readiness claims.
 
+## 0.3.6 source-release posture
+
+The 0.3.6 workspace tag carries the 0.3.5 bounded-session API unchanged and
+adds the public Rust tutorial, clarified cancellation-race guidance, and the
+canonical repository metadata. It is a source-only maintenance release with no
+intentional public Rust API or C ABI change from 0.3.5.
+
 ## 0.3.5 source-release posture
 
 The 0.3.5 workspace tag adds an opt-in C-ABI-backed bounded parallel

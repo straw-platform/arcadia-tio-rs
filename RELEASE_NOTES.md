@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.3.6 - repository transfer and contract documentation
+
+Tag: `0.3.6`
+
+This source-only patch release carries forward the 0.3.5 bounded parallel OCB
+session and adds the public Rust tutorial, explicit cancellation-race guidance,
+and canonical `straw-platform/arcadia-tio-rs` repository metadata. There is no
+intentional public Rust API or C ABI change from 0.3.5; the calibrated safe
+wrapper, raw sys, and C-ABI-free OCB-core surface counts remain unchanged.
+
+This tag does not publish crates.io packages, native libraries, signed
+artifacts, or benchmark evidence, and creates no performance, storage,
+capacity, production-default, or release-readiness claim.
+
 ## 0.3.5 - poll-based bounded parallel OCB session
 
 Tag: `0.3.5`
