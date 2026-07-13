@@ -18053,6 +18053,87 @@ pub mod ocb {
         pub cancelled: bool,
     }
 
+    /// Options for a pull-driven bounded parallel OCB read session.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ParallelReadOptions {
+        /// Maximum launched row groups not yet retired through ordered delivery.
+        pub max_in_flight_row_groups: usize,
+    }
+
+    impl Default for ParallelReadOptions {
+        fn default() -> Self {
+            Self {
+                max_in_flight_row_groups: 1,
+            }
+        }
+    }
+
+    /// Deterministic context attached to one owned parallel OCB batch.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ParallelReadContext {
+        pub selected_row_group_ordinal: usize,
+        pub row_group_id: u32,
+        pub base_row: u64,
+        pub row_end: u64,
+        pub row_count: u64,
+        pub worker_id: usize,
+    }
+
+    /// One owned batch released in plan order by a parallel read session.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ParallelReadBatch {
+        pub context: ParallelReadContext,
+        pub batch: ColumnBatch,
+    }
+
+    /// Outcome of one blocking caller-thread `ParallelReadSession::next` call.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ParallelReadNext {
+        Batch(ParallelReadBatch),
+        End,
+        Cancelled,
+    }
+
+    /// Per-worker diagnostics for a bounded parallel OCB read session.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ParallelReadWorkerReport {
+        pub worker_id: usize,
+        pub row_groups_completed: usize,
+        pub rows_completed: u64,
+        pub row_group_read_ns: u64,
+        pub caller_prepare_ns: u64,
+    }
+
+    /// Terminal diagnostics for a bounded parallel OCB read session.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ParallelReadReport {
+        pub cursor_report: ReadCursorReport,
+        pub attribution: ReadAttribution,
+        pub requested_workers: usize,
+        pub started_workers: usize,
+        pub max_active_workers_observed: usize,
+        pub row_groups_queued: usize,
+        pub row_groups_completed: usize,
+        pub row_groups_ordered_committed: usize,
+        pub rows_completed: u64,
+        pub rows_ordered_committed: u64,
+        pub max_in_flight_row_groups_observed: usize,
+        pub max_pending_results_observed: usize,
+        pub max_pending_rows_observed: u64,
+        pub capacity_wait_count: usize,
+        pub capacity_wait_ns: u64,
+        pub task_queue_full_wait_count: usize,
+        pub task_queue_full_wait_ns: u64,
+        pub result_queue_full_wait_count: usize,
+        pub result_queue_full_wait_ns: u64,
+        pub ordered_frontier_wait_count: usize,
+        pub ordered_frontier_wait_ns: u64,
+        pub caller_prepare_ns: u64,
+        pub ordered_commit_ns: u64,
+        pub ordered_terminal_completed: bool,
+        pub worker_reports: Vec<ParallelReadWorkerReport>,
+    }
+
     /// Options for caller-owned single-row-group fill reads.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ReadFillOptions {
@@ -18439,6 +18520,16 @@ pub mod ocb {
         raw: NonNull<sys::ArcadiaTioOcbFile>,
     }
 
+    /// Pull-driven owner of Rust-backed bounded OCB read workers.
+    ///
+    /// `next` calls are serialized internally. `cancel` is idempotent and may
+    /// run concurrently with a blocked `next`. Dropping an active session
+    /// cancels, drains, joins, and frees all native state.
+    #[derive(Debug)]
+    pub struct ParallelReadSession {
+        raw: NonNull<sys::ArcadiaTioOcbParallelReadSession>,
+    }
+
     impl ColumnBundleFile {
         /// Open an OCB file and bind this handle to the selected committed snapshot.
         pub fn open(path: impl AsRef<Path>) -> OcbResult<Self> {
@@ -18537,6 +18628,49 @@ pub mod ocb {
                 outcome,
                 attribution,
             })
+        }
+
+        /// Create a pull-driven bounded parallel OCB read session.
+        ///
+        /// An empty `row_group_ids` slice selects every row group chosen by the
+        /// request. A nonempty slice is duplicate/unknown-id checked and then
+        /// normalized to deterministic plan order. The request and slice are
+        /// borrowed only during this call; the returned session owns its native
+        /// selected-snapshot state.
+        pub fn parallel_read_session(
+            &self,
+            request: &ReadRequest,
+            row_group_ids: &[u32],
+            options: ParallelReadOptions,
+        ) -> OcbResult<ParallelReadSession> {
+            let raw_request = RawReadRequest::new(request)?;
+            let raw_options = sys::ArcadiaTioOcbParallelReadOptions {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbParallelReadOptions>(),
+                max_in_flight_row_groups: options.max_in_flight_row_groups,
+                reserved: [0; 8],
+            };
+            let mut raw_session = ptr::null_mut();
+            let status = unsafe {
+                sys::arcadia_tio_ocb_parallel_read_session_create(
+                    self.raw.as_ptr(),
+                    &raw_request.raw,
+                    if row_group_ids.is_empty() {
+                        ptr::null()
+                    } else {
+                        row_group_ids.as_ptr()
+                    },
+                    row_group_ids.len(),
+                    &raw_options,
+                    &mut raw_session,
+                )
+            };
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB parallel_read_session failed"));
+            }
+            NonNull::new(raw_session)
+                .map(|raw| ParallelReadSession { raw })
+                .ok_or_else(|| OcbError::last("OCB parallel_read_session returned null session"))
         }
 
         /// Return generic metadata summaries for every visible row group.
@@ -18695,6 +18829,100 @@ pub mod ocb {
             read_batches_from_plan(self.raw, plan.raw, Some(row_group_ids))
         }
     }
+
+    impl ParallelReadSession {
+        /// Block on the calling thread for the next ordered batch or terminal state.
+        pub fn next(&self) -> OcbResult<ParallelReadNext> {
+            let mut raw_result = empty_parallel_read_result();
+            let mut raw_status = sys::ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_END;
+            let status = unsafe {
+                sys::arcadia_tio_ocb_parallel_read_session_next(
+                    self.raw.as_ptr(),
+                    &mut raw_status,
+                    &mut raw_result,
+                )
+            };
+            let guard = ParallelReadResultGuard(raw_result);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB parallel read next failed"));
+            }
+            match raw_status {
+                sys::ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_BATCH => {
+                    let context = ParallelReadContext {
+                        selected_row_group_ordinal: guard.0.context.selected_row_group_ordinal,
+                        row_group_id: guard.0.context.row_group_id,
+                        base_row: guard.0.context.base_row,
+                        row_end: guard.0.context.row_end,
+                        row_count: guard.0.context.row_count,
+                        worker_id: guard.0.context.worker_id,
+                    };
+                    let batch = unsafe { column_batch_from_raw(&guard.0.batch) }?;
+                    Ok(ParallelReadNext::Batch(ParallelReadBatch {
+                        context,
+                        batch,
+                    }))
+                }
+                sys::ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_END => Ok(ParallelReadNext::End),
+                sys::ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_CANCELLED => {
+                    Ok(ParallelReadNext::Cancelled)
+                }
+                other => Err(OcbError::invalid_input(format!(
+                    "unknown OCB parallel read next status {other}"
+                ))),
+            }
+        }
+
+        /// Request cancellation. This is idempotent and can run while `next` blocks.
+        pub fn cancel(&self) -> OcbResult<()> {
+            let status =
+                unsafe { sys::arcadia_tio_ocb_parallel_read_session_cancel(self.raw.as_ptr()) };
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB parallel read cancel failed"));
+            }
+            Ok(())
+        }
+
+        /// Copy the terminal report after `End` or `Cancelled`.
+        pub fn report(&self) -> OcbResult<ParallelReadReport> {
+            let mut raw_report = empty_parallel_read_report();
+            let status = unsafe {
+                sys::arcadia_tio_ocb_parallel_read_session_report(
+                    self.raw.as_ptr(),
+                    &mut raw_report,
+                )
+            };
+            let guard = ParallelReadReportGuard(raw_report);
+            if status != sys::ARCADIA_TIO_ERROR_OK {
+                return Err(OcbError::last("OCB parallel read report failed"));
+            }
+            unsafe { parallel_read_report_from_raw(&guard.0) }
+        }
+    }
+
+    impl Iterator for ParallelReadSession {
+        type Item = OcbResult<ParallelReadBatch>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            match ParallelReadSession::next(self) {
+                Ok(ParallelReadNext::Batch(batch)) => Some(Ok(batch)),
+                Ok(ParallelReadNext::End | ParallelReadNext::Cancelled) => None,
+                Err(error) => Some(Err(error)),
+            }
+        }
+    }
+
+    impl Drop for ParallelReadSession {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_parallel_read_session_free(self.raw.as_ptr()) };
+        }
+    }
+
+    // SAFETY: Native session ownership moves with this wrapper. The C ABI
+    // serializes `next` and permits `cancel` concurrently with a blocked `next`.
+    unsafe impl Send for ParallelReadSession {}
+    // SAFETY: Shared calls are synchronized by the native session; dropping is
+    // exclusive under Rust ownership.
+    unsafe impl Sync for ParallelReadSession {}
 
     impl Drop for ColumnBundleFile {
         fn drop(&mut self) {
@@ -20302,6 +20530,77 @@ pub mod ocb {
         }
     }
 
+    fn empty_parallel_read_context() -> sys::ArcadiaTioOcbParallelReadContext {
+        sys::ArcadiaTioOcbParallelReadContext {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbParallelReadContext>(),
+            selected_row_group_ordinal: 0,
+            row_group_id: 0,
+            base_row: 0,
+            row_end: 0,
+            row_count: 0,
+            worker_id: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_column_batch() -> sys::ArcadiaTioOcbColumnBatch {
+        sys::ArcadiaTioOcbColumnBatch {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbColumnBatch>(),
+            row_group_id: 0,
+            base_row: 0,
+            row_count: 0,
+            columns: ptr::null_mut(),
+            columns_len: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_parallel_read_result() -> sys::ArcadiaTioOcbParallelReadResult {
+        sys::ArcadiaTioOcbParallelReadResult {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbParallelReadResult>(),
+            context: empty_parallel_read_context(),
+            batch: empty_column_batch(),
+            reserved: [0; 4],
+        }
+    }
+
+    fn empty_parallel_read_report() -> sys::ArcadiaTioOcbParallelReadReport {
+        sys::ArcadiaTioOcbParallelReadReport {
+            version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+            struct_size: mem::size_of::<sys::ArcadiaTioOcbParallelReadReport>(),
+            cursor_report: empty_read_cursor_report(),
+            attribution: empty_read_attribution(),
+            requested_workers: 0,
+            started_workers: 0,
+            max_active_workers_observed: 0,
+            row_groups_queued: 0,
+            row_groups_completed: 0,
+            row_groups_ordered_committed: 0,
+            rows_completed: 0,
+            rows_ordered_committed: 0,
+            max_in_flight_row_groups_observed: 0,
+            max_pending_results_observed: 0,
+            max_pending_rows_observed: 0,
+            capacity_wait_count: 0,
+            capacity_wait_ns: 0,
+            task_queue_full_wait_count: 0,
+            task_queue_full_wait_ns: 0,
+            result_queue_full_wait_count: 0,
+            result_queue_full_wait_ns: 0,
+            ordered_frontier_wait_count: 0,
+            ordered_frontier_wait_ns: 0,
+            caller_prepare_ns: 0,
+            ordered_commit_ns: 0,
+            ordered_terminal_completed: 0,
+            worker_reports: ptr::null_mut(),
+            worker_reports_len: 0,
+            reserved: [0; 8],
+        }
+    }
+
     fn empty_row_group_summaries() -> sys::ArcadiaTioOcbRowGroupSummaries {
         sys::ArcadiaTioOcbRowGroupSummaries {
             version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
@@ -20351,6 +20650,20 @@ pub mod ocb {
     impl Drop for ReadOutcomeGuard {
         fn drop(&mut self) {
             unsafe { sys::arcadia_tio_ocb_read_outcome_free(&mut self.0) };
+        }
+    }
+
+    struct ParallelReadResultGuard(sys::ArcadiaTioOcbParallelReadResult);
+    impl Drop for ParallelReadResultGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_parallel_read_result_free(&mut self.0) };
+        }
+    }
+
+    struct ParallelReadReportGuard(sys::ArcadiaTioOcbParallelReadReport);
+    impl Drop for ParallelReadReportGuard {
+        fn drop(&mut self) {
+            unsafe { sys::arcadia_tio_ocb_parallel_read_report_free(&mut self.0) };
         }
     }
 
@@ -20856,6 +21169,48 @@ pub mod ocb {
             selected_column_chunks: raw.selected_column_chunks,
             fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
         }
+    }
+
+    unsafe fn parallel_read_report_from_raw(
+        raw: &sys::ArcadiaTioOcbParallelReadReport,
+    ) -> OcbResult<ParallelReadReport> {
+        let worker_reports = unsafe { raw_slice(raw.worker_reports, raw.worker_reports_len) }
+            .iter()
+            .map(|worker| ParallelReadWorkerReport {
+                worker_id: worker.worker_id,
+                row_groups_completed: worker.row_groups_completed,
+                rows_completed: worker.rows_completed,
+                row_group_read_ns: worker.row_group_read_ns,
+                caller_prepare_ns: worker.caller_prepare_ns,
+            })
+            .collect();
+        Ok(ParallelReadReport {
+            cursor_report: read_cursor_report_from_raw(&raw.cursor_report),
+            attribution: read_attribution_from_raw(&raw.attribution),
+            requested_workers: raw.requested_workers,
+            started_workers: raw.started_workers,
+            max_active_workers_observed: raw.max_active_workers_observed,
+            row_groups_queued: raw.row_groups_queued,
+            row_groups_completed: raw.row_groups_completed,
+            row_groups_ordered_committed: raw.row_groups_ordered_committed,
+            rows_completed: raw.rows_completed,
+            rows_ordered_committed: raw.rows_ordered_committed,
+            max_in_flight_row_groups_observed: raw.max_in_flight_row_groups_observed,
+            max_pending_results_observed: raw.max_pending_results_observed,
+            max_pending_rows_observed: raw.max_pending_rows_observed,
+            capacity_wait_count: raw.capacity_wait_count,
+            capacity_wait_ns: raw.capacity_wait_ns,
+            task_queue_full_wait_count: raw.task_queue_full_wait_count,
+            task_queue_full_wait_ns: raw.task_queue_full_wait_ns,
+            result_queue_full_wait_count: raw.result_queue_full_wait_count,
+            result_queue_full_wait_ns: raw.result_queue_full_wait_ns,
+            ordered_frontier_wait_count: raw.ordered_frontier_wait_count,
+            ordered_frontier_wait_ns: raw.ordered_frontier_wait_ns,
+            caller_prepare_ns: raw.caller_prepare_ns,
+            ordered_commit_ns: raw.ordered_commit_ns,
+            ordered_terminal_completed: raw.ordered_terminal_completed != 0,
+            worker_reports,
+        })
     }
 
     unsafe fn maintenance_report_from_raw(

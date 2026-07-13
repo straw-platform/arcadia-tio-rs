@@ -10,15 +10,16 @@ use arcadia_tio_rs::ocb::{
     CompactL2PhysicalV2ArtifactCertificationOptions, CompatibilityStatus, DecodedDictionaryValues,
     DictionaryValueKind, HealthStatus, LogicalKind, ManifestBuildOptions, NullOrder,
     OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
-    PhysicalType, PredicateValue, PrimitiveValues, Projection, ReadRequest, RowGroupPredicate,
-    WriteColumn, WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup,
-    WriteSpec,
+    ParallelReadNext, ParallelReadOptions, ParallelReadSession, PhysicalType, PredicateValue,
+    PrimitiveValues, Projection, ReadRequest, RowGroupPredicate, WriteColumn, WriteColumnChunk,
+    WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup, WriteSpec,
 };
 
 #[test]
 fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ColumnBundleFile>();
+    assert_send_sync::<ParallelReadSession>();
 
     let path = unique_path("ocb-safe-wrapper-roundtrip.ocb");
     let export_path = unique_path("ocb-safe-wrapper-roundtrip-export.ocb");
@@ -166,6 +167,97 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
     assert!(attributed.attribution.bytes_read > 0);
     assert!(attributed.attribution.native_to_c_copy_ns.is_some());
     assert!(attributed.attribution.wrapper_copy_ns.is_some());
+
+    let parallel = file
+        .parallel_read_session(
+            &request,
+            &[],
+            ParallelReadOptions {
+                max_in_flight_row_groups: 2,
+            },
+        )
+        .expect("create parallel read session");
+    let mut parallel_ids = Vec::new();
+    loop {
+        match parallel.next().expect("next parallel batch") {
+            ParallelReadNext::Batch(result) => {
+                assert_eq!(
+                    result.context.selected_row_group_ordinal,
+                    parallel_ids.len()
+                );
+                assert_eq!(result.context.row_group_id, result.batch.row_group_id);
+                parallel_ids.push(result.batch.row_group_id);
+            }
+            ParallelReadNext::End => break,
+            ParallelReadNext::Cancelled => panic!("completed parallel session was cancelled"),
+        }
+    }
+    assert_eq!(parallel_ids, vec![0, 1]);
+    assert_eq!(
+        parallel.next().expect("repeat parallel end"),
+        ParallelReadNext::End
+    );
+    let parallel_report = parallel.report().expect("parallel terminal report");
+    assert_eq!(parallel_report.cursor_report.batches_yielded, 2);
+    assert_eq!(parallel_report.cursor_report.rows_yielded, 4);
+    assert_eq!(parallel_report.row_groups_ordered_committed, 2);
+    assert_eq!(parallel_report.rows_ordered_committed, 4);
+    assert!(parallel_report.ordered_terminal_completed);
+    assert!(parallel_report.max_in_flight_row_groups_observed <= 2);
+    assert_eq!(
+        parallel_report.worker_reports.len(),
+        parallel_report.started_workers
+    );
+
+    let subset = file
+        .parallel_read_session(
+            &request,
+            &[1, 0],
+            ParallelReadOptions {
+                max_in_flight_row_groups: 2,
+            },
+        )
+        .expect("create parallel subset session");
+    let mut subset_ids = Vec::new();
+    loop {
+        match subset.next().expect("next parallel subset batch") {
+            ParallelReadNext::Batch(result) => subset_ids.push(result.batch.row_group_id),
+            ParallelReadNext::End => break,
+            ParallelReadNext::Cancelled => panic!("parallel subset was cancelled"),
+        }
+    }
+    assert_eq!(subset_ids, vec![0, 1]);
+
+    let cancelled = file
+        .parallel_read_session(
+            &request,
+            &[],
+            ParallelReadOptions {
+                max_in_flight_row_groups: 2,
+            },
+        )
+        .expect("create cancellable parallel session");
+    cancelled.cancel().expect("cancel parallel session");
+    cancelled.cancel().expect("repeat parallel cancellation");
+    assert_eq!(
+        cancelled.next().expect("cancelled parallel terminal"),
+        ParallelReadNext::Cancelled
+    );
+    let cancelled_report = cancelled.report().expect("cancelled parallel report");
+    assert!(cancelled_report.cursor_report.cancelled);
+    assert!(!cancelled_report.ordered_terminal_completed);
+
+    let active = file
+        .parallel_read_session(
+            &request,
+            &[],
+            ParallelReadOptions {
+                max_in_flight_row_groups: 1,
+            },
+        )
+        .expect("create active unconsumed session");
+    assert!(active.report().is_err());
+    drop(active);
 
     let plan = file.plan_read(&request).expect("plan projected read");
     assert_eq!(plan.projected_column_ids, vec![0, 2]);

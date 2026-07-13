@@ -419,6 +419,29 @@ fn representative_raw_layouts_are_pointer_compatible() {
         assert_eq!(size_of::<ArcadiaTioCommitList>(), 16);
         #[cfg(feature = "format-ocb")]
         {
+            assert_eq!(size_of::<ArcadiaTioOcbParallelReadOptions>(), 88);
+            assert_eq!(size_of::<ArcadiaTioOcbParallelReadContext>(), 96);
+            assert_eq!(size_of::<ArcadiaTioOcbParallelReadResult>(), 232);
+            assert_eq!(size_of::<ArcadiaTioOcbParallelReadWorkerReport>(), 88);
+            assert_eq!(size_of::<ArcadiaTioOcbParallelReadReport>(), 648);
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbParallelReadOptions, max_in_flight_row_groups),
+                16
+            );
+            assert_eq!(offset_of!(ArcadiaTioOcbParallelReadContext, worker_id), 56);
+            assert_eq!(offset_of!(ArcadiaTioOcbParallelReadResult, batch), 112);
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbParallelReadWorkerReport, caller_prepare_ns),
+                48
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbParallelReadReport, attribution),
+                184
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbParallelReadReport, worker_reports),
+                568
+            );
             assert_eq!(size_of::<ArcadiaTioOcbCompactL2CertificationOptions>(), 96);
             assert_eq!(
                 size_of::<ArcadiaTioOcbCompactL2ChannelCertificationReport>(),

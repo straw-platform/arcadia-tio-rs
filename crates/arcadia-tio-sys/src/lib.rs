@@ -35,6 +35,13 @@ pub struct ArcadiaTioOcbReadPlan {
     _private: [u8; 0],
 }
 
+/// Opaque pull-driven parallel OCB read session owned by the native library.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+pub struct ArcadiaTioOcbParallelReadSession {
+    _private: [u8; 0],
+}
+
 /// Thread-local C ABI error code value.
 pub type ArcadiaTioErrorCode = c_int;
 /// OCB structured error-kind value.
@@ -70,6 +77,9 @@ pub type ArcadiaTioOcbNullOrder = c_int;
 /// OCB projection-kind selector.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbProjectionKind = c_int;
+/// OCB parallel read `next` terminal/result status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbParallelReadNextStatus = c_int;
 /// OCB body kind selector.
 #[cfg(feature = "format-ocb")]
 pub type ArcadiaTioOcbBodyKind = c_int;
@@ -289,6 +299,12 @@ raw_constant!(ARCADIA_TIO_OCB_NULL_ORDER_NO_NULLS: ArcadiaTioOcbNullOrder = 2);
 raw_constant!(ARCADIA_TIO_OCB_PROJECTION_ALL: ArcadiaTioOcbProjectionKind = 0);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_PROJECTION_NAMES: ArcadiaTioOcbProjectionKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_BATCH: ArcadiaTioOcbParallelReadNextStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_END: ArcadiaTioOcbParallelReadNextStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_CANCELLED: ArcadiaTioOcbParallelReadNextStatus = 2);
 #[cfg(feature = "format-ocb")]
 raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_UNKNOWN: ArcadiaTioOcbBodyKind = 0);
 #[cfg(feature = "format-ocb")]
@@ -2184,6 +2200,151 @@ pub struct ArcadiaTioOcbColumnBatch {
     pub reserved: [u64; 4],
 }
 
+/// Options for a bounded parallel OCB read session.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum launched row groups not yet retired in order.
+    pub max_in_flight_row_groups: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// Deterministic context for one parallel OCB result.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadContext {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Zero-based ordinal in the plan-ordered selected subset.
+    pub selected_row_group_ordinal: usize,
+    /// File-local row group id.
+    pub row_group_id: u32,
+    /// Logical first row.
+    pub base_row: u64,
+    /// Exclusive logical row end.
+    pub row_end: u64,
+    /// Logical row count.
+    pub row_count: u64,
+    /// Invocation-local worker slot id.
+    pub worker_id: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Owned batch result from one successful parallel OCB `next` call.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadResult {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Deterministic selected-row-group context.
+    pub context: ArcadiaTioOcbParallelReadContext,
+    /// Native-owned batch, freed by the paired result free function.
+    pub batch: ArcadiaTioOcbColumnBatch,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Per-worker bounded parallel OCB read diagnostics.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadWorkerReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Invocation-local worker slot id.
+    pub worker_id: usize,
+    /// Row groups completed by this worker.
+    pub row_groups_completed: usize,
+    /// Rows completed by this worker.
+    pub rows_completed: u64,
+    /// Worker row-group read elapsed nanoseconds.
+    pub row_group_read_ns: u64,
+    /// Worker preparation/copy elapsed nanoseconds.
+    pub caller_prepare_ns: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Owned terminal diagnostics for a bounded parallel OCB read session.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Visitor-compatible terminal cursor report.
+    pub cursor_report: ArcadiaTioOcbReadCursorReport,
+    /// Read/checksum/decode attribution.
+    pub attribution: ArcadiaTioOcbReadAttribution,
+    /// Worker count requested by the read request.
+    pub requested_workers: usize,
+    /// Worker count started after bounded fallback.
+    pub started_workers: usize,
+    /// Maximum simultaneously active workers observed.
+    pub max_active_workers_observed: usize,
+    /// Row-group tasks admitted to the worker stage.
+    pub row_groups_queued: usize,
+    /// Row groups completed by workers.
+    pub row_groups_completed: usize,
+    /// Row groups released through ordered delivery.
+    pub row_groups_ordered_committed: usize,
+    /// Rows completed by workers.
+    pub rows_completed: u64,
+    /// Rows released through ordered delivery.
+    pub rows_ordered_committed: u64,
+    /// Maximum launched-but-not-retired row groups observed.
+    pub max_in_flight_row_groups_observed: usize,
+    /// Maximum completed results awaiting ordered delivery.
+    pub max_pending_results_observed: usize,
+    /// Maximum decoded rows awaiting ordered delivery.
+    pub max_pending_rows_observed: u64,
+    /// Number of waits at the global in-flight cap.
+    pub capacity_wait_count: usize,
+    /// Nanoseconds waiting at the global in-flight cap.
+    pub capacity_wait_ns: u64,
+    /// Number of bounded task-queue full waits.
+    pub task_queue_full_wait_count: usize,
+    /// Nanoseconds in bounded task-queue full waits.
+    pub task_queue_full_wait_ns: u64,
+    /// Number of bounded result-queue full waits.
+    pub result_queue_full_wait_count: usize,
+    /// Nanoseconds in bounded result-queue full waits.
+    pub result_queue_full_wait_ns: u64,
+    /// Number of waits for the next ordered ordinal.
+    pub ordered_frontier_wait_count: usize,
+    /// Nanoseconds waiting for the next ordered ordinal.
+    pub ordered_frontier_wait_ns: u64,
+    /// Summed worker preparation/copy nanoseconds.
+    pub caller_prepare_ns: u64,
+    /// Ordered delivery callback elapsed nanoseconds.
+    pub ordered_commit_ns: u64,
+    /// Nonzero only when every selected ordinal crossed ordered delivery.
+    pub ordered_terminal_completed: u8,
+    /// Native-owned per-worker reports.
+    pub worker_reports: *mut ArcadiaTioOcbParallelReadWorkerReport,
+    /// Number of per-worker reports.
+    pub worker_reports_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
 /// Owned OCB read outcome; free with [`arcadia_tio_ocb_read_outcome_free`].
 #[cfg(feature = "format-ocb")]
 #[repr(C)]
@@ -4040,6 +4201,39 @@ unsafe extern "C" {
         user: *mut c_void,
         out_report: *mut ArcadiaTioOcbReadCursorReport,
     ) -> ArcadiaTioErrorCode;
+    /// Creates a pull-driven bounded parallel OCB read session.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_session_create(
+        file: *mut ArcadiaTioOcbFile,
+        request: *const ArcadiaTioOcbReadRequest,
+        row_group_ids: *const u32,
+        row_group_ids_len: usize,
+        options: *const ArcadiaTioOcbParallelReadOptions,
+        out_session: *mut *mut ArcadiaTioOcbParallelReadSession,
+    ) -> ArcadiaTioErrorCode;
+    /// Blocks for the next ordered parallel OCB batch or terminal state.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_session_next(
+        session: *mut ArcadiaTioOcbParallelReadSession,
+        out_status: *mut ArcadiaTioOcbParallelReadNextStatus,
+        out_result: *mut ArcadiaTioOcbParallelReadResult,
+    ) -> ArcadiaTioErrorCode;
+    /// Requests idempotent cancellation of a parallel OCB read session.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_session_cancel(
+        session: *mut ArcadiaTioOcbParallelReadSession,
+    ) -> ArcadiaTioErrorCode;
+    /// Copies the terminal report after end or cancellation.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_session_report(
+        session: *mut ArcadiaTioOcbParallelReadSession,
+        out_report: *mut ArcadiaTioOcbParallelReadReport,
+    ) -> ArcadiaTioErrorCode;
+    /// Cancels, drains, joins, and frees a parallel OCB read session.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_session_free(
+        session: *mut ArcadiaTioOcbParallelReadSession,
+    );
     /// Reads one row group into caller-owned buffers.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_row_group_into(
@@ -4113,6 +4307,12 @@ unsafe extern "C" {
     /// Frees owned fields inside an OCB read outcome.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_outcome_free(outcome: *mut ArcadiaTioOcbReadOutcome);
+    /// Frees owned fields inside a parallel OCB read result and resets it.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_result_free(result: *mut ArcadiaTioOcbParallelReadResult);
+    /// Frees owned fields inside a parallel OCB read report and resets it.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_report_free(report: *mut ArcadiaTioOcbParallelReadReport);
     /// Initializes OCB primitive values.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_primitive_values_init(values: *mut ArcadiaTioOcbPrimitiveValues);
@@ -4140,6 +4340,17 @@ unsafe extern "C" {
     /// Initializes an OCB read cursor report.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_read_cursor_report_init(report: *mut ArcadiaTioOcbReadCursorReport);
+    /// Initializes parallel OCB read options.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_options_init(
+        options: *mut ArcadiaTioOcbParallelReadOptions,
+    );
+    /// Initializes a parallel OCB read result.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_result_init(result: *mut ArcadiaTioOcbParallelReadResult);
+    /// Initializes a parallel OCB read report.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_parallel_read_report_init(report: *mut ArcadiaTioOcbParallelReadReport);
     /// Initializes an OCB column fill buffer.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_column_fill_buffer_init(buffer: *mut ArcadiaTioOcbColumnFillBuffer);

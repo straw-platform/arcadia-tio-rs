@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.3.5 - prospective poll-based bounded parallel OCB session
+
+This untagged source candidate promotes bounded parallel OCB preparation through
+ten C ABI functions and seven opaque/carrier/status types, exact raw sys
+declarations, and a safe Rust RAII iterator/session. Results are owned and
+ordered, cancellation is idempotent, terminal reports expose worker/queue/
+attribution facts, and active drop cancels and joins. Rust owns the worker
+threads; generic `Send + 'static` callback preparation remains available only
+in the separate C-ABI-free OCB core crate.
+
+The calibrated public safe-wrapper count moves from **776** to **787** and raw
+sys coverage moves from **522 / 522** to **539 / 539**. The separate public OCB
+core stays **279**. This candidate does not publish or tag anything and creates
+no benchmark, performance, storage, capacity, production-default, or release
+claim.
+
 ## 0.3.4 — bounded parallel OCB preparation
 
 Tag: `0.3.4`

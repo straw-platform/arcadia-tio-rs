@@ -11,6 +11,11 @@ constants, `repr(C)` metadata/read/write structs, opaque file handles,
 init/free helpers, manifest build/validate carriers, compact-L2 physical-v2
 artifact certification carriers, and
 open/create/append/read/dictionary/cleanup/manifest/certification declarations.
+The prospective 0.3.5 additions include the opaque bounded parallel read
+session, initialized options/result/report carriers, blocking caller-thread
+polling, idempotent cancellation, terminal reporting, and paired result/report/
+session frees. The raw result owns its nested batch until the result free call;
+reusing an owning output is invalid.
 Generic write report/timing carriers are scalar initialized outputs and do not
 require a free helper; callers must still uphold the C header ownership and
 lifetime contract.
