@@ -239,13 +239,19 @@ fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
         .expect("create cancellable parallel session");
     cancelled.cancel().expect("cancel parallel session");
     cancelled.cancel().expect("repeat parallel cancellation");
-    assert_eq!(
-        cancelled.next().expect("cancelled parallel terminal"),
-        ParallelReadNext::Cancelled
-    );
-    let cancelled_report = cancelled.report().expect("cancelled parallel report");
-    assert!(cancelled_report.cursor_report.cancelled);
-    assert!(!cancelled_report.ordered_terminal_completed);
+    let cancel_terminal = cancelled.next().expect("cancel-race parallel terminal");
+    let cancel_report = cancelled.report().expect("cancel-race parallel report");
+    match cancel_terminal {
+        ParallelReadNext::Cancelled => {
+            assert!(cancel_report.cursor_report.cancelled);
+            assert!(!cancel_report.ordered_terminal_completed);
+        }
+        ParallelReadNext::End => {
+            assert!(!cancel_report.cursor_report.cancelled);
+            assert!(cancel_report.ordered_terminal_completed);
+        }
+        ParallelReadNext::Batch(_) => panic!("cancel returned a non-terminal batch"),
+    }
 
     let active = file
         .parallel_read_session(

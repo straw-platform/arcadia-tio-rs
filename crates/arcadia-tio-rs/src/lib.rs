@@ -18523,8 +18523,9 @@ pub mod ocb {
     /// Pull-driven owner of Rust-backed bounded OCB read workers.
     ///
     /// `next` calls are serialized internally. `cancel` is idempotent and may
-    /// run concurrently with a blocked `next`. Dropping an active session
-    /// cancels, drains, joins, and frees all native state.
+    /// run concurrently with a blocked `next`. Successful completion may win
+    /// that race, so inspect the terminal status and matching report. Dropping
+    /// an active session cancels, drains, joins, and frees all native state.
     #[derive(Debug)]
     pub struct ParallelReadSession {
         raw: NonNull<sys::ArcadiaTioOcbParallelReadSession>,
@@ -18873,6 +18874,7 @@ pub mod ocb {
         }
 
         /// Request cancellation. This is idempotent and can run while `next` blocks.
+        /// Successful completion may win the race; inspect the terminal status.
         pub fn cancel(&self) -> OcbResult<()> {
             let status =
                 unsafe { sys::arcadia_tio_ocb_parallel_read_session_cancel(self.raw.as_ptr()) };

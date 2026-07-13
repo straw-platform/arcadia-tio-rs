@@ -46,10 +46,11 @@ read session while preserving the sibling C-ABI-free OCB core preparation API.
 `ColumnBundleFile::parallel_read_session` returns a move-owned RAII session;
 call its explicit `next` method when `End` versus `Cancelled` matters, or use it
 as an iterator over owned batches. `cancel` is idempotent, `report` is terminal
-only, and drop cancels, drains, joins, and frees native state. Rust owns every
-worker thread and no foreign callback runs on a worker. The in-flight limit is
-measured in launched row-group slots, not bytes retained by caller-owned
-results.
+only, and cancellation may race successful completion. Callers branch on the
+observed terminal status and matching report. Drop cancels, drains, joins, and
+frees native state. Rust owns every worker thread and no foreign callback runs
+on a worker. The in-flight limit is measured in launched row-group slots, not
+bytes retained by caller-owned results.
 
 This source release does not publish native
 libraries, package-manager artifacts, signatures, benchmark evidence, or a

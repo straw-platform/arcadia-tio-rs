@@ -105,10 +105,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     cancelled.cancel()?;
     cancelled.cancel()?;
-    assert_eq!(cancelled.next()?, ParallelReadNext::Cancelled);
-    let cancelled_report = cancelled.report()?;
-    assert!(cancelled_report.cursor_report.cancelled);
-    assert!(!cancelled_report.ordered_terminal_completed);
+    let cancel_terminal = cancelled.next()?;
+    let cancel_report = cancelled.report()?;
+    match cancel_terminal {
+        ParallelReadNext::Cancelled => {
+            assert!(cancel_report.cursor_report.cancelled);
+            assert!(!cancel_report.ordered_terminal_completed);
+        }
+        ParallelReadNext::End => {
+            assert!(!cancel_report.cursor_report.cancelled);
+            assert!(cancel_report.ordered_terminal_completed);
+        }
+        ParallelReadNext::Batch(_) => panic!("cancel returned a non-terminal batch"),
+    }
 
     println!("OCB tutorial ok: append, projection/pruning, ordered polling, cancellation");
     Ok(())

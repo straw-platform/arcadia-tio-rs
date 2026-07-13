@@ -37,10 +37,11 @@ through the native C ABI and safe wrapper as an opt-in poll-based session.
 `ColumnBundleFile::parallel_read_session` returns a move-owned RAII value with
 explicit terminal polling and an `Iterator` facade over owned ordered batches.
 Rust owns every worker thread; no foreign callback crosses the ABI. Cancellation
-is idempotent, reports are terminal-only, and active drop cancels, drains, joins,
-and frees native state. The cap bounds in-flight row-group slots, not bytes in
-caller-retained batches. The separate C-ABI-free OCB-core count and contract
-remain unchanged.
+is idempotent and may race successful completion; callers inspect the observed
+terminal status and matching report. Reports are terminal-only, and active drop
+cancels, drains, joins, and frees native state. The cap bounds in-flight
+row-group slots, not bytes in caller-retained batches. The separate C-ABI-free
+OCB-core count and contract remain unchanged.
 
 This source release does not create package publication, native artifacts,
 benchmark, speedup, storage, capacity, production-default, or release-readiness

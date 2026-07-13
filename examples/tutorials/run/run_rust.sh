@@ -23,28 +23,28 @@ export TEMP="$process_tmp"
 export TMP="$process_tmp"
 export TIO_TUTORIAL_TMPDIR="$data_tmp"
 
-private_manifest="wrappers/rust/arcadia-tio-rs/Cargo.toml"
+embedded_public_manifest="arcadia-tio-rs/Cargo.toml"
 public_manifest="crates/arcadia-tio-rs/Cargo.toml"
-if [[ -f "$private_manifest" ]]; then
-  crate_manifest="$private_manifest"
-  source_glob="wrappers/rust/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
-  private_source=1
+if [[ -f "$embedded_public_manifest" && -f "crates/arcadia-tio-capi/Cargo.toml" ]]; then
+  crate_manifest="$embedded_public_manifest"
+  source_glob="arcadia-tio-rs/crates/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
+  private_workspace=1
 elif [[ -f "$public_manifest" ]]; then
   crate_manifest="$public_manifest"
   source_glob="crates/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
-  private_source=0
+  private_workspace=0
 else
-  echo "Could not find arcadia-tio-rs Cargo.toml in private or public layout" >&2
+  echo "Could not find an exported arcadia-tio-rs workspace" >&2
   exit 1
 fi
 
-if [[ "$private_source" == "1" && "${TIO_TUTORIAL_RUST_SKIP_NATIVE_BUILD:-0}" != "1" ]]; then
+if [[ "$private_workspace" == "1" && "${TIO_TUTORIAL_RUST_SKIP_NATIVE_BUILD:-0}" != "1" ]]; then
   cargo build --package arcadia-tio-capi --release
 fi
 
 if [[ -n "${ARCADIA_TIO_CAPI_LIB_DIR:-}" ]]; then
   lib_dir="$ARCADIA_TIO_CAPI_LIB_DIR"
-elif [[ "$private_source" == "1" ]]; then
+elif [[ "$private_workspace" == "1" ]]; then
   target_root="${CARGO_TARGET_DIR:-$repo_root/target}"
   lib_dir="$target_root/release"
 else
