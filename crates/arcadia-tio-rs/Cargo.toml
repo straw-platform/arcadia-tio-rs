@@ -85,3 +85,8 @@ path = "examples/tutorials/08_compression_interop.rs"
 name = "tutorial_09_tensor_ops_conversions"
 path = "examples/tutorials/09_tensor_ops_conversions.rs"
 required-features = ["arrow", "ndarray", "csv", "parquet"]
+
+[[example]]
+name = "tutorial_10_ocb_roundtrip_parallel"
+path = "examples/tutorials/10_ocb_roundtrip_parallel.rs"
+required-features = ["format-ocb"]

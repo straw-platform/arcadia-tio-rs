@@ -30,9 +30,9 @@ build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
-## Prospective 0.3.5 bounded parallel read session
+## 0.3.5 bounded parallel read session
 
-The untagged 0.3.5 candidate promotes the core bounded preparation semantics
+The 0.3.5 source tag promotes the core bounded preparation semantics
 through the native C ABI and safe wrapper as an opt-in poll-based session.
 `ColumnBundleFile::parallel_read_session` returns a move-owned RAII value with
 explicit terminal polling and an `Iterator` facade over owned ordered batches.
@@ -42,9 +42,9 @@ and frees native state. The cap bounds in-flight row-group slots, not bytes in
 caller-retained batches. The separate C-ABI-free OCB-core count and contract
 remain unchanged.
 
-This candidate does not create a source tag, package publication, native
-artifact, benchmark, speedup, storage, capacity, production-default, or
-release-readiness claim.
+This source release does not create package publication, native artifacts,
+benchmark, speedup, storage, capacity, production-default, or release-readiness
+claims.
 
 ## 0.3.4 bounded parallel preparation release
 
@@ -145,11 +145,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the 0.3.4 public source tag:
+Or use the 0.3.5 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.4", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.5", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -159,11 +159,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the 0.3.4 public source tag:
+Or use the 0.3.5 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.4" }
+arcadia-tio-rs = { git = "https://github.com/Jacobbishopxy/arcadia-tio-rs.git", tag = "0.3.5" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

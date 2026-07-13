@@ -1,8 +1,10 @@
 # Release notes
 
-## 0.3.5 - prospective poll-based bounded parallel OCB session
+## 0.3.5 - poll-based bounded parallel OCB session
 
-This untagged source candidate promotes bounded parallel OCB preparation through
+Tag: `0.3.5`
+
+This source release promotes bounded parallel OCB preparation through
 ten C ABI functions and seven opaque/carrier/status types, exact raw sys
 declarations, and a safe Rust RAII iterator/session. Results are owned and
 ordered, cancellation is idempotent, terminal reports expose worker/queue/
@@ -12,9 +14,9 @@ in the separate C-ABI-free OCB core crate.
 
 The calibrated public safe-wrapper count moves from **776** to **787** and raw
 sys coverage moves from **522 / 522** to **539 / 539**. The separate public OCB
-core stays **279**. This candidate does not publish or tag anything and creates
-no benchmark, performance, storage, capacity, production-default, or release
-claim.
+core stays **279**. This source tag does not publish crates.io packages, native
+libraries, signed artifacts, or benchmark evidence, and creates no performance,
+storage, capacity, or production-default claim.
 
 ## 0.3.4 — bounded parallel OCB preparation
 

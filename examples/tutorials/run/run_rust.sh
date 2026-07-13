@@ -6,6 +6,23 @@ repo_root="$(cd -- "$script_dir/../../.." && pwd -P)"
 
 cd "$repo_root"
 
+tmp_root="$repo_root/.tmp/tutorials/rust-run"
+mkdir -p "$tmp_root"
+run_dir="$(mktemp -d "$tmp_root/run.XXXXXX")"
+process_tmp="$run_dir/process"
+data_tmp="$run_dir/data"
+mkdir -p "$process_tmp" "$data_tmp"
+cleanup() {
+  local status=$?
+  rm -rf -- "$run_dir"
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+export TMPDIR="$process_tmp"
+export TEMP="$process_tmp"
+export TMP="$process_tmp"
+export TIO_TUTORIAL_TMPDIR="$data_tmp"
+
 private_manifest="wrappers/rust/arcadia-tio-rs/Cargo.toml"
 public_manifest="crates/arcadia-tio-rs/Cargo.toml"
 if [[ -f "$private_manifest" ]]; then
@@ -64,6 +81,10 @@ for source in "${sources[@]}"; do
     09_tensor_ops_conversions)
       echo "==> cargo run --manifest-path $crate_manifest --features arrow,ndarray,csv,parquet --example $example"
       cargo run --manifest-path "$crate_manifest" --features arrow,ndarray,csv,parquet --example "$example"
+      ;;
+    10_ocb_roundtrip_parallel)
+      echo "==> cargo run --manifest-path $crate_manifest --features format-ocb --example $example"
+      cargo run --manifest-path "$crate_manifest" --features format-ocb --example "$example"
       ;;
     *)
       echo "==> cargo run --manifest-path $crate_manifest --example $example"

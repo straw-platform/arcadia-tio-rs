@@ -39,9 +39,9 @@ surfaces only: they are not benchmark evidence and do not create performance,
 phase-percentage, zero-copy, storage, cache, layout, external-format, or
 release-readiness claims.
 
-## Prospective 0.3.5 source-release posture
+## 0.3.5 source-release posture
 
-The prospective 0.3.5 workspace adds an opt-in C-ABI-backed bounded parallel
+The 0.3.5 workspace tag adds an opt-in C-ABI-backed bounded parallel
 read session while preserving the sibling C-ABI-free OCB core preparation API.
 `ColumnBundleFile::parallel_read_session` returns a move-owned RAII session;
 call its explicit `next` method when `End` versus `Cancelled` matters, or use it
@@ -51,7 +51,7 @@ worker thread and no foreign callback runs on a worker. The in-flight limit is
 measured in launched row-group slots, not bytes retained by caller-owned
 results.
 
-This candidate does not publish native
+This source release does not publish native
 libraries, package-manager artifacts, signatures, benchmark evidence, or a
 default/production runtime readiness claim. Consumers of this C-ABI-backed
 crate must still supply an operator-approved `arcadia_tio_capi` native library
@@ -679,20 +679,23 @@ manifest:
 | `tutorial_07_reform_compaction_diagnostics` | Reform, compaction, and native diagnostic report wrappers |
 | `tutorial_08_compression_interop` | Compression controls, read-index lowering, and Arrow C Data interop |
 | `tutorial_09_tensor_ops_conversions` | Owned dense tensor ops, typed wrappers/`typed_ops`, optional Arrow RecordBatch/IPC plus ndarray conversions, and CSV/Parquet companion conversions |
+| `tutorial_10_ocb_roundtrip_parallel` | OCB create/append/reopen, metadata/dictionary reads, projection/predicate planning, and bounded ordered parallel polling |
 
 ```sh
 cargo run --example tutorial_01_quickstart_create_append_read
 cargo run --example tutorial_08_compression_interop
 cargo run --features arrow,ndarray,csv,parquet --example tutorial_09_tensor_ops_conversions
+cargo run --features format-ocb --example tutorial_10_ocb_roundtrip_parallel
 ```
 
 Use the native-library environment below when running them. Default tutorial
 examples build with empty default features; `tutorial_09_tensor_ops_conversions`
-requires the opt-in `arrow,ndarray,csv,parquet` features. The examples create
-tiny `.tio` files and, for the feature-gated tutorial, tiny Arrow IPC and Parquet
+requires the opt-in `arrow,ndarray,csv,parquet` features, while
+`tutorial_10_ocb_roundtrip_parallel` requires `format-ocb`. The examples create
+tiny `.tio`/`.ocb` files and, for the conversion tutorial, tiny Arrow IPC and Parquet
 companion payloads under temporary directories and clean them up; CSV
 string/bytes roundtrips stay in memory. Do not copy native libraries, Cargo
-build output, generated `.tio` data, or generated IPC/CSV/Parquet data into the
+build output, generated `.tio`/`.ocb` data, or generated IPC/CSV/Parquet data into the
 tutorial tree or source-only public checkout.
 
 ## L2 Parquet OCB conversion example
