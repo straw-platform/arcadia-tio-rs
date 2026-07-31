@@ -8,12 +8,91 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use arcadia_tio_rs::ocb::{
     self, BodyKind, ChecksumKind, ColumnBundleFile, ColumnChunkSummaryCodec,
     CompactL2PhysicalV2ArtifactCertificationOptions, CompatibilityStatus, DecodedDictionaryValues,
-    DictionaryValueKind, HealthStatus, LogicalKind, ManifestBuildOptions, NullOrder,
-    OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
+    DictionaryValueKind, ErrorKind, FailureCause, HealthStatus, LogicalKind, ManifestBuildOptions,
+    NullOrder, OpenOptions as OcbOpenOptions, OpenValidation, OrderingDirection, OrderingKeyRange,
     ParallelReadNext, ParallelReadOptions, ParallelReadSession, PhysicalType, PredicateValue,
-    PrimitiveValues, Projection, ReadRequest, RowGroupPredicate, WriteColumn, WriteColumnChunk,
-    WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup, WriteSpec,
+    PrimitiveValues, Projection, ReadRequest, ResourceLimits, RowGroupPredicate, WriteColumn,
+    WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup, WriteSpec,
 };
+
+#[test]
+fn ocb_resource_limits_defaults_open_boundaries_and_clone_retention_are_stable() {
+    let policy_a = ResourceLimits::policy_a();
+    assert_eq!(ResourceLimits::default(), policy_a);
+    assert_eq!(policy_a.max_encoded_object_bytes, 1_073_741_824);
+    assert_eq!(policy_a.max_compressed_chunk_bytes, 536_870_912);
+    assert_eq!(policy_a.max_decompressed_chunk_bytes, 536_870_912);
+    assert_eq!(policy_a.max_projected_row_group_bytes, 1_073_741_824);
+    assert_eq!(policy_a.max_owned_selected_compressed_bytes, 8_589_934_592);
+    assert_eq!(
+        policy_a.max_owned_decoded_materialized_bytes,
+        17_179_869_184
+    );
+
+    let path = unique_path("ocb-safe-wrapper-resource-limits.ocb");
+    let _ = fs::remove_file(&path);
+    ocb::create(&path, &write_spec(&[10, 11], &[0, 1], &[1.5, 2.5]))
+        .expect("create resource-limit fixture");
+
+    let zero_projected_row_group = ResourceLimits {
+        max_projected_row_group_bytes: 0,
+        ..policy_a
+    };
+    let limited = ColumnBundleFile::open_with_resource_limits(&path, zero_projected_row_group)
+        .expect("open with custom resource limits");
+    let limited_clone = limited
+        .clone_reader()
+        .expect("clone custom-resource reader");
+    for reader in [&limited, &limited_clone] {
+        let error = reader
+            .read_batches(&ReadRequest::default())
+            .expect_err("zero projected-row-group budget must reject a read");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.cause(), Some(FailureCause::InvalidInput));
+    }
+
+    let associated = ColumnBundleFile::open_with_options_and_resource_limits(
+        &path,
+        OcbOpenOptions {
+            validation: OpenValidation::FullPayload,
+        },
+        policy_a,
+    )
+    .expect("associated combined open");
+    assert_eq!(
+        associated
+            .metadata()
+            .expect("associated metadata")
+            .row_count,
+        2
+    );
+
+    let free_limits = ocb::open_with_resource_limits(&path, policy_a).expect("free limits open");
+    assert_eq!(
+        free_limits
+            .metadata()
+            .expect("free limits metadata")
+            .row_count,
+        2
+    );
+    let free_combined =
+        ocb::open_with_options_and_resource_limits(&path, OcbOpenOptions::default(), policy_a)
+            .expect("free combined open");
+    assert_eq!(
+        free_combined
+            .metadata()
+            .expect("free combined metadata")
+            .row_count,
+        2
+    );
+
+    drop(free_combined);
+    drop(free_limits);
+    drop(associated);
+    drop(limited_clone);
+    drop(limited);
+    fs::remove_file(path).expect("remove resource-limit fixture");
+}
 
 #[test]
 fn ocb_safe_wrapper_create_append_read_and_cleanup_roundtrip() {
@@ -1087,7 +1166,10 @@ fn write_spec(sequence_key: &[i64], category_code: &[i32], metric: &[f64]) -> Wr
 
 fn unique_path(name: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/ocb-tests");
+    let dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("ocb-tests");
     fs::create_dir_all(&dir).expect("create project-local OCB test directory");
     dir.join(format!(
         "{}-{}-{name}",

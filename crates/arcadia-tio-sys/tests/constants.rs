@@ -19,6 +19,8 @@ const INTENTIONALLY_EXCLUDED_C_ABI_TYPES: &[&str] = &[
 ];
 
 const _: () = {
+    assert!(ARCADIA_TIO_ABI_VERSION == 3);
+    assert!(ARCADIA_TIO_COMPACTION_ABI_VERSION == 1);
     assert!(size_of::<ArcadiaTioDType>() == size_of::<c_int>());
     assert!(size_of::<ArcadiaTioErrorCode>() == size_of::<c_int>());
     assert!(size_of::<ArcadiaTioV4PreciseAccountingField>() == size_of::<c_int>());
@@ -314,6 +316,20 @@ fn sparse_integer_append_symbols_are_declared() {
     }
 }
 
+#[cfg(feature = "format-ocb")]
+#[test]
+fn ocb_resource_limit_symbols_are_declared() {
+    for name in [
+        "arcadia_tio_ocb_open_with_options_and_resource_limits",
+        "arcadia_tio_ocb_resource_limits_init",
+    ] {
+        assert!(
+            SYS_LIB.contains(&format!("pub fn {name}(")),
+            "missing sys declaration for {name}"
+        );
+    }
+}
+
 #[test]
 fn representative_raw_layouts_are_pointer_compatible() {
     assert_eq!(align_of::<ArcadiaTioTensor>(), align_of::<usize>());
@@ -372,6 +388,12 @@ fn representative_raw_layouts_are_pointer_compatible() {
         assert_eq!(size_of::<ArcadiaTioCreateWithUniverseOptions>(), 32);
         assert_eq!(size_of::<ArcadiaTioAppendWithUniverseOptions>(), 48);
         assert_eq!(size_of::<ArcadiaTioCompactionMode>(), 8);
+        assert_eq!(align_of::<ArcadiaTioCompactionMode>(), 4);
+        assert_eq!(offset_of!(ArcadiaTioCompactionMode, kind), 0);
+        assert_eq!(
+            offset_of!(ArcadiaTioCompactionMode, reblock_entry_block_size),
+            4
+        );
         assert_eq!(size_of::<ArcadiaTioCompactionStats>(), 32);
         assert_eq!(size_of::<ArcadiaTioReformOptions>(), 40);
         assert_eq!(size_of::<ArcadiaTioReformReport>(), 40);
@@ -419,6 +441,41 @@ fn representative_raw_layouts_are_pointer_compatible() {
         assert_eq!(size_of::<ArcadiaTioCommitList>(), 16);
         #[cfg(feature = "format-ocb")]
         {
+            assert_eq!(size_of::<ArcadiaTioOcbResourceLimits>(), 96);
+            assert_eq!(align_of::<ArcadiaTioOcbResourceLimits>(), 8);
+            assert_eq!(offset_of!(ArcadiaTioOcbResourceLimits, version), 0);
+            assert_eq!(offset_of!(ArcadiaTioOcbResourceLimits, struct_size), 8);
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbResourceLimits, max_encoded_object_bytes),
+                16
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbResourceLimits, max_compressed_chunk_bytes),
+                24
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbResourceLimits, max_decompressed_chunk_bytes),
+                32
+            );
+            assert_eq!(
+                offset_of!(ArcadiaTioOcbResourceLimits, max_projected_row_group_bytes),
+                40
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbResourceLimits,
+                    max_owned_selected_compressed_bytes
+                ),
+                48
+            );
+            assert_eq!(
+                offset_of!(
+                    ArcadiaTioOcbResourceLimits,
+                    max_owned_decoded_materialized_bytes
+                ),
+                56
+            );
+            assert_eq!(offset_of!(ArcadiaTioOcbResourceLimits, reserved), 64);
             assert_eq!(size_of::<ArcadiaTioOcbParallelReadOptions>(), 88);
             assert_eq!(size_of::<ArcadiaTioOcbParallelReadContext>(), 96);
             assert_eq!(size_of::<ArcadiaTioOcbParallelReadResult>(), 232);

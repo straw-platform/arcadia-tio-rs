@@ -11,6 +11,7 @@ use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::slice;
+use std::sync::OnceLock;
 
 use arcadia_tio_sys as sys;
 
@@ -159,12 +160,171 @@ fn status_result(status: i32, context: &str) -> Result<()> {
     }
 }
 
+/// Oldest native base ABI supported by this safe-wrapper release.
+pub const MIN_SUPPORTED_NATIVE_ABI_VERSION: u32 = 3;
+
+/// Newest native base ABI supported by this safe-wrapper release.
+pub const MAX_SUPPORTED_NATIVE_ABI_VERSION: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AbiCompatible(u32);
+
+#[derive(Debug)]
+struct AbiGate {
+    result: OnceLock<Result<AbiCompatible>>,
+}
+
+impl AbiGate {
+    const fn new() -> Self {
+        Self {
+            result: OnceLock::new(),
+        }
+    }
+
+    fn get_or_query(&self, query: impl FnOnce() -> u32) -> Result<AbiCompatible> {
+        self.result
+            .get_or_init(|| validate_native_abi_version(query()))
+            .clone()
+    }
+}
+
+fn validate_native_abi_version(version: u32) -> Result<AbiCompatible> {
+    if (MIN_SUPPORTED_NATIVE_ABI_VERSION..=MAX_SUPPORTED_NATIVE_ABI_VERSION).contains(&version) {
+        Ok(AbiCompatible(version))
+    } else {
+        Err(TioError::unimplemented(format!(
+            "native Arcadia TIO ABI {version} is incompatible with the safe wrapper's supported range {MIN_SUPPORTED_NATIVE_ABI_VERSION}..={MAX_SUPPORTED_NATIVE_ABI_VERSION}"
+        )))
+    }
+}
+
+fn ensure_native_abi() -> Result<AbiCompatible> {
+    static NATIVE_ABI_GATE: AbiGate = AbiGate::new();
+    NATIVE_ABI_GATE.get_or_query(|| {
+        // SAFETY: This is the sole native function permitted before base-ABI compatibility is
+        // established. Its fixed signature returns the native base ABI version without ownership.
+        unsafe { sys::arcadia_tio_abi_version() }
+    })
+}
+
+/// Checks the linked native base ABI once and returns its compatible version.
+///
+/// ABI `3` is the only base ABI supported by this wrapper release. The result,
+/// including an incompatibility error, is cached for the process lifetime. The
+/// compatibility error is constructed locally and does not consult native
+/// last-error storage.
+pub fn check_native_abi_compatibility() -> Result<u32> {
+    Ok(ensure_native_abi()?.0)
+}
+
+struct NativeOutput<T> {
+    raw: T,
+    free: unsafe extern "C" fn(*mut T),
+}
+
+impl<T> NativeOutput<T> {
+    fn new(raw: T, free: unsafe extern "C" fn(*mut T)) -> Self {
+        Self { raw, free }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut T {
+        &mut self.raw
+    }
+
+    fn as_ref(&self) -> &T {
+        &self.raw
+    }
+}
+
+impl<T> Drop for NativeOutput<T> {
+    fn drop(&mut self) {
+        // SAFETY: The guard uniquely owns the native output and invokes its matching free function
+        // exactly once, including when status or Rust-side conversion returns early.
+        unsafe { (self.free)(&mut self.raw) };
+    }
+}
+
+struct NativeArrayOutput<T> {
+    ptr: *mut T,
+    len: usize,
+    free: unsafe extern "C" fn(*mut T, usize),
+}
+
+impl<T> NativeArrayOutput<T> {
+    fn new(free: unsafe extern "C" fn(*mut T, usize)) -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+            free,
+        }
+    }
+
+    fn ptr_out(&mut self) -> *mut *mut T {
+        &mut self.ptr
+    }
+
+    fn len_out(&mut self) -> *mut usize {
+        &mut self.len
+    }
+
+    fn parts(&self) -> (*mut T, usize) {
+        (self.ptr, self.len)
+    }
+}
+
+impl<T> Drop for NativeArrayOutput<T> {
+    fn drop(&mut self) {
+        // SAFETY: The guard uniquely owns this native pointer/length pair and calls the matching
+        // array free function once. Native array free functions accept their empty null/zero form.
+        unsafe { (self.free)(self.ptr, self.len) };
+    }
+}
+
+struct NativePointerOutput<T> {
+    ptr: *mut T,
+    free: unsafe extern "C" fn(*mut T),
+}
+
+impl<T> NativePointerOutput<T> {
+    fn new(free: unsafe extern "C" fn(*mut T)) -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            free,
+        }
+    }
+
+    fn out(&mut self) -> *mut *mut T {
+        &mut self.ptr
+    }
+
+    fn get(&self) -> *mut T {
+        self.ptr
+    }
+
+    #[cfg(any(feature = "format-ocb", test))]
+    fn take(&mut self) -> *mut T {
+        mem::replace(&mut self.ptr, ptr::null_mut())
+    }
+}
+
+impl<T> Drop for NativePointerOutput<T> {
+    fn drop(&mut self) {
+        // SAFETY: The guard uniquely owns the pointer and invokes its matching free function once.
+        if !self.ptr.is_null() {
+            unsafe { (self.free)(self.ptr) };
+        }
+    }
+}
+
 fn path_to_cstring(path: impl AsRef<Path>) -> Result<CString> {
     let path = path.as_ref();
     let text = path
         .to_str()
         .ok_or_else(|| TioError::invalid_argument("path must be valid UTF-8 for the C ABI"))?;
-    CString::new(text).map_err(|_| TioError::invalid_argument("path contains an interior NUL byte"))
+    let path = CString::new(text)
+        .map_err(|_| TioError::invalid_argument("path contains an interior NUL byte"))?;
+    ensure_native_abi()?;
+    Ok(path)
 }
 
 fn string_to_cstring(value: &str, label: &str) -> Result<CString> {
@@ -172,22 +332,63 @@ fn string_to_cstring(value: &str, label: &str) -> Result<CString> {
         .map_err(|_| TioError::invalid_argument(format!("{label} contains an interior NUL byte")))
 }
 
-fn optional_c_string(ptr: *const c_char) -> Option<String> {
+fn optional_c_string(ptr: *const c_char) -> Result<Option<String>> {
     if ptr.is_null() {
-        None
+        Ok(None)
     } else {
         // SAFETY: Native metadata strings are documented as NUL-terminated C strings owned by the
         // metadata object while it is alive. The wrapper copies them immediately.
-        Some(
-            unsafe { CStr::from_ptr(ptr) }
-                .to_string_lossy()
-                .into_owned(),
-        )
+        let value = unsafe { CStr::from_ptr(ptr) }.to_str().map_err(|_| {
+            TioError::conversion("native output returned a string that is not valid UTF-8")
+        })?;
+        Ok(Some(value.to_owned()))
     }
 }
 
-fn required_c_string(ptr: *const c_char) -> String {
-    optional_c_string(ptr).unwrap_or_default()
+fn required_c_string(ptr: *const c_char, label: &str) -> Result<String> {
+    optional_c_string(ptr)?
+        .ok_or_else(|| TioError::conversion(format!("native output returned null {label}")))
+}
+
+unsafe fn checked_slice<'a, T>(ptr: *const T, len: usize, label: &str) -> Result<&'a [T]> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        return Err(TioError::conversion(format!(
+            "native output returned null {label} with non-zero length {len}"
+        )));
+    }
+    if !(ptr as usize).is_multiple_of(mem::align_of::<T>()) {
+        return Err(TioError::conversion(format!(
+            "native output returned misaligned {label} pointer"
+        )));
+    }
+    let byte_len = len.checked_mul(mem::size_of::<T>()).ok_or_else(|| {
+        TioError::conversion(format!("native output {label} byte length overflows"))
+    })?;
+    if byte_len > isize::MAX as usize || (ptr as usize).checked_add(byte_len).is_none() {
+        return Err(TioError::conversion(format!(
+            "native output {label} byte range is not representable"
+        )));
+    }
+    // SAFETY: The caller owns the C-ABI validity obligation. The checks above establish the
+    // null/length, alignment, byte-size, and address-range preconditions that the wrapper can
+    // validate before borrowing the native allocation.
+    Ok(unsafe { slice::from_raw_parts(ptr, len) })
+}
+
+unsafe fn copy_checked_slice<T: Copy>(ptr: *const T, len: usize, label: &str) -> Result<Vec<T>> {
+    let source = unsafe { checked_slice(ptr, len, label) }?;
+    let mut values = Vec::new();
+    values.try_reserve_exact(source.len()).map_err(|_| {
+        TioError::conversion(format!(
+            "could not allocate {} native output entries for {label}",
+            source.len()
+        ))
+    })?;
+    values.extend_from_slice(source);
+    Ok(values)
 }
 
 /// Payload dtype supported by the first safe wrapper slice.
@@ -5010,19 +5211,15 @@ fn take_sparse_append_analysis(
     raw: &mut sys::ArcadiaTioSparseAppendAnalysis,
 ) -> Result<SparseAppendAnalysis> {
     let guard = SparseAppendAnalysisGuard { raw };
-    if guard.raw.reasons.is_null() && guard.raw.reasons_len != 0 {
-        return Err(TioError::conversion(
-            "native sparse append analysis returned null reasons with non-zero length",
-        ));
-    }
-    let raw_reasons = if guard.raw.reasons_len == 0 {
-        &[][..]
-    } else {
-        // SAFETY: Successful native analysis returns `reasons` pointing to `reasons_len` values.
-        // The guard frees the native analysis exactly once after this function copies the values;
-        // it also runs on conversion errors caused by unknown outcome or reason codes.
-        unsafe { slice::from_raw_parts(guard.raw.reasons.cast_const(), guard.raw.reasons_len) }
-    };
+    // SAFETY: Successful native analysis returns `reasons` pointing to `reasons_len` values. The
+    // guard frees the native analysis exactly once on success and every conversion error.
+    let raw_reasons = unsafe {
+        checked_slice(
+            guard.raw.reasons.cast_const(),
+            guard.raw.reasons_len,
+            "sparse append reasons",
+        )
+    }?;
     let reasons = raw_reasons
         .iter()
         .copied()
@@ -5854,12 +6051,20 @@ unsafe fn release_arrow_schema(schema: *mut sys::ArrowSchema) {
 
 impl fmt::Debug for ArrowCData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ArrowCData")
+        let mut debug = f.debug_struct("ArrowCData");
+        debug
             .field("array_length", &self.array.length)
             .field("array_n_buffers", &self.array.n_buffers)
-            .field("array_n_children", &self.array.n_children)
-            .field("schema_format", &optional_c_string(self.schema.format))
-            .finish_non_exhaustive()
+            .field("array_n_children", &self.array.n_children);
+        match optional_c_string(self.schema.format) {
+            Ok(schema_format) => {
+                debug.field("schema_format", &schema_format);
+            }
+            Err(error) => {
+                debug.field("schema_format_error", &error);
+            }
+        }
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -7577,6 +7782,15 @@ pub enum CoordinateCodeDTypeV2 {
 }
 
 impl CoordinateCodeDTypeV2 {
+    fn size_bytes(self) -> usize {
+        match self {
+            Self::U8 => mem::size_of::<u8>(),
+            Self::U16 => mem::size_of::<u16>(),
+            Self::U32 => mem::size_of::<u32>(),
+            Self::U64 => mem::size_of::<u64>(),
+        }
+    }
+
     fn to_raw(self) -> sys::ArcadiaTioCoordinateCodeDTypeV2 {
         match self {
             Self::U8 => sys::ARCADIA_TIO_COORDINATE_CODE_DTYPE_V2_U8,
@@ -8097,7 +8311,7 @@ impl CoordinateDictionarySummaryV2 {
 
     fn from_raw(raw: &sys::ArcadiaTioCoordinateDictionarySummaryV2) -> Result<Self> {
         Ok(Self {
-            dictionary_id: optional_c_string(raw.dictionary_id),
+            dictionary_id: optional_c_string(raw.dictionary_id)?,
             revision: raw.revision,
             code_dtype: CoordinateCodeDTypeV2::from_raw(raw.code_dtype)?,
             entry_count: raw.entry_count,
@@ -8105,7 +8319,7 @@ impl CoordinateDictionarySummaryV2 {
             display_labels_unique: raw.display_labels_unique != 0,
             aliases_unique: raw.aliases_unique != 0,
             codes_stable_across_revisions: raw.codes_stable_across_revisions != 0,
-            content_id: optional_c_string(raw.content_id),
+            content_id: optional_c_string(raw.content_id)?,
         })
     }
 
@@ -8152,22 +8366,24 @@ impl CoordinateDictionaryEntryV2 {
         self
     }
 
-    fn from_raw(raw: &sys::ArcadiaTioCoordinateDictionaryEntryV2) -> Self {
-        let aliases = if raw.aliases.is_null() || raw.aliases_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: Native dictionary entry aliases are valid for `aliases_len` until the parent is freed.
-            unsafe { slice::from_raw_parts(raw.aliases.cast_const(), raw.aliases_len) }
-                .iter()
-                .filter_map(|alias| optional_c_string((*alias).cast_const()))
-                .collect()
-        };
-        Self {
+    fn from_raw(raw: &sys::ArcadiaTioCoordinateDictionaryEntryV2) -> Result<Self> {
+        // SAFETY: Native dictionary entry aliases are valid for `aliases_len` until the parent is freed.
+        let aliases = unsafe {
+            checked_slice(
+                raw.aliases.cast_const(),
+                raw.aliases_len,
+                "Coordinate v2 dictionary aliases",
+            )
+        }?
+        .iter()
+        .map(|alias| required_c_string((*alias).cast_const(), "Coordinate v2 dictionary alias"))
+        .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
             code: raw.code,
-            stable_id: optional_c_string(raw.stable_id.cast_const()),
-            display_label: optional_c_string(raw.display_label.cast_const()),
+            stable_id: optional_c_string(raw.stable_id.cast_const())?,
+            display_label: optional_c_string(raw.display_label.cast_const())?,
             aliases,
-        }
+        })
     }
 }
 
@@ -8192,20 +8408,33 @@ impl CoordinateDictionaryV2 {
     /// `raw.entries` and nested string pointers must be valid according to the C ABI until the
     /// caller releases the parent raw dictionary with the matching free function.
     pub unsafe fn from_raw_borrowed(raw: &sys::ArcadiaTioCoordinateDictionaryV2) -> Result<Self> {
-        let entries = if raw.entries.is_null() || raw.entries_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: Caller guarantees the native entry array is valid for `entries_len`.
-            unsafe { slice::from_raw_parts(raw.entries, raw.entries_len) }
-                .iter()
-                .map(CoordinateDictionaryEntryV2::from_raw)
-                .collect()
-        };
+        ensure_native_abi()?;
+        // SAFETY: Caller guarantees the native entry array is valid for `entries_len`.
+        let entries = unsafe {
+            checked_slice(
+                raw.entries.cast_const(),
+                raw.entries_len,
+                "Coordinate v2 dictionary entries",
+            )
+        }?
+        .iter()
+        .map(CoordinateDictionaryEntryV2::from_raw)
+        .collect::<Result<Vec<_>>>()?;
+        let summary = CoordinateDictionarySummaryV2::from_raw(&raw.summary)?;
+        let expected_entries = usize::try_from(summary.entry_count).map_err(|_| {
+            TioError::conversion("Coordinate v2 dictionary entry count does not fit usize")
+        })?;
+        if entries.len() != expected_entries {
+            return Err(TioError::conversion(format!(
+                "Coordinate v2 dictionary summary count {expected_entries} does not match returned entry count {}",
+                entries.len()
+            )));
+        }
         Ok(Self {
-            summary: CoordinateDictionarySummaryV2::from_raw(&raw.summary)?,
+            summary,
             entries,
             status_category: CoordinateStatusCategoryV2::from_raw(raw.status_category)?,
-            reason: optional_c_string(raw.reason.cast_const()),
+            reason: optional_c_string(raw.reason.cast_const())?,
         })
     }
 }
@@ -8281,9 +8510,9 @@ impl CoordinateExternalBindingV2 {
     fn from_raw(raw: &sys::ArcadiaTioCoordinateExternalBindingV2) -> Result<Self> {
         Ok(Self {
             source_kind: CoordinateSourceKindV2::from_raw(raw.source_kind)?,
-            logical_id: optional_c_string(raw.logical_id),
-            privacy_safe_display: optional_c_string(raw.privacy_safe_display),
-            content_id: optional_c_string(raw.content_id),
+            logical_id: optional_c_string(raw.logical_id)?,
+            privacy_safe_display: optional_c_string(raw.privacy_safe_display)?,
+            content_id: optional_c_string(raw.content_id)?,
             value_domain: CoordinateValueDomainV2::from_raw(raw.value_domain)?,
             length: raw.length,
             availability: CoordinateAvailabilityV2::from_raw(raw.availability)?,
@@ -8335,17 +8564,17 @@ pub struct CoordinateIndexSourceBindingV2 {
 impl CoordinateIndexSourceBindingV2 {
     fn from_raw(raw: &sys::ArcadiaTioCoordinateIndexSourceBindingV2) -> Result<Self> {
         Ok(Self {
-            descriptor_id: optional_c_string(raw.descriptor_id),
+            descriptor_id: optional_c_string(raw.descriptor_id)?,
             descriptor_revision: raw.descriptor_revision,
             value_domain: CoordinateValueDomainV2::from_raw(raw.value_domain)?,
-            value_object_id: optional_c_string(raw.value_object_id),
-            dictionary_id: optional_c_string(raw.dictionary_id),
+            value_object_id: optional_c_string(raw.value_object_id)?,
+            dictionary_id: optional_c_string(raw.dictionary_id)?,
             dictionary_revision: raw.dictionary_revision,
-            dictionary_content_id: optional_c_string(raw.dictionary_content_id),
+            dictionary_content_id: optional_c_string(raw.dictionary_content_id)?,
             external_source_kind: CoordinateSourceKindV2::from_raw(raw.external_source_kind)?,
-            external_logical_id: optional_c_string(raw.external_logical_id),
-            external_content_id: optional_c_string(raw.external_content_id),
-            root_id: optional_c_string(raw.root_id),
+            external_logical_id: optional_c_string(raw.external_logical_id)?,
+            external_content_id: optional_c_string(raw.external_content_id)?,
+            root_id: optional_c_string(raw.root_id)?,
             axis: raw.axis,
             root_extent: raw.root_extent,
             append_start: raw.append_start,
@@ -8389,7 +8618,7 @@ pub struct CoordinateIndexSummaryV2 {
 impl CoordinateIndexSummaryV2 {
     fn from_raw(raw: &sys::ArcadiaTioCoordinateIndexSummaryV2) -> Result<Self> {
         Ok(Self {
-            index_id: optional_c_string(raw.index_id),
+            index_id: optional_c_string(raw.index_id)?,
             index_kind: CoordinateIndexKindV2::from_raw(raw.index_kind)?,
             key_domain: CoordinateKeyDomainV2::from_raw(raw.key_domain)?,
             source_binding: CoordinateIndexSourceBindingV2::from_raw(&raw.source_binding)?,
@@ -8404,7 +8633,7 @@ impl CoordinateIndexSummaryV2 {
             fallback: CoordinateIndexFallbackV2::from_raw(raw.fallback)?,
             selected_use: CoordinateIndexUseV2::from_raw(raw.selected_use)?,
             required: raw.required != 0,
-            reason: optional_c_string(raw.reason),
+            reason: optional_c_string(raw.reason)?,
         })
     }
 }
@@ -9160,10 +9389,10 @@ impl AxisCoordinateMetaV2 {
     fn from_raw(raw: &sys::ArcadiaTioAxisCoordinateMetaV2) -> Result<Self> {
         Ok(Self {
             axis: raw.axis,
-            axis_name_snapshot: optional_c_string(raw.axis_name_snapshot.cast_const()),
-            descriptor_id: optional_c_string(raw.descriptor_id.cast_const()),
+            axis_name_snapshot: optional_c_string(raw.axis_name_snapshot.cast_const())?,
+            descriptor_id: optional_c_string(raw.descriptor_id.cast_const())?,
             descriptor_revision: raw.descriptor_revision,
-            name: optional_c_string(raw.name.cast_const()),
+            name: optional_c_string(raw.name.cast_const())?,
             kind: CoordinateKind::from_raw(raw.kind)?,
             value_domain: CoordinateValueDomainV2::from_raw(raw.value_domain)?,
             numeric_dtype: CoordinateDType::from_raw(raw.numeric_dtype)?,
@@ -9179,7 +9408,7 @@ impl AxisCoordinateMetaV2 {
             required: raw.required != 0,
             availability: CoordinateAvailabilityV2::from_raw(raw.availability)?,
             status_category: CoordinateStatusCategoryV2::from_raw(raw.status_category)?,
-            reason: optional_c_string(raw.reason.cast_const()),
+            reason: optional_c_string(raw.reason.cast_const())?,
             dictionary: CoordinateDictionarySummaryV2::from_raw(&raw.dictionary)?,
             external_binding: CoordinateExternalBindingV2::from_raw(&raw.external_binding)?,
             index_summaries: copy_coordinate_index_summaries_v2(
@@ -9225,27 +9454,57 @@ impl CoordinateValueSliceV2 {
     /// `raw.data` must be valid for `raw.len * raw.element_size` bytes when non-null according to
     /// the C ABI, and the caller must later release the raw carrier with the matching free function.
     pub unsafe fn from_raw_borrowed(raw: &sys::ArcadiaTioCoordinateValueSliceV2) -> Result<Self> {
+        ensure_native_abi()?;
+        let value_domain = CoordinateValueDomainV2::from_raw(raw.value_domain)?;
+        let numeric_dtype = CoordinateDType::from_raw(raw.numeric_dtype)?;
+        let numeric_encoding = CoordinateEncoding::from_raw(raw.numeric_encoding)?;
+        let code_dtype = CoordinateCodeDTypeV2::from_raw(raw.code_dtype)?;
+        let expected_element_size = match value_domain {
+            CoordinateValueDomainV2::InlineNumeric => match numeric_dtype {
+                CoordinateDType::I32 => mem::size_of::<i32>(),
+                CoordinateDType::I64 => mem::size_of::<i64>(),
+            },
+            CoordinateValueDomainV2::FixedText => raw.fixed_text_width,
+            CoordinateValueDomainV2::DictionaryCode => code_dtype.size_bytes(),
+            CoordinateValueDomainV2::AppendSequence
+            | CoordinateValueDomainV2::ExternalReference => 0,
+        };
+        if raw.len != 0 {
+            if expected_element_size == 0 || raw.element_size != expected_element_size {
+                return Err(TioError::conversion(format!(
+                    "Coordinate v2 value-slice element size {} is inconsistent with its value domain",
+                    raw.element_size
+                )));
+            }
+            if value_domain == CoordinateValueDomainV2::FixedText && raw.fixed_text_width == 0 {
+                return Err(TioError::conversion(
+                    "Coordinate v2 fixed-text value slice returned zero width",
+                ));
+            }
+        }
         let byte_len = raw.len.checked_mul(raw.element_size).ok_or_else(|| {
             TioError::conversion("Coordinate v2 value slice byte length overflow")
         })?;
-        let data = if raw.data.is_null() || byte_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: Caller guarantees the C ABI value buffer is valid for `byte_len` bytes.
-            unsafe { slice::from_raw_parts(raw.data.cast::<u8>(), byte_len) }.to_vec()
-        };
+        // SAFETY: Caller guarantees the C ABI value buffer is valid for `byte_len` bytes.
+        let data = unsafe {
+            copy_checked_slice(
+                raw.data.cast::<u8>(),
+                byte_len,
+                "Coordinate v2 value-slice data",
+            )
+        }?;
         Ok(Self {
-            value_domain: CoordinateValueDomainV2::from_raw(raw.value_domain)?,
-            numeric_dtype: CoordinateDType::from_raw(raw.numeric_dtype)?,
-            numeric_encoding: CoordinateEncoding::from_raw(raw.numeric_encoding)?,
-            code_dtype: CoordinateCodeDTypeV2::from_raw(raw.code_dtype)?,
+            value_domain,
+            numeric_dtype,
+            numeric_encoding,
+            code_dtype,
             data,
             len: raw.len,
             element_size: raw.element_size,
             fixed_text_width: raw.fixed_text_width,
             availability: CoordinateAvailabilityV2::from_raw(raw.availability)?,
             status_category: CoordinateStatusCategoryV2::from_raw(raw.status_category)?,
-            reason: optional_c_string(raw.reason.cast_const()),
+            reason: optional_c_string(raw.reason.cast_const())?,
         })
     }
 }
@@ -9533,21 +9792,41 @@ impl CoordinateLookupResultV2 {
     /// `raw.positions` must be valid for `raw.positions_len` entries when non-null according to
     /// the C ABI, and the caller must later release the raw carrier with the matching free function.
     pub unsafe fn from_raw_borrowed(raw: &sys::ArcadiaTioCoordinateLookupResultV2) -> Result<Self> {
-        let positions = if raw.positions.is_null() || raw.positions_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: Caller guarantees the C ABI positions buffer is valid for `positions_len`.
-            unsafe { slice::from_raw_parts(raw.positions, raw.positions_len) }.to_vec()
-        };
+        ensure_native_abi()?;
+        // SAFETY: Caller guarantees the C ABI positions buffer is valid for `positions_len`.
+        let positions = unsafe {
+            copy_checked_slice(
+                raw.positions.cast_const(),
+                raw.positions_len,
+                "Coordinate v2 lookup positions",
+            )
+        }?;
+        let status = CoordinateLookupResultStatusV2::from_raw(raw.status)?;
+        if status == CoordinateLookupResultStatusV2::Many {
+            if positions.is_empty() {
+                return Err(TioError::conversion(
+                    "Coordinate v2 many-result lookup returned no positions",
+                ));
+            }
+        } else if !positions.is_empty() {
+            return Err(TioError::conversion(
+                "Coordinate v2 non-many lookup returned a positions array",
+            ));
+        }
+        if status == CoordinateLookupResultStatusV2::Range && raw.range_start > raw.range_end {
+            return Err(TioError::conversion(
+                "Coordinate v2 lookup range start exceeds range end",
+            ));
+        }
         Ok(Self {
-            status: CoordinateLookupResultStatusV2::from_raw(raw.status)?,
+            status,
             status_category: CoordinateStatusCategoryV2::from_raw(raw.status_category)?,
             unique_position: raw.unique_position,
             range_start: raw.range_start,
             range_end: raw.range_end,
             positions,
             availability: CoordinateAvailabilityV2::from_raw(raw.availability)?,
-            reason: optional_c_string(raw.reason.cast_const()),
+            reason: optional_c_string(raw.reason.cast_const())?,
         })
     }
 }
@@ -10531,11 +10810,8 @@ fn copy_coordinate_index_summaries_v2(
     ptr: *mut sys::ArcadiaTioCoordinateIndexSummaryV2,
     len: usize,
 ) -> Result<Vec<CoordinateIndexSummaryV2>> {
-    if ptr.is_null() || len == 0 {
-        return Ok(Vec::new());
-    }
     // SAFETY: Coordinate v2 index summary array is valid for `len` until the parent metadata is freed.
-    unsafe { slice::from_raw_parts(ptr, len) }
+    unsafe { checked_slice(ptr.cast_const(), len, "Coordinate v2 index summaries") }?
         .iter()
         .map(CoordinateIndexSummaryV2::from_raw)
         .collect()
@@ -10565,6 +10841,7 @@ fn opt_cstring_mut_ptr(value: &Option<CString>) -> *mut c_char {
 /// is not documented for concurrent mutation.
 pub struct TensorFile {
     raw: NonNull<sys::ArcadiaTioHandle>,
+    _abi: AbiCompatible,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -10622,7 +10899,7 @@ impl TensorFile {
                 }
             }
         };
-        let file = Self::from_raw_handle(raw, "failed to create TensorFile")?;
+        let file = Self::from_raw_handle(raw, prepared.abi, "failed to create TensorFile")?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -10703,7 +10980,11 @@ impl TensorFile {
                 }
             }
         };
-        let file = Self::from_raw_handle(raw, "failed to create Coordinate v2 TensorFile")?;
+        let file = Self::from_raw_handle(
+            raw,
+            prepared.abi,
+            "failed to create Coordinate v2 TensorFile",
+        )?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -10773,7 +11054,11 @@ impl TensorFile {
                 ),
             }
         };
-        let file = Self::from_raw_handle(raw, "failed to create universe-aware TensorFile")?;
+        let file = Self::from_raw_handle(
+            raw,
+            prepared.abi,
+            "failed to create universe-aware TensorFile",
+        )?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -10821,7 +11106,8 @@ impl TensorFile {
                 prepared.coordinate_len(),
             )
         };
-        let file = Self::from_raw_handle(raw, "failed to create inferred TensorFile")?;
+        let file =
+            Self::from_raw_handle(raw, prepared.abi, "failed to create inferred TensorFile")?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -10890,8 +11176,11 @@ impl TensorFile {
                 &raw_coordinate_options,
             )
         };
-        let file =
-            Self::from_raw_handle(raw, "failed to create inferred Coordinate v2 TensorFile")?;
+        let file = Self::from_raw_handle(
+            raw,
+            prepared.abi,
+            "failed to create inferred Coordinate v2 TensorFile",
+        )?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -10941,7 +11230,7 @@ impl TensorFile {
                 prepared.coordinate_len(),
             )
         };
-        let file = Self::from_raw_handle(raw, "failed to create policy TensorFile")?;
+        let file = Self::from_raw_handle(raw, prepared.abi, "failed to create policy TensorFile")?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -11012,7 +11301,11 @@ impl TensorFile {
                 &raw_coordinate_options,
             )
         };
-        let file = Self::from_raw_handle(raw, "failed to create policy Coordinate v2 TensorFile")?;
+        let file = Self::from_raw_handle(
+            raw,
+            prepared.abi,
+            "failed to create policy Coordinate v2 TensorFile",
+        )?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -11069,7 +11362,11 @@ impl TensorFile {
                 &raw_universe_options,
             )
         };
-        let file = Self::from_raw_handle(raw, "failed to create policy universe TensorFile")?;
+        let file = Self::from_raw_handle(
+            raw,
+            prepared.abi,
+            "failed to create policy universe TensorFile",
+        )?;
         if let Some(compression) = compression {
             file.set_compression(compression)?;
         }
@@ -11085,41 +11382,38 @@ impl TensorFile {
 
     /// Opens an existing TensorFile.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let abi = ensure_native_abi()?;
         let path = path_to_cstring(path)?;
         // SAFETY: The C string is valid for the duration of this call.
         let raw = unsafe { sys::arcadia_tio_open(path.as_ptr()) };
-        Self::from_raw_handle(raw, "failed to open TensorFile")
+        Self::from_raw_handle(raw, abi, "failed to open TensorFile")
     }
 
     /// Loads metadata without keeping a TensorFile handle open.
     pub fn load_meta(path: impl AsRef<Path>) -> Result<FileMeta> {
         let path = path_to_cstring(path)?;
-        let mut raw = MaybeUninit::<sys::ArcadiaTioFileMeta>::uninit();
-        // SAFETY: `raw` points to valid uninitialized storage for the C ABI to fill.
+        let mut raw = NativeOutput::new(empty_file_meta_output(), sys::arcadia_tio_file_meta_free);
+        // SAFETY: `raw` points to initialized output storage and the path is live for the call.
         let status = unsafe { sys::arcadia_tio_load_meta(path.as_ptr(), raw.as_mut_ptr()) };
         status_result(status, "failed to load TensorFile metadata")?;
-        // SAFETY: Successful status initializes `raw`.
-        let mut raw = unsafe { raw.assume_init() };
-        let meta = copy_file_meta(&raw);
-        // SAFETY: `raw` contains native-owned buffers returned by load_meta and is freed exactly once.
-        unsafe { sys::arcadia_tio_file_meta_free(&mut raw) };
-        meta
+        copy_file_meta(raw.as_ref())
     }
 
     /// Loads coordinate metadata without keeping a TensorFile handle open.
     pub fn load_coordinate_meta(path: impl AsRef<Path>) -> Result<Vec<CoordinateMeta>> {
         let path = path_to_cstring(path)?;
-        let mut raw_meta: *mut sys::ArcadiaTioAxisCoordinateMeta = ptr::null_mut();
-        let mut len = 0usize;
+        let mut raw_meta = NativeArrayOutput::new(sys::arcadia_tio_axis_coordinate_meta_free);
         // SAFETY: The path C string and out pointers are valid for the duration of this call.
         let status = unsafe {
-            sys::arcadia_tio_load_coordinate_meta(path.as_ptr(), &mut raw_meta, &mut len)
+            sys::arcadia_tio_load_coordinate_meta(
+                path.as_ptr(),
+                raw_meta.ptr_out(),
+                raw_meta.len_out(),
+            )
         };
         status_result(status, "failed to load coordinate metadata")?;
-        let out = copy_coordinate_meta(raw_meta, len);
-        // SAFETY: `raw_meta`/`len` are native-owned output from load_coordinate_meta and freed once.
-        unsafe { sys::arcadia_tio_axis_coordinate_meta_free(raw_meta, len) };
-        out
+        let (ptr, len) = raw_meta.parts();
+        copy_coordinate_meta(ptr, len)
     }
 
     /// Loads current coordinate metadata without keeping a TensorFile handle open.
@@ -11130,17 +11424,18 @@ impl TensorFile {
     /// Loads Coordinate v2 metadata without keeping a TensorFile handle open.
     pub fn load_coordinate_meta_v2(path: impl AsRef<Path>) -> Result<Vec<AxisCoordinateMetaV2>> {
         let path = path_to_cstring(path)?;
-        let mut raw_meta: *mut sys::ArcadiaTioAxisCoordinateMetaV2 = ptr::null_mut();
-        let mut len = 0usize;
+        let mut raw_meta = NativeArrayOutput::new(sys::arcadia_tio_axis_coordinate_meta_v2_free);
         // SAFETY: The path C string and out pointers are valid for the duration of this call.
         let status = unsafe {
-            sys::arcadia_tio_load_coordinate_meta_v2(path.as_ptr(), &mut raw_meta, &mut len)
+            sys::arcadia_tio_load_coordinate_meta_v2(
+                path.as_ptr(),
+                raw_meta.ptr_out(),
+                raw_meta.len_out(),
+            )
         };
         status_result(status, "failed to load Coordinate v2 metadata")?;
-        let out = copy_coordinate_meta_v2(raw_meta, len);
-        // SAFETY: `raw_meta`/`len` are native-owned output and are freed exactly once after copying.
-        unsafe { sys::arcadia_tio_axis_coordinate_meta_v2_free(raw_meta, len) };
-        out
+        let (ptr, len) = raw_meta.parts();
+        copy_coordinate_meta_v2(ptr, len)
     }
 
     /// Returns the native C ABI version reported by the linked library.
@@ -11297,28 +11592,27 @@ impl TensorFile {
 
     /// Returns the native path snapshot for this handle.
     pub fn path(&self) -> Result<String> {
-        let mut raw_path: *mut c_char = ptr::null_mut();
+        let mut raw_path = NativePointerOutput::new(sys::arcadia_tio_string_free);
         // SAFETY: `raw_path` is a valid out pointer and the handle is live.
-        let status = unsafe { sys::arcadia_tio_path(self.raw.as_ptr(), &mut raw_path) };
+        let status = unsafe { sys::arcadia_tio_path(self.raw.as_ptr(), raw_path.out()) };
         status_result(status, "failed to read TensorFile path")?;
-        let value = required_c_string(raw_path.cast_const());
-        // SAFETY: `raw_path` is native-owned output from arcadia_tio_path.
-        unsafe { sys::arcadia_tio_string_free(raw_path) };
-        Ok(value)
+        required_c_string(raw_path.get().cast_const(), "TensorFile path")
     }
 
     /// Reads coordinate metadata from the open handle.
     pub fn coordinate_meta(&self) -> Result<Vec<CoordinateMeta>> {
-        let mut raw_meta: *mut sys::ArcadiaTioAxisCoordinateMeta = ptr::null_mut();
-        let mut len = 0usize;
+        let mut raw_meta = NativeArrayOutput::new(sys::arcadia_tio_axis_coordinate_meta_free);
         // SAFETY: Out pointers are valid and the handle is live.
-        let status =
-            unsafe { sys::arcadia_tio_coordinate_meta(self.raw.as_ptr(), &mut raw_meta, &mut len) };
+        let status = unsafe {
+            sys::arcadia_tio_coordinate_meta(
+                self.raw.as_ptr(),
+                raw_meta.ptr_out(),
+                raw_meta.len_out(),
+            )
+        };
         status_result(status, "failed to read coordinate metadata")?;
-        let out = copy_coordinate_meta(raw_meta, len);
-        // SAFETY: `raw_meta`/`len` are native-owned output from coordinate_meta and freed once.
-        unsafe { sys::arcadia_tio_axis_coordinate_meta_free(raw_meta, len) };
-        out
+        let (ptr, len) = raw_meta.parts();
+        copy_coordinate_meta(ptr, len)
     }
 
     /// Reads current coordinate metadata from the open handle.
@@ -11328,17 +11622,18 @@ impl TensorFile {
 
     /// Reads Coordinate v2 metadata from the open handle.
     pub fn coordinate_meta_v2(&self) -> Result<Vec<AxisCoordinateMetaV2>> {
-        let mut raw_meta: *mut sys::ArcadiaTioAxisCoordinateMetaV2 = ptr::null_mut();
-        let mut len = 0usize;
+        let mut raw_meta = NativeArrayOutput::new(sys::arcadia_tio_axis_coordinate_meta_v2_free);
         // SAFETY: Out pointers are valid and the handle is live.
         let status = unsafe {
-            sys::arcadia_tio_coordinate_meta_v2(self.raw.as_ptr(), &mut raw_meta, &mut len)
+            sys::arcadia_tio_coordinate_meta_v2(
+                self.raw.as_ptr(),
+                raw_meta.ptr_out(),
+                raw_meta.len_out(),
+            )
         };
         status_result(status, "failed to read Coordinate v2 metadata")?;
-        let out = copy_coordinate_meta_v2(raw_meta, len);
-        // SAFETY: `raw_meta`/`len` are native-owned output and are freed exactly once after copying.
-        unsafe { sys::arcadia_tio_axis_coordinate_meta_v2_free(raw_meta, len) };
-        out
+        let (ptr, len) = raw_meta.parts();
+        copy_coordinate_meta_v2(ptr, len)
     }
 
     /// Analyzes how a sparse-intent f32 append would be handled by the native writer.
@@ -12156,7 +12451,7 @@ impl TensorFile {
         let copied = copy_v4_diagnostics_report(&report);
         // SAFETY: Native-owned strings in `report` are freed exactly once after copying.
         unsafe { sys::arcadia_tio_v4_diagnostics_report_free(&mut report) };
-        Ok(copied)
+        copied
     }
 
     /// Returns precise V4 source-file diagnostics with validity metadata.
@@ -12180,7 +12475,7 @@ impl TensorFile {
         let copied = copy_v4_diagnostics_precise_report(&report);
         // SAFETY: Native-owned strings/arrays in `report` are freed exactly once after copying.
         unsafe { sys::arcadia_tio_v4_diagnostics_precise_report_free(&mut report) };
-        Ok(copied)
+        copied
     }
 
     /// Returns non-precise V4 current-state compaction analysis.
@@ -12447,18 +12742,19 @@ impl TensorFile {
             )
         };
         if status != sys::ARCADIA_TIO_ERROR_OK {
+            let error = TioError::from_last_error("failed to reform TensorFile with report");
             let copied = copy_reform_report(&report);
             // SAFETY: Report was initialized by this wrapper and may be partially populated.
             unsafe { sys::arcadia_tio_reform_report_free(&mut report) };
-            return Err(
-                TioError::from_last_error("failed to reform TensorFile with report")
-                    .with_reform_report(&copied),
-            );
+            return Err(match copied {
+                Ok(report) => error.with_reform_report(&report),
+                Err(_) => error,
+            });
         }
         let copied = copy_reform_report(&report);
         // SAFETY: Native-owned strings in `report` are freed exactly once after copying.
         unsafe { sys::arcadia_tio_reform_report_free(&mut report) };
-        Ok(copied)
+        copied
     }
 
     /// Reads the full tensor into Rust-owned buffers.
@@ -12499,28 +12795,27 @@ impl TensorFile {
 
     /// Reads the full tensor densely with a fill value and optional validity mask.
     pub fn read_all_dense(&self, fill_value: f64) -> Result<DenseTensor> {
-        let mut raw_tensor = sys::ArcadiaTioTensor::default();
-        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut raw_tensor = NativeOutput::new(
+            sys::ArcadiaTioTensor::default(),
+            sys::arcadia_tio_tensor_free,
+        );
+        let mut raw_mask =
+            NativeOutput::new(sys::ArcadiaTioMask::default(), sys::arcadia_tio_mask_free);
         // SAFETY: Output structs are valid and the handle is live.
         let status = unsafe {
             sys::arcadia_tio_read_all_dense(
                 self.raw.as_ptr(),
                 fill_value,
-                &mut raw_tensor,
-                &mut raw_mask,
+                raw_tensor.as_mut_ptr(),
+                raw_mask.as_mut_ptr(),
             )
         };
         status_result(status, "failed to read dense tensor")?;
-        let tensor = copy_tensor(&raw_tensor);
-        let mask = copy_mask(&raw_mask);
-        // SAFETY: Native-owned buffers are returned by read_all_dense and freed exactly once.
-        unsafe {
-            sys::arcadia_tio_tensor_free(&mut raw_tensor);
-            sys::arcadia_tio_mask_free(&mut raw_mask);
-        }
+        let tensor = copy_tensor(raw_tensor.as_ref());
+        let mask = copy_mask(raw_mask.as_ref());
         Ok(DenseTensor {
             tensor: tensor?,
-            mask,
+            mask: mask?,
         })
     }
 
@@ -12605,7 +12900,7 @@ impl TensorFile {
         Ok(ReadIndexDenseResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             report: report?,
         })
@@ -12705,7 +13000,7 @@ impl TensorFile {
         Ok(ReadIndexDenseResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             report: report?,
         })
@@ -13740,7 +14035,7 @@ impl TensorFile {
         Ok(ReadResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             execution: execution?,
         })
@@ -13866,7 +14161,7 @@ impl TensorFile {
         Ok(AttributedReadResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             execution: execution?,
             trace: trace?,
@@ -13967,7 +14262,7 @@ impl TensorFile {
         Ok(ReadResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             execution: execution?,
         })
@@ -13995,8 +14290,12 @@ impl TensorFile {
         fill_value: f64,
     ) -> Result<DenseTensor> {
         let prepared_selectors = self.prepare_selectors(selectors)?;
-        let mut raw_tensor = sys::ArcadiaTioTensor::default();
-        let mut raw_mask = sys::ArcadiaTioMask::default();
+        let mut raw_tensor = NativeOutput::new(
+            sys::ArcadiaTioTensor::default(),
+            sys::arcadia_tio_tensor_free,
+        );
+        let mut raw_mask =
+            NativeOutput::new(sys::ArcadiaTioMask::default(), sys::arcadia_tio_mask_free);
         // SAFETY: Prepared selector buffers outlive the call; outputs are valid.
         let status = unsafe {
             sys::arcadia_tio_read_at_commit_dense(
@@ -14005,21 +14304,16 @@ impl TensorFile {
                 prepared_selectors.ptr(),
                 prepared_selectors.len(),
                 fill_value,
-                &mut raw_tensor,
-                &mut raw_mask,
+                raw_tensor.as_mut_ptr(),
+                raw_mask.as_mut_ptr(),
             )
         };
         status_result(status, "failed to read dense tensor at commit")?;
-        let tensor = copy_tensor(&raw_tensor);
-        let mask = copy_mask(&raw_mask);
-        // SAFETY: Native-owned outputs are freed exactly once.
-        unsafe {
-            sys::arcadia_tio_tensor_free(&mut raw_tensor);
-            sys::arcadia_tio_mask_free(&mut raw_mask);
-        }
+        let tensor = copy_tensor(raw_tensor.as_ref());
+        let mask = copy_mask(raw_mask.as_ref());
         Ok(DenseTensor {
             tensor: tensor?,
-            mask,
+            mask: mask?,
         })
     }
 
@@ -14121,7 +14415,7 @@ impl TensorFile {
         Ok(HistoricalReadResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             execution: execution?,
         })
@@ -14225,7 +14519,7 @@ impl TensorFile {
         Ok(HistoricalReadIndexDenseResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             report: copied_report?,
         })
@@ -14329,7 +14623,7 @@ impl TensorFile {
         Ok(HistoricalReadIndexDenseResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             report: copied_report?,
         })
@@ -14433,7 +14727,7 @@ impl TensorFile {
         Ok(HistoricalReadResult {
             value: DenseTensor {
                 tensor: tensor?,
-                mask,
+                mask: mask?,
             },
             execution: execution?,
         })
@@ -14569,13 +14863,13 @@ impl TensorFile {
         &self,
         call: impl FnOnce(*mut sys::ArcadiaTioHandle, *mut sys::ArcadiaTioTensor) -> i32,
     ) -> Result<Tensor> {
-        let mut raw = sys::ArcadiaTioTensor::default();
-        let status = call(self.raw.as_ptr(), &mut raw);
+        let mut raw = NativeOutput::new(
+            sys::ArcadiaTioTensor::default(),
+            sys::arcadia_tio_tensor_free,
+        );
+        let status = call(self.raw.as_ptr(), raw.as_mut_ptr());
         status_result(status, "failed to read tensor")?;
-        let tensor = copy_tensor(&raw);
-        // SAFETY: `raw` is native-owned output from a tensor read call and freed exactly once.
-        unsafe { sys::arcadia_tio_tensor_free(&mut raw) };
-        tensor
+        copy_tensor(raw.as_ref())
     }
 
     fn validate_axis(&self, axis: usize) -> Result<()> {
@@ -14665,10 +14959,15 @@ impl TensorFile {
         Ok(())
     }
 
-    fn from_raw_handle(raw: *mut sys::ArcadiaTioHandle, context: &str) -> Result<Self> {
+    fn from_raw_handle(
+        raw: *mut sys::ArcadiaTioHandle,
+        abi: AbiCompatible,
+        context: &str,
+    ) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| TioError::from_last_error(context))?;
         Ok(Self {
             raw,
+            _abi: abi,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -14802,14 +15101,8 @@ fn validate_create_policy(options: &CreateOptions, policy: &CreatePolicyOptions)
 }
 
 fn copy_shape(raw: &sys::ArcadiaTioTensor) -> Result<Vec<u64>> {
-    if raw.rank == 0 {
-        return Ok(Vec::new());
-    }
-    if raw.shape.is_null() {
-        return Err(TioError::conversion("native tensor shape pointer is null"));
-    }
     // SAFETY: Native tensor shape pointer is valid for `rank` while the tensor output is alive.
-    Ok(unsafe { slice::from_raw_parts(raw.shape, raw.rank) }.to_vec())
+    unsafe { copy_checked_slice(raw.shape.cast_const(), raw.rank, "tensor shape") }
 }
 
 fn copy_tensor(raw: &sys::ArcadiaTioTensor) -> Result<Tensor> {
@@ -14834,40 +15127,33 @@ fn copy_tensor(raw: &sys::ArcadiaTioTensor) -> Result<Tensor> {
         };
         return Ok(Tensor { dtype, shape, data });
     }
-    if raw.data.is_null() {
-        return Err(TioError::conversion("native tensor data pointer is null"));
-    }
     let data = match dtype {
-        DType::F32 => {
-            // SAFETY: The C ABI guarantees alignment and byte length for the tensor dtype.
-            let values = unsafe { slice::from_raw_parts(raw.data.cast::<f32>(), element_count) };
-            TensorData::F32(values.to_vec())
-        }
-        DType::F64 => {
-            // SAFETY: The C ABI guarantees alignment and byte length for the tensor dtype.
-            let values = unsafe { slice::from_raw_parts(raw.data.cast::<f64>(), element_count) };
-            TensorData::F64(values.to_vec())
-        }
-        DType::I32 => {
-            // SAFETY: The C ABI guarantees alignment and byte length for the tensor dtype.
-            let values = unsafe { slice::from_raw_parts(raw.data.cast::<i32>(), element_count) };
-            TensorData::I32(values.to_vec())
-        }
-        DType::I64 => {
-            // SAFETY: The C ABI guarantees alignment and byte length for the tensor dtype.
-            let values = unsafe { slice::from_raw_parts(raw.data.cast::<i64>(), element_count) };
-            TensorData::I64(values.to_vec())
-        }
+        // SAFETY: The C ABI guarantees the allocation remains alive through this conversion; the
+        // shared helper validates null/length, alignment, and byte-size preconditions before copy.
+        DType::F32 => TensorData::F32(unsafe {
+            copy_checked_slice(raw.data.cast::<f32>(), element_count, "f32 tensor values")
+        }?),
+        DType::F64 => TensorData::F64(unsafe {
+            copy_checked_slice(raw.data.cast::<f64>(), element_count, "f64 tensor values")
+        }?),
+        DType::I32 => TensorData::I32(unsafe {
+            copy_checked_slice(raw.data.cast::<i32>(), element_count, "i32 tensor values")
+        }?),
+        DType::I64 => TensorData::I64(unsafe {
+            copy_checked_slice(raw.data.cast::<i64>(), element_count, "i64 tensor values")
+        }?),
     };
     Ok(Tensor { dtype, shape, data })
 }
 
-fn copy_mask(raw: &sys::ArcadiaTioMask) -> Option<Vec<u8>> {
-    if raw.len == 0 || raw.data.is_null() {
-        return None;
+fn copy_mask(raw: &sys::ArcadiaTioMask) -> Result<Option<Vec<u8>>> {
+    if raw.len == 0 {
+        return Ok(None);
     }
     // SAFETY: The C ABI returns a native-owned mask with `len` bytes while the mask output is alive.
-    Some(unsafe { slice::from_raw_parts(raw.data, raw.len) }.to_vec())
+    Ok(Some(unsafe {
+        copy_checked_slice(raw.data.cast_const(), raw.len, "dense validity mask")
+    }?))
 }
 
 struct NativeCommitList {
@@ -14933,34 +15219,26 @@ impl Drop for NativeChunkPlan {
 }
 
 fn copy_commit_list(raw: &sys::ArcadiaTioCommitList) -> Result<Vec<CommitInfo>> {
-    if raw.len == 0 {
-        return Ok(Vec::new());
-    }
-    if raw.items.is_null() {
-        return Err(TioError::conversion("native commit list pointer is null"));
-    }
     // SAFETY: The C ABI returns `len` commit records owned by the commit-list output while alive.
-    Ok(unsafe { slice::from_raw_parts(raw.items, raw.len) }
-        .iter()
-        .copied()
-        .map(CommitInfo::from)
-        .collect())
+    Ok(
+        unsafe { checked_slice(raw.items.cast_const(), raw.len, "commit list") }?
+            .iter()
+            .copied()
+            .map(CommitInfo::from)
+            .collect(),
+    )
 }
 
 fn copy_chunk_plan(raw: &sys::ArcadiaTioChunkPlan) -> Result<ChunkPlan> {
-    if raw.len == 0 {
-        return Ok(ChunkPlan {
-            block_sizes: Vec::new(),
-        });
-    }
-    if raw.block_sizes.is_null() {
-        return Err(TioError::conversion(
-            "native chunk plan block-size pointer is null",
-        ));
-    }
     // SAFETY: The C ABI returns `len` block-size entries owned by the chunk-plan output while alive.
     Ok(ChunkPlan {
-        block_sizes: unsafe { slice::from_raw_parts(raw.block_sizes, raw.len) }.to_vec(),
+        block_sizes: unsafe {
+            copy_checked_slice(
+                raw.block_sizes.cast_const(),
+                raw.len,
+                "chunk-plan block sizes",
+            )
+        }?,
     })
 }
 
@@ -14973,15 +15251,7 @@ fn new_query_trace_json() -> sys::ArcadiaTioQueryTraceJson {
 }
 
 fn copy_query_trace_json(raw: &sys::ArcadiaTioQueryTraceJson) -> Result<QueryTraceJson> {
-    if raw.json.is_null() {
-        return Err(TioError::conversion(
-            "native query trace JSON pointer is null",
-        ));
-    }
-    // SAFETY: The C ABI returns a native-owned NUL-terminated JSON string while the output is alive.
-    let json = unsafe { CStr::from_ptr(raw.json.cast_const()) }
-        .to_string_lossy()
-        .into_owned();
+    let json = required_c_string(raw.json.cast_const(), "query trace JSON")?;
     Ok(QueryTraceJson { json })
 }
 
@@ -15058,14 +15328,14 @@ fn copy_read_execution_report(
             raw.query_effective_threads,
         )?,
         query_effective_threads: raw.query_effective_threads,
-        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const()),
+        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const())?,
         query_parallel_fallback_reason: optional_c_string(
             raw.query_parallel_fallback_reason.cast_const(),
-        ),
-        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const()),
+        )?,
+        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const())?,
         query_parallel_reason_code_taxonomy: optional_c_string(
             raw.query_parallel_reason_code_taxonomy.cast_const(),
-        ),
+        )?,
     })
 }
 
@@ -15087,14 +15357,14 @@ fn copy_historical_read_execution_report(
             raw.query_effective_threads,
         )?,
         query_effective_threads: raw.query_effective_threads,
-        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const()),
+        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const())?,
         query_parallel_fallback_reason: optional_c_string(
             raw.query_parallel_fallback_reason.cast_const(),
-        ),
-        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const()),
+        )?,
+        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const())?,
         query_parallel_reason_code_taxonomy: optional_c_string(
             raw.query_parallel_reason_code_taxonomy.cast_const(),
-        ),
+        )?,
     };
     Ok(HistoricalReadExecutionReport {
         execution,
@@ -15114,14 +15384,14 @@ fn copy_historical_read_index_report(
             raw.query_effective_threads,
         )?,
         query_effective_threads: raw.query_effective_threads,
-        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const()),
+        query_parallel_runtime: optional_c_string(raw.query_parallel_runtime.cast_const())?,
         query_parallel_fallback_reason: optional_c_string(
             raw.query_parallel_fallback_reason.cast_const(),
-        ),
-        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const()),
+        )?,
+        query_parallel_reason_code: optional_c_string(raw.query_parallel_reason_code.cast_const())?,
         query_parallel_reason_code_taxonomy: optional_c_string(
             raw.query_parallel_reason_code_taxonomy.cast_const(),
-        ),
+        )?,
     };
     Ok(HistoricalReadIndexReport {
         execution: HistoricalReadExecutionReport {
@@ -15157,38 +15427,39 @@ fn new_v4_precise_accounting_bytes() -> sys::ArcadiaTioV4PreciseAccountingBytes 
 
 fn copy_v4_precise_accounting_bytes(
     raw: &sys::ArcadiaTioV4PreciseAccountingBytes,
-) -> V4PreciseAccountingBytes {
-    let omitted_fields = if raw.omitted_fields.is_null() || raw.omitted_fields_len == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: Native report owns `omitted_fields_len` entries until the parent report is freed.
-        let fields = unsafe { slice::from_raw_parts(raw.omitted_fields, raw.omitted_fields_len) };
-        let reason_codes = if raw.omitted_field_reason_codes.is_null()
-            || raw.omitted_field_reason_codes_len == 0
-        {
-            &[][..]
-        } else {
-            // SAFETY: Native report owns `omitted_field_reason_codes_len` entries until parent free.
-            unsafe {
-                slice::from_raw_parts(
-                    raw.omitted_field_reason_codes,
-                    raw.omitted_field_reason_codes_len,
-                )
-            }
-        };
-        fields
-            .iter()
-            .enumerate()
-            .map(|(index, field)| V4OmittedPreciseAccountingField {
+) -> Result<V4PreciseAccountingBytes> {
+    if raw.omitted_fields_len != raw.omitted_field_reason_codes_len {
+        return Err(TioError::conversion(
+            "native V4 precise-accounting field and reason-code lengths differ",
+        ));
+    }
+    // SAFETY: Native report owns both aligned arrays until the parent report is freed.
+    let fields = unsafe {
+        checked_slice(
+            raw.omitted_fields.cast_const(),
+            raw.omitted_fields_len,
+            "V4 omitted precise-accounting fields",
+        )
+    }?;
+    let reason_codes = unsafe {
+        checked_slice(
+            raw.omitted_field_reason_codes.cast_const(),
+            raw.omitted_field_reason_codes_len,
+            "V4 omitted precise-accounting reason codes",
+        )
+    }?;
+    let omitted_fields = fields
+        .iter()
+        .zip(reason_codes)
+        .map(|(field, reason_code)| {
+            Ok(V4OmittedPreciseAccountingField {
                 field: V4PreciseAccountingField::from_raw(field.field),
-                reason: optional_c_string(field.reason.cast_const()),
-                reason_code: reason_codes
-                    .get(index)
-                    .and_then(|ptr| optional_c_string((*ptr).cast_const())),
+                reason: optional_c_string(field.reason.cast_const())?,
+                reason_code: optional_c_string((*reason_code).cast_const())?,
             })
-            .collect()
-    };
-    V4PreciseAccountingBytes {
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(V4PreciseAccountingBytes {
         unreachable_bytes: (raw.has_unreachable_bytes != 0).then_some(raw.unreachable_bytes),
         retained_history_required_bytes: (raw.has_retained_history_required_bytes != 0)
             .then_some(raw.retained_history_required_bytes),
@@ -15196,7 +15467,7 @@ fn copy_v4_precise_accounting_bytes(
             .then_some(raw.popped_skipped_bytes),
         reclaimable_bytes: (raw.has_reclaimable_bytes != 0).then_some(raw.reclaimable_bytes),
         omitted_fields,
-    }
+    })
 }
 
 fn copy_v4_current_head_bytes(raw: sys::ArcadiaTioV4CurrentHeadBytes) -> V4CurrentHeadBytes {
@@ -15269,10 +15540,12 @@ fn new_v4_diagnostics_report() -> sys::ArcadiaTioV4DiagnosticsReport {
     }
 }
 
-fn copy_v4_diagnostics_report(raw: &sys::ArcadiaTioV4DiagnosticsReport) -> V4DiagnosticsReport {
-    V4DiagnosticsReport {
+fn copy_v4_diagnostics_report(
+    raw: &sys::ArcadiaTioV4DiagnosticsReport,
+) -> Result<V4DiagnosticsReport> {
+    Ok(V4DiagnosticsReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         current_head: copy_v4_current_head_bytes(raw.current_head),
         visible_chain_audit: copy_v4_audit_bytes(raw.visible_chain_audit),
         payload_reuse: copy_v4_payload_reuse_bytes(raw.payload_reuse),
@@ -15281,8 +15554,8 @@ fn copy_v4_diagnostics_report(raw: &sys::ArcadiaTioV4DiagnosticsReport) -> V4Dia
         omitted_unreachable_bytes: raw.omitted_unreachable_bytes != 0,
         omitted_unreachable_bytes_reason: optional_c_string(
             raw.omitted_unreachable_bytes_reason.cast_const(),
-        ),
-    }
+        )?,
+    })
 }
 
 fn new_v4_diagnostics_precise_report() -> sys::ArcadiaTioV4DiagnosticsPreciseReport {
@@ -15303,18 +15576,18 @@ fn new_v4_diagnostics_precise_report() -> sys::ArcadiaTioV4DiagnosticsPreciseRep
 
 fn copy_v4_diagnostics_precise_report(
     raw: &sys::ArcadiaTioV4DiagnosticsPreciseReport,
-) -> V4DiagnosticsPreciseReport {
-    V4DiagnosticsPreciseReport {
+) -> Result<V4DiagnosticsPreciseReport> {
+    Ok(V4DiagnosticsPreciseReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         current_head: copy_v4_current_head_bytes(raw.current_head),
         visible_chain_audit: copy_v4_audit_bytes(raw.visible_chain_audit),
         payload_reuse: copy_v4_payload_reuse_bytes(raw.payload_reuse),
         superseded: copy_v4_superseded_bytes(raw.superseded),
         unknown_bytes: raw.unknown_bytes,
-        precise_accounting: copy_v4_precise_accounting_bytes(&raw.precise_accounting),
-        reason_code: optional_c_string(raw.reason_code.cast_const()),
-    }
+        precise_accounting: copy_v4_precise_accounting_bytes(&raw.precise_accounting)?,
+        reason_code: optional_c_string(raw.reason_code.cast_const())?,
+    })
 }
 
 fn new_v4_compaction_analysis_report() -> sys::ArcadiaTioV4CompactionAnalysisReport {
@@ -15338,7 +15611,7 @@ fn copy_v4_compaction_analysis_report(
 ) -> Result<V4CompactionAnalysisReport> {
     Ok(V4CompactionAnalysisReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         policy: V4CompactionAnalysisPolicy::from_raw(raw.policy)?,
         source_file_bytes: raw.source_file_bytes,
         current_state_required_bytes: raw.current_state_required_bytes,
@@ -15347,7 +15620,7 @@ fn copy_v4_compaction_analysis_report(
         omitted_unreachable_bytes: raw.omitted_unreachable_bytes != 0,
         omitted_unreachable_bytes_reason: optional_c_string(
             raw.omitted_unreachable_bytes_reason.cast_const(),
-        ),
+        )?,
     })
 }
 
@@ -15372,14 +15645,14 @@ fn copy_v4_compaction_analysis_precise_report(
 ) -> Result<V4CompactionAnalysisPreciseReport> {
     Ok(V4CompactionAnalysisPreciseReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         policy: V4CompactionAnalysisPolicy::from_raw(raw.policy)?,
         source_file_bytes: raw.source_file_bytes,
         current_state_required_bytes: raw.current_state_required_bytes,
         ordinary_reclaimable_bytes: raw.ordinary_reclaimable_bytes,
         unknown_bytes: raw.unknown_bytes,
-        precise_accounting: copy_v4_precise_accounting_bytes(&raw.precise_accounting),
-        reason_code: optional_c_string(raw.reason_code.cast_const()),
+        precise_accounting: copy_v4_precise_accounting_bytes(&raw.precise_accounting)?,
+        reason_code: optional_c_string(raw.reason_code.cast_const())?,
     })
 }
 
@@ -15401,26 +15674,27 @@ fn new_v4_retained_history_compaction_report() -> sys::ArcadiaTioV4RetainedHisto
     }
 }
 
-fn copy_retained_commit_seqs(ptr: *mut u64, len: usize) -> Vec<u64> {
-    if ptr.is_null() || len == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: Native report owns `len` entries until the parent report is freed.
-        unsafe { slice::from_raw_parts(ptr, len) }.to_vec()
-    }
+fn copy_retained_commit_seqs(ptr: *mut u64, len: usize) -> Result<Vec<u64>> {
+    // SAFETY: Native report owns `len` entries until the parent report is freed.
+    unsafe { copy_checked_slice(ptr.cast_const(), len, "retained commit sequences") }
 }
 
 fn copy_v4_retained_history_compaction_report(
     raw: &sys::ArcadiaTioV4RetainedHistoryCompactionReport,
 ) -> Result<V4RetainedHistoryCompactionReport> {
+    if raw.retained_commit_seqs_len != raw.retained_commit_count as usize {
+        return Err(TioError::conversion(
+            "native retained-history report count does not match sequence length",
+        ));
+    }
     Ok(V4RetainedHistoryCompactionReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         retained_commit_count: raw.retained_commit_count,
         retained_commit_seqs: copy_retained_commit_seqs(
             raw.retained_commit_seqs,
             raw.retained_commit_seqs_len,
-        ),
+        )?,
         unretained_older_commit_count: (raw.has_unretained_older_commit_count != 0)
             .then_some(raw.unretained_older_commit_count),
         source_file_bytes: raw.source_file_bytes,
@@ -15428,7 +15702,7 @@ fn copy_v4_retained_history_compaction_report(
         omitted_unreachable_bytes: raw.omitted_unreachable_bytes != 0,
         omitted_unreachable_bytes_reason: optional_c_string(
             raw.omitted_unreachable_bytes_reason.cast_const(),
-        ),
+        )?,
     })
 }
 
@@ -15454,20 +15728,27 @@ fn new_v4_retained_history_compaction_precise_report()
 fn copy_v4_retained_history_compaction_precise_report(
     raw: &sys::ArcadiaTioV4RetainedHistoryCompactionPreciseReport,
 ) -> Result<V4RetainedHistoryCompactionPreciseReport> {
+    if raw.retained_commit_seqs_len != raw.retained_commit_count as usize {
+        return Err(TioError::conversion(
+            "native precise retained-history report count does not match sequence length",
+        ));
+    }
     Ok(V4RetainedHistoryCompactionPreciseReport {
         status: V4ReportStatus::from_raw(raw.status),
-        reason: optional_c_string(raw.reason.cast_const()),
+        reason: optional_c_string(raw.reason.cast_const())?,
         retained_commit_count: raw.retained_commit_count,
         retained_commit_seqs: copy_retained_commit_seqs(
             raw.retained_commit_seqs,
             raw.retained_commit_seqs_len,
-        ),
+        )?,
         unretained_older_commit_count: (raw.has_unretained_older_commit_count != 0)
             .then_some(raw.unretained_older_commit_count),
         source_file_bytes: raw.source_file_bytes,
         destination_file_bytes: raw.destination_file_bytes,
-        precise_source_accounting: copy_v4_precise_accounting_bytes(&raw.precise_source_accounting),
-        reason_code: optional_c_string(raw.reason_code.cast_const()),
+        precise_source_accounting: copy_v4_precise_accounting_bytes(
+            &raw.precise_source_accounting,
+        )?,
+        reason_code: optional_c_string(raw.reason_code.cast_const())?,
     })
 }
 
@@ -15481,12 +15762,12 @@ fn new_reform_report() -> sys::ArcadiaTioReformReport {
     }
 }
 
-fn copy_reform_report(raw: &sys::ArcadiaTioReformReport) -> ReformReport {
-    ReformReport {
-        reason_code: optional_c_string(raw.reason_code.cast_const()),
-        reason_code_taxonomy: optional_c_string(raw.reason_code_taxonomy.cast_const()),
-        reason: optional_c_string(raw.reason.cast_const()),
-    }
+fn copy_reform_report(raw: &sys::ArcadiaTioReformReport) -> Result<ReformReport> {
+    Ok(ReformReport {
+        reason_code: optional_c_string(raw.reason_code.cast_const())?,
+        reason_code_taxonomy: optional_c_string(raw.reason_code_taxonomy.cast_const())?,
+        reason: optional_c_string(raw.reason.cast_const())?,
+    })
 }
 
 fn new_auto_compaction_config() -> sys::ArcadiaTioAutoCompactionConfig {
@@ -15507,57 +15788,83 @@ fn copy_auto_compaction_config(
     })
 }
 
-fn copy_axis_labels(ptr: *mut sys::ArcadiaTioAxisLabel, len: usize) -> Vec<AxisLabel> {
-    if ptr.is_null() || len == 0 {
-        return Vec::new();
-    }
+fn copy_axis_labels(
+    ptr: *mut sys::ArcadiaTioAxisLabel,
+    len: usize,
+    label: &str,
+) -> Result<Vec<AxisLabel>> {
     // SAFETY: Metadata arrays are valid for `len` while the native metadata object is alive.
-    unsafe { slice::from_raw_parts(ptr, len) }
+    unsafe { checked_slice(ptr.cast_const(), len, label) }?
         .iter()
-        .map(|item| AxisLabel {
-            id: item.id,
-            name: required_c_string(item.name.cast_const()),
+        .map(|item| {
+            Ok(AxisLabel {
+                id: item.id,
+                name: required_c_string(item.name.cast_const(), "axis-label name")?,
+            })
         })
         .collect()
 }
 
-fn copy_user_kv(ptr: *mut sys::ArcadiaTioUserKv, len: usize) -> Vec<UserKv> {
-    if ptr.is_null() || len == 0 {
-        return Vec::new();
-    }
+fn copy_user_kv(ptr: *mut sys::ArcadiaTioUserKv, len: usize) -> Result<Vec<UserKv>> {
     // SAFETY: Metadata arrays are valid for `len` while the native metadata object is alive.
-    unsafe { slice::from_raw_parts(ptr, len) }
+    unsafe { checked_slice(ptr.cast_const(), len, "user metadata entries") }?
         .iter()
-        .map(|item| UserKv {
-            key: required_c_string(item.key.cast_const()),
-            value: required_c_string(item.value.cast_const()),
+        .map(|item| {
+            Ok(UserKv {
+                key: required_c_string(item.key.cast_const(), "user metadata key")?,
+                value: required_c_string(item.value.cast_const(), "user metadata value")?,
+            })
         })
         .collect()
+}
+
+fn empty_file_meta_output() -> sys::ArcadiaTioFileMeta {
+    sys::ArcadiaTioFileMeta {
+        dtype: sys::ARCADIA_TIO_DTYPE_F32,
+        dims: ptr::null_mut(),
+        rank: 0,
+        append_dim: 0,
+        symbols: ptr::null_mut(),
+        symbols_len: 0,
+        channels: ptr::null_mut(),
+        channels_len: 0,
+        user_kv: ptr::null_mut(),
+        user_kv_len: 0,
+        effective_profile: sys::ARCADIA_TIO_HEADER_PROFILE_STREAMING,
+        commit_seq: 0,
+    }
 }
 
 fn copy_file_meta(raw: &sys::ArcadiaTioFileMeta) -> Result<FileMeta> {
-    let dims = if raw.dims.is_null() || raw.rank == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: Metadata dimension array is valid for `rank` while the native metadata object is alive.
-        unsafe { slice::from_raw_parts(raw.dims, raw.rank) }
-            .iter()
-            .map(|dim| {
-                Ok(DimSpec {
-                    kind: AxisKind::from_raw(dim.kind)?,
-                    len: dim.len,
-                    name: optional_c_string(dim.name.cast_const()),
-                })
+    if raw.rank == 0 {
+        return Err(TioError::conversion(
+            "native file metadata returned zero rank",
+        ));
+    }
+    if raw.append_dim >= raw.rank {
+        return Err(TioError::conversion(format!(
+            "native file metadata append dimension {} is out of range for rank {}",
+            raw.append_dim, raw.rank
+        )));
+    }
+    // SAFETY: Metadata dimension array is valid for `rank` while the native metadata object is alive.
+    let dims = unsafe { checked_slice(raw.dims.cast_const(), raw.rank, "file dimensions") }?
+        .iter()
+        .map(|dim| {
+            Ok(DimSpec {
+                kind: AxisKind::from_raw(dim.kind)?,
+                len: dim.len,
+                name: optional_c_string(dim.name.cast_const())?,
             })
-            .collect::<Result<Vec<_>>>()?
-    };
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(FileMeta {
         dtype: DType::from_raw(raw.dtype)?,
         dims,
         append_dim: raw.append_dim,
-        symbols: copy_axis_labels(raw.symbols, raw.symbols_len),
-        channels: copy_axis_labels(raw.channels, raw.channels_len),
-        user_kv: copy_user_kv(raw.user_kv, raw.user_kv_len),
+        symbols: copy_axis_labels(raw.symbols, raw.symbols_len, "symbol labels")?,
+        channels: copy_axis_labels(raw.channels, raw.channels_len, "channel labels")?,
+        user_kv: copy_user_kv(raw.user_kv, raw.user_kv_len)?,
         effective_profile: HeaderProfile::from_raw(raw.effective_profile)?,
         commit_seq: raw.commit_seq,
     })
@@ -15567,17 +15874,14 @@ fn copy_coordinate_meta(
     ptr: *mut sys::ArcadiaTioAxisCoordinateMeta,
     len: usize,
 ) -> Result<Vec<CoordinateMeta>> {
-    if ptr.is_null() || len == 0 {
-        return Ok(Vec::new());
-    }
     // SAFETY: Coordinate metadata array is valid for `len` until freed by the caller.
-    unsafe { slice::from_raw_parts(ptr, len) }
+    unsafe { checked_slice(ptr.cast_const(), len, "coordinate metadata") }?
         .iter()
         .map(|item| {
             Ok(CoordinateMeta {
                 axis: item.axis,
-                axis_name_snapshot: optional_c_string(item.axis_name_snapshot.cast_const()),
-                name: optional_c_string(item.name.cast_const()),
+                axis_name_snapshot: optional_c_string(item.axis_name_snapshot.cast_const())?,
+                name: optional_c_string(item.name.cast_const())?,
                 kind: CoordinateKind::from_raw(item.kind)?,
                 dtype: CoordinateDType::from_raw(item.dtype)?,
                 encoding: CoordinateEncoding::from_raw(item.encoding)?,
@@ -15591,7 +15895,7 @@ fn copy_coordinate_meta(
                 external_source_kind: ExternalCoordinateSourceKind::from_raw(
                     item.external_source_kind,
                 )?,
-                external_uri: optional_c_string(item.external_uri.cast_const()),
+                external_uri: optional_c_string(item.external_uri.cast_const())?,
                 required: item.required != 0,
                 validation_status: CoordinateValidationStatus::from_raw(item.validation_status)?,
             })
@@ -15603,11 +15907,8 @@ fn copy_coordinate_meta_v2(
     ptr: *mut sys::ArcadiaTioAxisCoordinateMetaV2,
     len: usize,
 ) -> Result<Vec<AxisCoordinateMetaV2>> {
-    if ptr.is_null() || len == 0 {
-        return Ok(Vec::new());
-    }
     // SAFETY: Coordinate v2 metadata array is valid for `len` until freed by the caller.
-    unsafe { slice::from_raw_parts(ptr, len) }
+    unsafe { checked_slice(ptr.cast_const(), len, "Coordinate v2 metadata") }?
         .iter()
         .map(AxisCoordinateMetaV2::from_raw)
         .collect()
@@ -15698,6 +15999,7 @@ impl PreparedUserKvList {
 
 #[allow(dead_code)]
 struct PreparedCreate<'a> {
+    abi: AbiCompatible,
     path: CString,
     dim_kinds: Vec<sys::ArcadiaTioAxisKind>,
     dim_lens: Vec<u32>,
@@ -15736,6 +16038,7 @@ impl<'a> PreparedCreate<'a> {
             }
         }
 
+        let abi = ensure_native_abi()?;
         let path = path_to_cstring(path)?;
         let dim_kinds = options
             .dims
@@ -15847,6 +16150,7 @@ impl<'a> PreparedCreate<'a> {
             .collect::<Vec<_>>();
 
         Ok(Self {
+            abi,
             path,
             dim_kinds,
             dim_lens,
@@ -16678,7 +16982,10 @@ fn coordinate_input(
 /// Safe Rust wrappers for the appendable OCB (Ordered Column Bundle) C ABI.
 #[cfg(feature = "format-ocb")]
 pub mod ocb {
-    use super::{ErrorCode, TioError, path_to_cstring};
+    use super::{
+        AbiCompatible, ErrorCode, NativePointerOutput, TioError, checked_slice, copy_checked_slice,
+        ensure_native_abi, optional_c_string, path_to_cstring, required_c_string,
+    };
     use arcadia_tio_sys as sys;
     use std::cmp::Ordering as CmpOrdering;
     use std::collections::BTreeSet;
@@ -16690,7 +16997,6 @@ pub mod ocb {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::{Path, PathBuf};
     use std::ptr::{self, NonNull};
-    use std::slice;
     use std::time::Instant;
 
     /// Result type returned by OCB safe wrappers.
@@ -16736,6 +17042,54 @@ pub mod ocb {
             Self {
                 validation: OpenValidation::MetadataGraph,
             }
+        }
+    }
+
+    /// Finite byte limits applied to OCB reads through one opened handle.
+    ///
+    /// The default is Policy A. Larger finite values should be selected only
+    /// for reviewed workloads; streaming/fill APIs remain preferable when an
+    /// owned result would exceed the aggregate limits.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ResourceLimits {
+        /// Maximum encoded size of one OCB body object.
+        pub max_encoded_object_bytes: u64,
+        /// Maximum encoded size of one compressed column-chunk payload.
+        pub max_compressed_chunk_bytes: u64,
+        /// Maximum decoded size of one column-chunk payload.
+        pub max_decompressed_chunk_bytes: u64,
+        /// Maximum decoded/materialized size of one projected row group.
+        pub max_projected_row_group_bytes: u64,
+        /// Maximum selected compressed bytes retained by one owned read request.
+        ///
+        /// Independently caps unique dictionary/key-tuple auxiliary-object
+        /// bytes validated while opening a handle. Full-payload chunks are not
+        /// charged to that open-time auxiliary budget.
+        pub max_owned_selected_compressed_bytes: u64,
+        /// Maximum decoded/materialized bytes retained by one owned read request.
+        ///
+        /// Independently caps logical metadata allocations while validating
+        /// one root candidate. V2 candidates are attempted sequentially.
+        pub max_owned_decoded_materialized_bytes: u64,
+    }
+
+    impl ResourceLimits {
+        /// Return the approved finite default policy used by legacy opens.
+        pub const fn policy_a() -> Self {
+            Self {
+                max_encoded_object_bytes: 1_073_741_824,
+                max_compressed_chunk_bytes: 536_870_912,
+                max_decompressed_chunk_bytes: 536_870_912,
+                max_projected_row_group_bytes: 1_073_741_824,
+                max_owned_selected_compressed_bytes: 8_589_934_592,
+                max_owned_decoded_materialized_bytes: 17_179_869_184,
+            }
+        }
+    }
+
+    impl Default for ResourceLimits {
+        fn default() -> Self {
+            Self::policy_a()
         }
     }
 
@@ -17938,6 +18292,7 @@ pub mod ocb {
     pub struct ReadPlan<'a> {
         raw: NonNull<sys::ArcadiaTioOcbReadPlan>,
         file_raw: NonNull<sys::ArcadiaTioOcbFile>,
+        _abi: AbiCompatible,
         /// File-local column ids selected by the projection.
         pub projected_column_ids: Vec<u32>,
         /// File-local row-group ids selected by predicates.
@@ -18518,6 +18873,7 @@ pub mod ocb {
     #[derive(Debug)]
     pub struct ColumnBundleFile {
         raw: NonNull<sys::ArcadiaTioOcbFile>,
+        _abi: AbiCompatible,
     }
 
     /// Pull-driven owner of Rust-backed bounded OCB read workers.
@@ -18529,6 +18885,7 @@ pub mod ocb {
     #[derive(Debug)]
     pub struct ParallelReadSession {
         raw: NonNull<sys::ArcadiaTioOcbParallelReadSession>,
+        _abi: AbiCompatible,
     }
 
     impl ColumnBundleFile {
@@ -18542,19 +18899,39 @@ pub mod ocb {
             open_with_options(path, options)
         }
 
+        /// Open an OCB file with explicit finite resource limits.
+        pub fn open_with_resource_limits(
+            path: impl AsRef<Path>,
+            resource_limits: ResourceLimits,
+        ) -> OcbResult<Self> {
+            open_with_resource_limits(path, resource_limits)
+        }
+
+        /// Open an OCB file with explicit validation and finite resource limits.
+        pub fn open_with_options_and_resource_limits(
+            path: impl AsRef<Path>,
+            options: OpenOptions,
+            resource_limits: ResourceLimits,
+        ) -> OcbResult<Self> {
+            open_with_options_and_resource_limits(path, options, resource_limits)
+        }
+
         /// Clone this selected-snapshot reader handle.
         ///
         /// The clone observes the same immutable committed OCB snapshot as this
         /// handle. Reopen the file path to observe later appends.
         pub fn clone_reader(&self) -> OcbResult<Self> {
-            let mut raw_reader = ptr::null_mut();
+            let mut raw_reader = NativePointerOutput::new(sys::arcadia_tio_ocb_close);
             let status =
-                unsafe { sys::arcadia_tio_ocb_reader_clone(self.raw.as_ptr(), &mut raw_reader) };
+                unsafe { sys::arcadia_tio_ocb_reader_clone(self.raw.as_ptr(), raw_reader.out()) };
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB reader_clone failed"));
             }
-            NonNull::new(raw_reader)
-                .map(|raw| ColumnBundleFile { raw })
+            NonNull::new(raw_reader.take())
+                .map(|raw| ColumnBundleFile {
+                    raw,
+                    _abi: self._abi,
+                })
                 .ok_or_else(|| OcbError::last("OCB reader_clone returned null reader"))
         }
 
@@ -18623,7 +19000,7 @@ pub mod ocb {
             }
             let wrapper_started = Instant::now();
             let outcome = unsafe { read_outcome_from_raw(&outcome_guard.0) }?;
-            let mut attribution = read_attribution_from_raw(&attribution_guard.0);
+            let mut attribution = read_attribution_from_raw(&attribution_guard.0)?;
             attribution.wrapper_copy_ns = Some(duration_to_ns(wrapper_started.elapsed()));
             Ok(AttributedReadOutcome {
                 outcome,
@@ -18651,7 +19028,8 @@ pub mod ocb {
                 max_in_flight_row_groups: options.max_in_flight_row_groups,
                 reserved: [0; 8],
             };
-            let mut raw_session = ptr::null_mut();
+            let mut raw_session =
+                NativePointerOutput::new(sys::arcadia_tio_ocb_parallel_read_session_free);
             let status = unsafe {
                 sys::arcadia_tio_ocb_parallel_read_session_create(
                     self.raw.as_ptr(),
@@ -18663,14 +19041,17 @@ pub mod ocb {
                     },
                     row_group_ids.len(),
                     &raw_options,
-                    &mut raw_session,
+                    raw_session.out(),
                 )
             };
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB parallel_read_session failed"));
             }
-            NonNull::new(raw_session)
-                .map(|raw| ParallelReadSession { raw })
+            NonNull::new(raw_session.take())
+                .map(|raw| ParallelReadSession {
+                    raw,
+                    _abi: self._abi,
+                })
                 .ok_or_else(|| OcbError::last("OCB parallel_read_session returned null session"))
         }
 
@@ -18740,7 +19121,7 @@ pub mod ocb {
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB visit_batches failed"));
             }
-            Ok(read_cursor_report_from_raw(&report_guard.0))
+            read_cursor_report_from_raw(&report_guard.0)
         }
 
         /// Read one row group directly into caller-owned typed column buffers.
@@ -18765,45 +19146,30 @@ pub mod ocb {
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB read_row_group_into failed"));
             }
-            Ok(read_fill_report_from_raw(&raw_report, &raw.raw_columns))
+            read_fill_report_from_raw(&raw_report, &raw.raw_columns)
         }
 
         /// Plan a projected/pruned read without reading column payloads.
         pub fn plan_read<'a>(&'a self, request: &ReadRequest) -> OcbResult<ReadPlan<'a>> {
             let raw_request = RawReadRequest::new(request)?;
-            let mut raw_plan = ptr::null_mut();
+            let mut raw_plan = NativePointerOutput::new(sys::arcadia_tio_ocb_read_plan_free);
             let status = unsafe {
-                sys::arcadia_tio_ocb_plan_read(self.raw.as_ptr(), &raw_request.raw, &mut raw_plan)
+                sys::arcadia_tio_ocb_plan_read(self.raw.as_ptr(), &raw_request.raw, raw_plan.out())
             };
-            let raw = NonNull::new(raw_plan);
             if status != sys::ARCADIA_TIO_ERROR_OK {
                 return Err(OcbError::last("OCB plan_read failed"));
             }
-            let raw = raw.ok_or_else(|| OcbError::last("OCB plan_read returned null plan"))?;
-            let report = match read_plan_report(raw) {
-                Ok(report) => report,
-                Err(err) => {
-                    unsafe { sys::arcadia_tio_ocb_read_plan_free(raw.as_ptr()) };
-                    return Err(err);
-                }
-            };
-            let projected_column_ids = match read_plan_projected_column_ids(raw) {
-                Ok(ids) => ids,
-                Err(err) => {
-                    unsafe { sys::arcadia_tio_ocb_read_plan_free(raw.as_ptr()) };
-                    return Err(err);
-                }
-            };
-            let row_group_ids = match read_plan_row_group_ids(raw) {
-                Ok(ids) => ids,
-                Err(err) => {
-                    unsafe { sys::arcadia_tio_ocb_read_plan_free(raw.as_ptr()) };
-                    return Err(err);
-                }
-            };
+            let raw = NonNull::new(raw_plan.get())
+                .ok_or_else(|| OcbError::last("OCB plan_read returned null plan"))?;
+            let report = read_plan_report(raw)?;
+            let projected_column_ids = read_plan_projected_column_ids(raw)?;
+            let row_group_ids = read_plan_row_group_ids(raw)?;
+            let raw =
+                NonNull::new(raw_plan.take()).expect("validated OCB read plan stays non-null");
             Ok(ReadPlan {
                 raw,
                 file_raw: self.raw,
+                _abi: self._abi,
                 projected_column_ids,
                 row_group_ids,
                 report,
@@ -18957,11 +19323,42 @@ pub mod ocb {
         path: impl AsRef<Path>,
         options: OpenOptions,
     ) -> OcbResult<ColumnBundleFile> {
+        let abi = ensure_native_abi().map_err(OcbError::from_tio_error)?;
         let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
         let raw_options = raw_open_options(options);
         let raw = unsafe { sys::arcadia_tio_ocb_open_with_options(path.as_ptr(), &raw_options) };
         NonNull::new(raw)
-            .map(|raw| ColumnBundleFile { raw })
+            .map(|raw| ColumnBundleFile { raw, _abi: abi })
+            .ok_or_else(|| OcbError::last("OCB open failed"))
+    }
+
+    /// Open an OCB file with explicit finite resource limits.
+    pub fn open_with_resource_limits(
+        path: impl AsRef<Path>,
+        resource_limits: ResourceLimits,
+    ) -> OcbResult<ColumnBundleFile> {
+        open_with_options_and_resource_limits(path, OpenOptions::default(), resource_limits)
+    }
+
+    /// Open an OCB file with explicit validation and finite resource limits.
+    pub fn open_with_options_and_resource_limits(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        resource_limits: ResourceLimits,
+    ) -> OcbResult<ColumnBundleFile> {
+        let abi = ensure_native_abi().map_err(OcbError::from_tio_error)?;
+        let path = path_to_cstring(path).map_err(OcbError::from_tio_error)?;
+        let raw_options = raw_open_options(options);
+        let raw_resource_limits = raw_resource_limits(resource_limits);
+        let raw = unsafe {
+            sys::arcadia_tio_ocb_open_with_options_and_resource_limits(
+                path.as_ptr(),
+                &raw_options,
+                &raw_resource_limits,
+            )
+        };
+        NonNull::new(raw)
+            .map(|raw| ColumnBundleFile { raw, _abi: abi })
             .ok_or_else(|| OcbError::last("OCB open failed"))
     }
 
@@ -20141,6 +20538,33 @@ pub mod ocb {
         raw
     }
 
+    fn raw_resource_limits(resource_limits: ResourceLimits) -> sys::ArcadiaTioOcbResourceLimits {
+        // A fully initialized zero header makes an initializer defect fail
+        // closed at native version/size validation without exposing Rust to
+        // uninitialized memory.
+        let mut raw = sys::ArcadiaTioOcbResourceLimits {
+            version: 0,
+            struct_size: 0,
+            max_encoded_object_bytes: 0,
+            max_compressed_chunk_bytes: 0,
+            max_decompressed_chunk_bytes: 0,
+            max_projected_row_group_bytes: 0,
+            max_owned_selected_compressed_bytes: 0,
+            max_owned_decoded_materialized_bytes: 0,
+            reserved: [0; 4],
+        };
+        unsafe { sys::arcadia_tio_ocb_resource_limits_init(&mut raw) };
+        raw.max_encoded_object_bytes = resource_limits.max_encoded_object_bytes;
+        raw.max_compressed_chunk_bytes = resource_limits.max_compressed_chunk_bytes;
+        raw.max_decompressed_chunk_bytes = resource_limits.max_decompressed_chunk_bytes;
+        raw.max_projected_row_group_bytes = resource_limits.max_projected_row_group_bytes;
+        raw.max_owned_selected_compressed_bytes =
+            resource_limits.max_owned_selected_compressed_bytes;
+        raw.max_owned_decoded_materialized_bytes =
+            resource_limits.max_owned_decoded_materialized_bytes;
+        raw
+    }
+
     fn raw_snapshot_export_options(
         options: SnapshotExportOptions,
     ) -> sys::ArcadiaTioOcbSnapshotExportOptions {
@@ -20787,7 +21211,7 @@ pub mod ocb {
         if status != sys::ARCADIA_TIO_ERROR_OK {
             return Err(OcbError::last("OCB read_plan_report failed"));
         }
-        Ok(read_report_from_raw(&guard.0))
+        read_report_from_raw(&guard.0)
     }
 
     fn read_plan_projected_column_ids(
@@ -20868,41 +21292,66 @@ pub mod ocb {
     }
 
     unsafe fn metadata_from_raw(raw: &sys::ArcadiaTioOcbMetadata) -> OcbResult<Metadata> {
-        let columns = unsafe { raw_slice(raw.columns, raw.columns_len) }
+        let columns = unsafe { raw_slice(raw.columns, raw.columns_len, "OCB metadata columns") }?
             .iter()
-            .map(|column| ColumnDescriptor {
-                id: column.id,
-                name: raw_string(column.name.cast()),
-                physical_type: PhysicalType::from_raw_with_width(column.physical_type, unsafe {
-                    sys::arcadia_tio_ocb_column_descriptor_fixed_binary_width(column)
-                }),
-                logical_kind: LogicalKind::from_raw(column.logical_kind),
-                dictionary_id: (column.has_dictionary_id != 0).then_some(column.dictionary_id),
-                scale: column.scale,
-                nullable: column.nullable != 0,
+            .map(|column| {
+                let physical_type =
+                    PhysicalType::from_raw_with_width(column.physical_type, unsafe {
+                        sys::arcadia_tio_ocb_column_descriptor_fixed_binary_width(column)
+                    });
+                if matches!(physical_type, PhysicalType::FixedBinary { width: 0 }) {
+                    return Err(OcbError::invalid_input(
+                        "OCB fixed-binary column descriptor returned zero width",
+                    ));
+                }
+                Ok(ColumnDescriptor {
+                    id: column.id,
+                    name: raw_string(column.name.cast(), "OCB column name")?,
+                    physical_type,
+                    logical_kind: LogicalKind::from_raw(column.logical_kind),
+                    dictionary_id: (column.has_dictionary_id != 0).then_some(column.dictionary_id),
+                    scale: column.scale,
+                    nullable: column.nullable != 0,
+                })
             })
-            .collect();
-        let dictionaries = unsafe { raw_slice(raw.dictionaries, raw.dictionaries_len) }
-            .iter()
-            .map(|dictionary| DictionaryDescriptor {
+            .collect::<OcbResult<Vec<_>>>()?;
+        let dictionaries = unsafe {
+            raw_slice(
+                raw.dictionaries,
+                raw.dictionaries_len,
+                "OCB metadata dictionaries",
+            )
+        }?
+        .iter()
+        .map(|dictionary| {
+            Ok(DictionaryDescriptor {
                 dictionary_id: dictionary.dictionary_id,
-                name: raw_string(dictionary.name.cast()),
+                name: raw_string(dictionary.name.cast(), "OCB dictionary name")?,
                 code_physical_type: PhysicalType::from_raw(dictionary.code_physical_type),
                 value_kind: DictionaryValueKind::from_raw(dictionary.value_kind),
                 entry_count: dictionary.entry_count,
             })
-            .collect();
-        let ordering_keys = unsafe { raw_slice(raw.ordering_keys, raw.ordering_keys_len) }
-            .iter()
-            .map(|key| OrderingKey {
+        })
+        .collect::<OcbResult<Vec<_>>>()?;
+        let ordering_keys = unsafe {
+            raw_slice(
+                raw.ordering_keys,
+                raw.ordering_keys_len,
+                "OCB metadata ordering keys",
+            )
+        }?
+        .iter()
+        .map(|key| {
+            Ok(OrderingKey {
                 column_id: key.column_id,
-                column_name: raw_string(key.column_name.cast()),
+                column_name: raw_string(key.column_name.cast(), "OCB ordering-key name")?,
                 direction: OrderingDirection::from_raw(key.direction),
                 null_order: NullOrder::from_raw(key.null_order),
             })
-            .collect();
+        })
+        .collect::<OcbResult<Vec<_>>>()?;
         Ok(Metadata {
-            format_name: raw_string(raw.format_name.cast()),
+            format_name: raw_string(raw.format_name.cast(), "OCB format name")?,
             appendable: raw.appendable != 0,
             root_generation: raw.root_generation,
             previous_root_generation: (raw.has_previous_root_generation != 0)
@@ -20919,16 +21368,65 @@ pub mod ocb {
     unsafe fn dictionary_values_from_raw(
         raw: &sys::ArcadiaTioOcbDictionaryValues,
     ) -> OcbResult<DictionaryValues> {
-        let strings = unsafe { raw_string_array(raw.string_values, raw.string_values_len) };
-        let bytes = unsafe { raw_byte_slices(raw.byte_values, raw.byte_values_len) };
+        let strings = unsafe {
+            raw_string_array(
+                raw.string_values,
+                raw.string_values_len,
+                "OCB dictionary string values",
+            )
+        }?;
+        let bytes = unsafe {
+            raw_byte_slices(
+                raw.byte_values,
+                raw.byte_values_len,
+                "OCB dictionary byte values",
+            )
+        }?;
         let values = match DictionaryValueKind::from_raw(raw.value_kind) {
-            DictionaryValueKind::Utf8 => DecodedDictionaryValues::Utf8(strings),
-            DictionaryValueKind::Bytes => DecodedDictionaryValues::Bytes(bytes),
-            DictionaryValueKind::FixedBytes => DecodedDictionaryValues::FixedBytes {
-                fixed_width: raw.fixed_width,
-                values: bytes,
-            },
-            DictionaryValueKind::EnumLabels => DecodedDictionaryValues::EnumLabels(strings),
+            DictionaryValueKind::Utf8 => {
+                if !bytes.is_empty() {
+                    return Err(OcbError::invalid_input(
+                        "OCB UTF-8 dictionary returned unexpected byte values",
+                    ));
+                }
+                DecodedDictionaryValues::Utf8(strings)
+            }
+            DictionaryValueKind::Bytes => {
+                if !strings.is_empty() {
+                    return Err(OcbError::invalid_input(
+                        "OCB bytes dictionary returned unexpected string values",
+                    ));
+                }
+                DecodedDictionaryValues::Bytes(bytes)
+            }
+            DictionaryValueKind::FixedBytes => {
+                if raw.fixed_width == 0 {
+                    return Err(OcbError::invalid_input(
+                        "OCB fixed-bytes dictionary returned zero width",
+                    ));
+                }
+                if !strings.is_empty()
+                    || bytes
+                        .iter()
+                        .any(|value| value.len() != raw.fixed_width as usize)
+                {
+                    return Err(OcbError::invalid_input(
+                        "OCB fixed-bytes dictionary values do not match fixed width",
+                    ));
+                }
+                DecodedDictionaryValues::FixedBytes {
+                    fixed_width: raw.fixed_width,
+                    values: bytes,
+                }
+            }
+            DictionaryValueKind::EnumLabels => {
+                if !bytes.is_empty() {
+                    return Err(OcbError::invalid_input(
+                        "OCB enum-label dictionary returned unexpected byte values",
+                    ));
+                }
+                DecodedDictionaryValues::EnumLabels(strings)
+            }
             DictionaryValueKind::Unknown(raw_kind) => DecodedDictionaryValues::Unknown {
                 raw_kind,
                 strings,
@@ -20937,7 +21435,7 @@ pub mod ocb {
         };
         Ok(DictionaryValues {
             dictionary_id: raw.dictionary_id,
-            name: raw_string(raw.name.cast()),
+            name: raw_string(raw.name.cast(), "OCB dictionary name")?,
             values,
         })
     }
@@ -20999,9 +21497,14 @@ pub mod ocb {
             max_receive_nano: (raw.has_max_receive_nano != 0).then_some(raw.max_receive_nano),
             order_record_count: (raw.has_order_record_count != 0).then_some(raw.order_record_count),
             trade_record_count: (raw.has_trade_record_count != 0).then_some(raw.trade_record_count),
-            legacy_payload_hash_fnv1a64: (raw.has_legacy_payload_hash_fnv1a64 != 0
-                && !raw.legacy_payload_hash_fnv1a64.is_null())
-            .then(|| raw_string(raw.legacy_payload_hash_fnv1a64.cast())),
+            legacy_payload_hash_fnv1a64: if raw.has_legacy_payload_hash_fnv1a64 != 0 {
+                Some(raw_string(
+                    raw.legacy_payload_hash_fnv1a64.cast(),
+                    "OCB legacy payload hash",
+                )?)
+            } else {
+                None
+            },
             legacy_payload_hash_verified: raw.legacy_payload_hash_verified != 0,
             certified: raw.certified != 0,
             path_redacted: raw.path_redacted != 0,
@@ -21012,10 +21515,16 @@ pub mod ocb {
     unsafe fn row_group_summaries_from_raw(
         raw: &sys::ArcadiaTioOcbRowGroupSummaries,
     ) -> OcbResult<Vec<RowGroupSummary>> {
-        unsafe { raw_slice(raw.row_groups, raw.row_groups_len) }
-            .iter()
-            .map(|summary| unsafe { row_group_summary_from_raw(summary) })
-            .collect()
+        unsafe {
+            raw_slice(
+                raw.row_groups,
+                raw.row_groups_len,
+                "OCB row-group summaries",
+            )
+        }?
+        .iter()
+        .map(|summary| unsafe { row_group_summary_from_raw(summary) })
+        .collect()
     }
 
     unsafe fn row_group_summary_from_raw(
@@ -21029,11 +21538,13 @@ pub mod ocb {
                 .then(|| body_ref_summary_from_raw(&raw.first_key_tuple_ref)),
             last_key_tuple_ref: (raw.has_last_key_tuple_ref != 0)
                 .then(|| body_ref_summary_from_raw(&raw.last_key_tuple_ref)),
-            chunks: unsafe { raw_slice(raw.chunks, raw.chunks_len) }
-                .iter()
-                .map(|chunk| unsafe { column_chunk_summary_from_raw(chunk) })
-                .collect::<OcbResult<Vec<_>>>()?,
-            stats: unsafe { raw_slice(raw.stats, raw.stats_len) }
+            chunks: unsafe {
+                raw_slice(raw.chunks, raw.chunks_len, "OCB row-group chunk summaries")
+            }?
+            .iter()
+            .map(|chunk| unsafe { column_chunk_summary_from_raw(chunk) })
+            .collect::<OcbResult<Vec<_>>>()?,
+            stats: unsafe { raw_slice(raw.stats, raw.stats_len, "OCB row-group statistics") }?
                 .iter()
                 .map(|stats| unsafe { column_stats_summary_from_raw(stats) })
                 .collect::<OcbResult<Vec<_>>>()?,
@@ -21054,14 +21565,18 @@ pub mod ocb {
     unsafe fn column_chunk_summary_from_raw(
         raw: &sys::ArcadiaTioOcbColumnChunkSummary,
     ) -> OcbResult<ColumnChunkSummary> {
+        let physical_type =
+            PhysicalType::from_raw_with_width(raw.physical_type, raw.fixed_binary_width);
+        if matches!(physical_type, PhysicalType::FixedBinary { width: 0 }) {
+            return Err(OcbError::invalid_input(
+                "OCB fixed-binary chunk summary returned zero width",
+            ));
+        }
         Ok(ColumnChunkSummary {
             row_group_id: raw.row_group_id,
             column_id: raw.column_id,
-            column_name: raw_string(raw.column_name),
-            physical_type: PhysicalType::from_raw_with_width(
-                raw.physical_type,
-                raw.fixed_binary_width,
-            ),
+            column_name: raw_string(raw.column_name, "OCB chunk-summary column name")?,
+            physical_type,
             logical_kind: LogicalKind::from_raw(raw.logical_kind),
             fixed_binary_width: (raw.fixed_binary_width != 0).then_some(raw.fixed_binary_width),
             codec: ColumnChunkSummaryCodec::from_raw(raw.codec),
@@ -21080,60 +21595,111 @@ pub mod ocb {
         Ok(ColumnStatsSummary {
             row_group_id: raw.row_group_id,
             column_id: raw.column_id,
-            column_name: raw_string(raw.column_name),
+            column_name: raw_string(raw.column_name, "OCB statistics column name")?,
             physical_type: PhysicalType::from_raw(raw.physical_type),
             null_count: raw.null_count,
-            min: predicate_value_from_raw(&raw.min),
-            max: predicate_value_from_raw(&raw.max),
+            min: predicate_value_from_raw(&raw.min)?,
+            max: predicate_value_from_raw(&raw.max)?,
         })
     }
 
-    fn predicate_value_from_raw(raw: &sys::ArcadiaTioOcbPredicateValue) -> PredicateValue {
+    fn predicate_value_from_raw(
+        raw: &sys::ArcadiaTioOcbPredicateValue,
+    ) -> OcbResult<PredicateValue> {
         match raw.physical_type {
-            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32 => PredicateValue::I32(raw.i32_value),
-            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I64 => PredicateValue::I64(raw.i64_value),
-            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F32 => PredicateValue::F32(raw.f32_value),
-            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F64 => PredicateValue::F64(raw.f64_value),
-            _ => PredicateValue::I32(0),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32 => Ok(PredicateValue::I32(raw.i32_value)),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I64 => Ok(PredicateValue::I64(raw.i64_value)),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F32 => Ok(PredicateValue::F32(raw.f32_value)),
+            sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_F64 => Ok(PredicateValue::F64(raw.f64_value)),
+            other => Err(OcbError::invalid_input(format!(
+                "unknown OCB predicate physical type {other}"
+            ))),
         }
     }
 
     unsafe fn read_outcome_from_raw(raw: &sys::ArcadiaTioOcbReadOutcome) -> OcbResult<ReadOutcome> {
-        let batches = unsafe { raw_slice(raw.batches, raw.batches_len) }
+        let batches = unsafe { raw_slice(raw.batches, raw.batches_len, "OCB read batches") }?
             .iter()
             .map(|batch| unsafe { column_batch_from_raw(batch) })
             .collect::<OcbResult<Vec<_>>>()?;
+        if let Some(expected_columns) = batches.first().map(|batch| batch.columns.len())
+            && batches
+                .iter()
+                .any(|batch| batch.columns.len() != expected_columns)
+        {
+            return Err(OcbError::invalid_input(
+                "OCB read batches returned inconsistent column counts",
+            ));
+        }
+        if raw.report.selected_row_groups != batches.len() {
+            return Err(OcbError::invalid_input(format!(
+                "OCB read report selected-row-group count {} does not match batch count {}",
+                raw.report.selected_row_groups,
+                batches.len()
+            )));
+        }
+        let returned_column_chunks = batches.iter().try_fold(0usize, |total, batch| {
+            total.checked_add(batch.columns.len()).ok_or_else(|| {
+                OcbError::invalid_input("OCB returned column-chunk count overflows usize")
+            })
+        })?;
+        if raw.report.selected_column_chunks != returned_column_chunks {
+            return Err(OcbError::invalid_input(format!(
+                "OCB read report selected-column-chunk count {} does not match returned column count {returned_column_chunks}",
+                raw.report.selected_column_chunks
+            )));
+        }
         Ok(ReadOutcome {
             batches,
-            report: read_report_from_raw(&raw.report),
+            report: read_report_from_raw(&raw.report)?,
         })
     }
 
-    fn read_report_from_raw(raw: &sys::ArcadiaTioOcbReadReport) -> ReadReport {
-        ReadReport {
+    fn read_report_from_raw(raw: &sys::ArcadiaTioOcbReadReport) -> OcbResult<ReadReport> {
+        Ok(ReadReport {
             requested_threads: raw.requested_threads,
             effective_threads: raw.effective_threads,
             selected_row_groups: raw.selected_row_groups,
             pruned_row_groups: raw.pruned_row_groups,
             selected_column_chunks: raw.selected_column_chunks,
-            fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
-        }
+            fallback_reason: raw_optional_string(raw.fallback_reason.cast())?,
+        })
     }
 
-    fn read_cursor_report_from_raw(raw: &sys::ArcadiaTioOcbReadCursorReport) -> ReadCursorReport {
-        ReadCursorReport {
-            base_report: read_report_from_raw(&raw.base_report),
+    fn read_cursor_report_from_raw(
+        raw: &sys::ArcadiaTioOcbReadCursorReport,
+    ) -> OcbResult<ReadCursorReport> {
+        Ok(ReadCursorReport {
+            base_report: read_report_from_raw(&raw.base_report)?,
             batches_yielded: raw.batches_yielded,
             rows_yielded: raw.rows_yielded,
             cancelled: raw.cancelled != 0,
-        }
+        })
     }
 
     fn read_fill_report_from_raw(
         raw: &sys::ArcadiaTioOcbReadFillReport,
         raw_columns: &[sys::ArcadiaTioOcbColumnFillBuffer],
-    ) -> ReadFillReport {
-        ReadFillReport {
+    ) -> OcbResult<ReadFillReport> {
+        let row_count = usize::try_from(raw.row_count)
+            .map_err(|_| OcbError::invalid_input("OCB fill row count does not fit usize"))?;
+        if raw.columns_filled > raw_columns.len() {
+            return Err(OcbError::invalid_input(format!(
+                "OCB fill report columns_filled {} exceeds supplied column count {}",
+                raw.columns_filled,
+                raw_columns.len()
+            )));
+        }
+        if raw_columns
+            .iter()
+            .take(raw.columns_filled)
+            .any(|column| column.rows_filled > row_count)
+        {
+            return Err(OcbError::invalid_input(
+                "OCB fill report rows_filled exceeds row-group row count",
+            ));
+        }
+        Ok(ReadFillReport {
             row_group_id: raw.row_group_id,
             base_row: raw.base_row,
             row_count: raw.row_count,
@@ -21146,11 +21712,13 @@ pub mod ocb {
                     validity_filled: column.validity_filled != 0,
                 })
                 .collect(),
-        }
+        })
     }
 
-    fn read_attribution_from_raw(raw: &sys::ArcadiaTioOcbReadAttribution) -> ReadAttribution {
-        ReadAttribution {
+    fn read_attribution_from_raw(
+        raw: &sys::ArcadiaTioOcbReadAttribution,
+    ) -> OcbResult<ReadAttribution> {
+        Ok(ReadAttribution {
             plan_ns: raw.plan_ns,
             execute_wall_ns: raw.execute_wall_ns,
             row_group_read_ns: raw.row_group_read_ns,
@@ -21169,26 +21737,32 @@ pub mod ocb {
             selected_row_groups: raw.selected_row_groups,
             pruned_row_groups: raw.pruned_row_groups,
             selected_column_chunks: raw.selected_column_chunks,
-            fallback_reason: raw_optional_string(raw.fallback_reason.cast()),
-        }
+            fallback_reason: raw_optional_string(raw.fallback_reason.cast())?,
+        })
     }
 
     unsafe fn parallel_read_report_from_raw(
         raw: &sys::ArcadiaTioOcbParallelReadReport,
     ) -> OcbResult<ParallelReadReport> {
-        let worker_reports = unsafe { raw_slice(raw.worker_reports, raw.worker_reports_len) }
-            .iter()
-            .map(|worker| ParallelReadWorkerReport {
-                worker_id: worker.worker_id,
-                row_groups_completed: worker.row_groups_completed,
-                rows_completed: worker.rows_completed,
-                row_group_read_ns: worker.row_group_read_ns,
-                caller_prepare_ns: worker.caller_prepare_ns,
-            })
-            .collect();
+        let worker_reports = unsafe {
+            raw_slice(
+                raw.worker_reports,
+                raw.worker_reports_len,
+                "OCB parallel worker reports",
+            )
+        }?
+        .iter()
+        .map(|worker| ParallelReadWorkerReport {
+            worker_id: worker.worker_id,
+            row_groups_completed: worker.row_groups_completed,
+            rows_completed: worker.rows_completed,
+            row_group_read_ns: worker.row_group_read_ns,
+            caller_prepare_ns: worker.caller_prepare_ns,
+        })
+        .collect();
         Ok(ParallelReadReport {
-            cursor_report: read_cursor_report_from_raw(&raw.cursor_report),
-            attribution: read_attribution_from_raw(&raw.attribution),
+            cursor_report: read_cursor_report_from_raw(&raw.cursor_report)?,
+            attribution: read_attribution_from_raw(&raw.attribution)?,
             requested_workers: raw.requested_workers,
             started_workers: raw.started_workers,
             max_active_workers_observed: raw.max_active_workers_observed,
@@ -21219,7 +21793,7 @@ pub mod ocb {
         raw: &sys::ArcadiaTioOcbMaintenanceReport,
     ) -> OcbResult<MaintenanceReport> {
         Ok(MaintenanceReport {
-            path: PathBuf::from(raw_string(raw.path.cast())),
+            path: PathBuf::from(raw_string(raw.path.cast(), "OCB maintenance path")?),
             status: HealthStatus::from_raw(raw.status),
             file_bytes: (raw.has_file_bytes != 0).then_some(raw.file_bytes),
             selected_root_generation: (raw.has_selected_root_generation != 0)
@@ -21240,8 +21814,8 @@ pub mod ocb {
                     raw.rejected_root_candidates,
                     raw.rejected_root_candidates_len,
                 )
-            },
-            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) },
+            }?,
+            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) }?,
         })
     }
 
@@ -21249,7 +21823,7 @@ pub mod ocb {
         raw: &sys::ArcadiaTioOcbCleanupReport,
     ) -> OcbResult<CleanupReport> {
         Ok(CleanupReport {
-            path: PathBuf::from(raw_string(raw.path.cast())),
+            path: PathBuf::from(raw_string(raw.path.cast(), "OCB cleanup path")?),
             before_file_bytes: raw.before_file_bytes,
             after_file_bytes: raw.after_file_bytes,
             selected_root_generation: raw.selected_root_generation,
@@ -21262,45 +21836,56 @@ pub mod ocb {
             orphan_tail_bytes_after: raw.orphan_tail_bytes_after,
             bytes_removed: raw.bytes_removed,
             truncated: raw.truncated != 0,
-            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) },
+            issues: unsafe { issues_from_raw(raw.issues, raw.issues_len) }?,
         })
     }
 
     unsafe fn root_candidate_diagnostics_from_raw(
         ptr: *const sys::ArcadiaTioOcbRootCandidateDiagnostic,
         len: usize,
-    ) -> Vec<RootCandidateDiagnostic> {
-        unsafe { raw_slice(ptr, len) }
+    ) -> OcbResult<Vec<RootCandidateDiagnostic>> {
+        unsafe { raw_slice(ptr, len, "OCB rejected root candidates") }?
             .iter()
-            .map(|diagnostic| RootCandidateDiagnostic {
-                slot_id: (diagnostic.has_slot_id != 0).then_some(diagnostic.slot_id),
-                generation: (diagnostic.has_generation != 0).then_some(diagnostic.generation),
-                issue: issue_from_raw(&diagnostic.issue),
+            .map(|diagnostic| {
+                Ok(RootCandidateDiagnostic {
+                    slot_id: (diagnostic.has_slot_id != 0).then_some(diagnostic.slot_id),
+                    generation: (diagnostic.has_generation != 0).then_some(diagnostic.generation),
+                    issue: issue_from_raw(&diagnostic.issue)?,
+                })
             })
             .collect()
     }
 
-    unsafe fn issues_from_raw(ptr: *const sys::ArcadiaTioOcbIssue, len: usize) -> Vec<Issue> {
-        unsafe { raw_slice(ptr, len) }
+    unsafe fn issues_from_raw(
+        ptr: *const sys::ArcadiaTioOcbIssue,
+        len: usize,
+    ) -> OcbResult<Vec<Issue>> {
+        unsafe { raw_slice(ptr, len, "OCB issues") }?
             .iter()
             .map(issue_from_raw)
             .collect()
     }
 
-    fn issue_from_raw(raw: &sys::ArcadiaTioOcbIssue) -> Issue {
-        Issue {
-            code: raw_string(raw.code.cast()),
-            field_path: raw_optional_string(raw.field_path.cast()),
-            message: raw_string(raw.message.cast()),
-        }
+    fn issue_from_raw(raw: &sys::ArcadiaTioOcbIssue) -> OcbResult<Issue> {
+        Ok(Issue {
+            code: raw_string(raw.code.cast(), "OCB issue code")?,
+            field_path: raw_optional_string(raw.field_path.cast())?,
+            message: raw_string(raw.message.cast(), "OCB issue message")?,
+        })
     }
 
     unsafe fn snapshot_export_report_from_raw(
         raw: &sys::ArcadiaTioOcbSnapshotExportReport,
     ) -> OcbResult<SnapshotExportReport> {
         Ok(SnapshotExportReport {
-            source_path: PathBuf::from(raw_string(raw.source_path.cast())),
-            destination_path: PathBuf::from(raw_string(raw.destination_path.cast())),
+            source_path: PathBuf::from(raw_string(
+                raw.source_path.cast(),
+                "OCB snapshot source path",
+            )?),
+            destination_path: PathBuf::from(raw_string(
+                raw.destination_path.cast(),
+                "OCB snapshot destination path",
+            )?),
             validation: OpenValidation::from_raw(raw.validation)?,
             source_file_bytes: raw.source_file_bytes,
             destination_file_bytes: raw.destination_file_bytes,
@@ -21312,25 +21897,34 @@ pub mod ocb {
             row_count: raw.row_count,
             row_group_count: raw.row_group_count,
             fingerprints: SnapshotFingerprints {
-                algorithm: raw_string(raw.fingerprint_algorithm.cast()),
-                schema: raw_string(raw.schema_fingerprint.cast()),
-                dictionaries: raw_string(raw.dictionaries_fingerprint.cast()),
-                ordering: raw_string(raw.ordering_fingerprint.cast()),
-                combined: raw_string(raw.combined_fingerprint.cast()),
+                algorithm: raw_string(
+                    raw.fingerprint_algorithm.cast(),
+                    "OCB fingerprint algorithm",
+                )?,
+                schema: raw_string(raw.schema_fingerprint.cast(), "OCB schema fingerprint")?,
+                dictionaries: raw_string(
+                    raw.dictionaries_fingerprint.cast(),
+                    "OCB dictionaries fingerprint",
+                )?,
+                ordering: raw_string(raw.ordering_fingerprint.cast(), "OCB ordering fingerprint")?,
+                combined: raw_string(raw.combined_fingerprint.cast(), "OCB combined fingerprint")?,
             },
         })
     }
 
     unsafe fn manifest_from_raw(raw: &sys::ArcadiaTioOcbManifest) -> OcbResult<Manifest> {
-        let entries = unsafe { raw_slice(raw.entries, raw.entries_len) }
+        let entries = unsafe { raw_slice(raw.entries, raw.entries_len, "OCB manifest entries") }?
             .iter()
             .map(|entry| unsafe { manifest_entry_from_raw(entry) })
             .collect::<OcbResult<Vec<_>>>()?;
         Ok(Manifest {
-            schema: raw_string(raw.schema.cast()),
+            schema: raw_string(raw.schema.cast(), "OCB manifest schema")?,
             generated_by: ManifestTool {
-                name: raw_string(raw.generated_by.name.cast()),
-                version: raw_string(raw.generated_by.version_text.cast()),
+                name: raw_string(raw.generated_by.name.cast(), "OCB manifest tool name")?,
+                version: raw_string(
+                    raw.generated_by.version_text.cast(),
+                    "OCB manifest tool version",
+                )?,
                 generated_at_unix_seconds: raw.generated_by.generated_at_unix_seconds,
             },
             entries,
@@ -21341,61 +21935,68 @@ pub mod ocb {
         raw: &sys::ArcadiaTioOcbManifestEntry,
     ) -> OcbResult<ManifestEntry> {
         Ok(ManifestEntry {
-            path: raw_string(raw.path.cast()),
-            uri: raw_optional_string(raw.uri.cast()),
+            path: raw_string(raw.path.cast(), "OCB manifest entry path")?,
+            uri: raw_optional_string(raw.uri.cast())?,
             file_bytes: (raw.has_file_bytes != 0).then_some(raw.file_bytes),
             digest: if raw.has_digest != 0 {
-                Some(manifest_digest_from_raw(&raw.digest))
+                Some(manifest_digest_from_raw(&raw.digest)?)
             } else {
                 None
             },
             root_generation: raw.root_generation,
             row_count: raw.row_count,
             row_group_count: raw.row_group_count,
-            fingerprints: manifest_fingerprints_from_raw(&raw.fingerprints),
-            validation: unsafe { manifest_entry_validation_from_raw(&raw.validation) },
+            fingerprints: manifest_fingerprints_from_raw(&raw.fingerprints)?,
+            validation: unsafe { manifest_entry_validation_from_raw(&raw.validation) }?,
         })
     }
 
-    fn manifest_digest_from_raw(raw: &sys::ArcadiaTioOcbManifestDigest) -> ManifestDigest {
-        ManifestDigest {
-            algorithm: raw_string(raw.algorithm.cast()),
-            digest: raw_string(raw.digest.cast()),
-        }
+    fn manifest_digest_from_raw(
+        raw: &sys::ArcadiaTioOcbManifestDigest,
+    ) -> OcbResult<ManifestDigest> {
+        Ok(ManifestDigest {
+            algorithm: raw_string(raw.algorithm.cast(), "OCB manifest digest algorithm")?,
+            digest: raw_string(raw.digest.cast(), "OCB manifest digest")?,
+        })
     }
 
     fn manifest_fingerprints_from_raw(
         raw: &sys::ArcadiaTioOcbManifestFingerprints,
-    ) -> ManifestFingerprints {
-        ManifestFingerprints {
-            algorithm: raw_string(raw.algorithm.cast()),
-            schema: raw_string(raw.schema.cast()),
-            dictionaries: raw_string(raw.dictionaries.cast()),
-            ordering: raw_string(raw.ordering.cast()),
-            combined: raw_string(raw.combined.cast()),
-        }
+    ) -> OcbResult<ManifestFingerprints> {
+        Ok(ManifestFingerprints {
+            algorithm: raw_string(raw.algorithm.cast(), "OCB manifest fingerprint algorithm")?,
+            schema: raw_string(raw.schema.cast(), "OCB manifest schema fingerprint")?,
+            dictionaries: raw_string(
+                raw.dictionaries.cast(),
+                "OCB manifest dictionaries fingerprint",
+            )?,
+            ordering: raw_string(raw.ordering.cast(), "OCB manifest ordering fingerprint")?,
+            combined: raw_string(raw.combined.cast(), "OCB manifest combined fingerprint")?,
+        })
     }
 
     unsafe fn manifest_entry_validation_from_raw(
         raw: &sys::ArcadiaTioOcbManifestEntryValidation,
-    ) -> ManifestEntryValidation {
-        ManifestEntryValidation {
-            mode: raw_string(raw.mode.cast()),
-            status: raw_string(raw.status.cast()),
-            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) },
-        }
+    ) -> OcbResult<ManifestEntryValidation> {
+        Ok(ManifestEntryValidation {
+            mode: raw_string(raw.mode.cast(), "OCB manifest validation mode")?,
+            status: raw_string(raw.status.cast(), "OCB manifest validation status")?,
+            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) }?,
+        })
     }
 
     unsafe fn manifest_issues_from_raw(
         ptr: *const sys::ArcadiaTioOcbManifestIssue,
         len: usize,
-    ) -> Vec<ManifestIssue> {
-        unsafe { raw_slice(ptr, len) }
+    ) -> OcbResult<Vec<ManifestIssue>> {
+        unsafe { raw_slice(ptr, len, "OCB manifest issues") }?
             .iter()
-            .map(|issue| ManifestIssue {
-                code: raw_string(issue.code.cast()),
-                field_path: raw_optional_string(issue.field_path.cast()),
-                message: raw_string(issue.message.cast()),
+            .map(|issue| {
+                Ok(ManifestIssue {
+                    code: raw_string(issue.code.cast(), "OCB manifest issue code")?,
+                    field_path: raw_optional_string(issue.field_path.cast())?,
+                    message: raw_string(issue.message.cast(), "OCB manifest issue message")?,
+                })
             })
             .collect()
     }
@@ -21407,15 +22008,25 @@ pub mod ocb {
             status: CompatibilityStatus::from_raw(raw.status),
             validation: OpenValidation::from_raw(raw.validation)?,
             entries_checked: raw.entries_checked,
-            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) },
+            issues: unsafe { manifest_issues_from_raw(raw.issues, raw.issues_len) }?,
         })
     }
 
     unsafe fn column_batch_from_raw(raw: &sys::ArcadiaTioOcbColumnBatch) -> OcbResult<ColumnBatch> {
-        let columns = unsafe { raw_slice(raw.columns, raw.columns_len) }
+        let row_count = usize::try_from(raw.row_count)
+            .map_err(|_| OcbError::invalid_input("OCB batch row count does not fit usize"))?;
+        let columns = unsafe { raw_slice(raw.columns, raw.columns_len, "OCB batch columns") }?
             .iter()
-            .map(|column| unsafe { column_array_from_raw(column) })
+            .map(|column| unsafe { column_array_from_raw(column, raw.row_count) })
             .collect::<OcbResult<Vec<_>>>()?;
+        if columns
+            .iter()
+            .any(|column| column.values.len() != row_count)
+        {
+            return Err(OcbError::invalid_input(
+                "OCB column value count does not match batch row count",
+            ));
+        }
         Ok(ColumnBatch {
             row_group_id: raw.row_group_id,
             base_row: raw.base_row,
@@ -21424,50 +22035,124 @@ pub mod ocb {
         })
     }
 
-    unsafe fn column_array_from_raw(raw: &sys::ArcadiaTioOcbColumnArray) -> OcbResult<ColumnArray> {
+    unsafe fn column_array_from_raw(
+        raw: &sys::ArcadiaTioOcbColumnArray,
+        expected_row_count: u64,
+    ) -> OcbResult<ColumnArray> {
+        let physical_type = PhysicalType::from_raw_with_width(raw.physical_type, unsafe {
+            sys::arcadia_tio_ocb_column_array_fixed_binary_width(raw)
+        });
+        if matches!(physical_type, PhysicalType::FixedBinary { width: 0 }) {
+            return Err(OcbError::invalid_input(
+                "OCB fixed-binary column returned zero width",
+            ));
+        }
+        if raw.values.physical_type != raw.physical_type {
+            return Err(OcbError::invalid_input(
+                "OCB column physical type does not match primitive values",
+            ));
+        }
+        let values = unsafe { primitive_values_from_raw(&raw.values) }?;
+        let expected_len = usize::try_from(expected_row_count)
+            .map_err(|_| OcbError::invalid_input("OCB column row count does not fit usize"))?;
+        if values.len() != expected_len {
+            return Err(OcbError::invalid_input(format!(
+                "OCB column value count {} does not match batch row count {expected_row_count}",
+                values.len()
+            )));
+        }
+        if let (
+            PhysicalType::FixedBinary {
+                width: column_width,
+            },
+            PrimitiveValues::FixedBinary {
+                width: values_width,
+                ..
+            },
+        ) = (physical_type, &values)
+            && column_width != *values_width
+        {
+            return Err(OcbError::invalid_input(
+                "OCB fixed-binary column width does not match primitive values width",
+            ));
+        }
+        let validity = if raw.has_validity != 0 {
+            if raw.validity.row_count != expected_row_count {
+                return Err(OcbError::invalid_input(
+                    "OCB validity row count does not match batch row count",
+                ));
+            }
+            let expected_validity_len = usize::try_from(expected_row_count.div_ceil(8))
+                .map_err(|_| OcbError::invalid_input("OCB validity length does not fit usize"))?;
+            if raw.validity.len != expected_validity_len {
+                return Err(OcbError::invalid_input(format!(
+                    "OCB validity byte length {} does not match expected {expected_validity_len}",
+                    raw.validity.len
+                )));
+            }
+            Some(ValidityBitmap {
+                bytes: unsafe {
+                    raw_bytes(raw.validity.data, raw.validity.len, "OCB validity bitmap")
+                }?,
+                row_count: raw.validity.row_count,
+            })
+        } else {
+            if raw.validity.len != 0 || raw.validity.row_count != 0 || !raw.validity.data.is_null()
+            {
+                return Err(OcbError::invalid_input(
+                    "OCB column returned validity payload while has_validity is false",
+                ));
+            }
+            None
+        };
         Ok(ColumnArray {
             column_id: raw.column_id,
-            name: raw_string(raw.name.cast()),
-            physical_type: PhysicalType::from_raw_with_width(raw.physical_type, unsafe {
-                sys::arcadia_tio_ocb_column_array_fixed_binary_width(raw)
-            }),
+            name: raw_string(raw.name.cast(), "OCB column-array name")?,
+            physical_type,
             logical_kind: LogicalKind::from_raw(raw.logical_kind),
             dictionary_id: (raw.has_dictionary_id != 0).then_some(raw.dictionary_id),
-            values: unsafe { primitive_values_from_raw(&raw.values) }?,
-            validity: if raw.has_validity != 0 {
-                Some(ValidityBitmap {
-                    bytes: unsafe { raw_bytes(raw.validity.data, raw.validity.len) },
-                    row_count: raw.validity.row_count,
-                })
-            } else {
-                None
-            },
+            values,
+            validity,
         })
     }
 
     unsafe fn primitive_values_from_raw(
         raw: &sys::ArcadiaTioOcbPrimitiveValues,
     ) -> OcbResult<PrimitiveValues> {
-        match PhysicalType::from_raw_with_width(raw.physical_type, raw.reserved[0] as u32) {
+        let fixed_binary_width = u32::try_from(raw.reserved[0]).map_err(|_| {
+            OcbError::invalid_input("OCB fixed-binary width does not fit the public u32 contract")
+        })?;
+        match PhysicalType::from_raw_with_width(raw.physical_type, fixed_binary_width) {
             PhysicalType::I32 => Ok(PrimitiveValues::I32(unsafe {
-                raw_typed(raw.data.cast(), raw.len)
-            })),
+                raw_typed(raw.data.cast(), raw.len, "OCB i32 primitive values")
+            }?)),
             PhysicalType::I64 => Ok(PrimitiveValues::I64(unsafe {
-                raw_typed(raw.data.cast(), raw.len)
-            })),
+                raw_typed(raw.data.cast(), raw.len, "OCB i64 primitive values")
+            }?)),
             PhysicalType::F32 => Ok(PrimitiveValues::F32(unsafe {
-                raw_typed(raw.data.cast(), raw.len)
-            })),
+                raw_typed(raw.data.cast(), raw.len, "OCB f32 primitive values")
+            }?)),
             PhysicalType::F64 => Ok(PrimitiveValues::F64(unsafe {
-                raw_typed(raw.data.cast(), raw.len)
-            })),
+                raw_typed(raw.data.cast(), raw.len, "OCB f64 primitive values")
+            }?)),
             PhysicalType::FixedBinary { width } => {
+                if width == 0 {
+                    return Err(OcbError::invalid_input(
+                        "OCB fixed-binary primitive values returned zero width",
+                    ));
+                }
                 let byte_len = raw.len.checked_mul(width as usize).ok_or_else(|| {
                     OcbError::invalid_input("OCB fixed-binary byte length overflows")
                 })?;
                 Ok(PrimitiveValues::FixedBinary {
                     width,
-                    bytes: unsafe { raw_bytes(raw.data.cast(), byte_len) },
+                    bytes: unsafe {
+                        raw_bytes(
+                            raw.data.cast(),
+                            byte_len,
+                            "OCB fixed-binary primitive values",
+                        )
+                    }?,
                 })
             }
             PhysicalType::Unknown(raw_type) => Err(OcbError::invalid_input(format!(
@@ -21476,50 +22161,210 @@ pub mod ocb {
         }
     }
 
-    unsafe fn raw_slice<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
-        if ptr.is_null() || len == 0 {
-            &[]
-        } else {
-            unsafe { slice::from_raw_parts(ptr, len) }
-        }
+    unsafe fn raw_slice<'a, T>(ptr: *const T, len: usize, label: &str) -> OcbResult<&'a [T]> {
+        unsafe { checked_slice(ptr, len, label) }.map_err(OcbError::from_tio_error)
     }
 
-    unsafe fn raw_typed<T: Copy>(ptr: *const T, len: usize) -> Vec<T> {
-        unsafe { raw_slice(ptr, len) }.to_vec()
+    unsafe fn raw_typed<T: Copy>(ptr: *const T, len: usize, label: &str) -> OcbResult<Vec<T>> {
+        unsafe { copy_checked_slice(ptr, len, label) }.map_err(OcbError::from_tio_error)
     }
 
-    fn raw_string(ptr: *const c_char) -> String {
-        raw_optional_string(ptr).unwrap_or_default()
+    fn raw_string(ptr: *const c_char, label: &str) -> OcbResult<String> {
+        required_c_string(ptr, label).map_err(OcbError::from_tio_error)
     }
 
-    fn raw_optional_string(ptr: *const c_char) -> Option<String> {
-        if ptr.is_null() {
-            None
-        } else {
-            Some(
-                unsafe { CStr::from_ptr(ptr) }
-                    .to_string_lossy()
-                    .into_owned(),
-            )
-        }
+    fn raw_optional_string(ptr: *const c_char) -> OcbResult<Option<String>> {
+        optional_c_string(ptr).map_err(OcbError::from_tio_error)
     }
 
-    unsafe fn raw_string_array(ptr: *mut *mut c_char, len: usize) -> Vec<String> {
-        unsafe { raw_slice(ptr.cast::<*mut c_char>(), len) }
+    unsafe fn raw_string_array(
+        ptr: *mut *mut c_char,
+        len: usize,
+        label: &str,
+    ) -> OcbResult<Vec<String>> {
+        unsafe { raw_slice(ptr.cast::<*mut c_char>(), len, label) }?
             .iter()
-            .map(|value| raw_string((*value).cast()))
+            .map(|value| raw_string((*value).cast(), "OCB required string-array entry"))
             .collect()
     }
 
-    unsafe fn raw_byte_slices(ptr: *mut sys::ArcadiaTioOcbByteSlice, len: usize) -> Vec<Vec<u8>> {
-        unsafe { raw_slice(ptr, len) }
+    unsafe fn raw_byte_slices(
+        ptr: *mut sys::ArcadiaTioOcbByteSlice,
+        len: usize,
+        label: &str,
+    ) -> OcbResult<Vec<Vec<u8>>> {
+        unsafe { raw_slice(ptr, len, label) }?
             .iter()
-            .map(|value| unsafe { raw_bytes(value.data, value.len) })
+            .map(|value| unsafe { raw_bytes(value.data, value.len, "OCB dictionary byte value") })
             .collect()
     }
 
-    unsafe fn raw_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
-        unsafe { raw_slice(ptr, len) }.to_vec()
+    unsafe fn raw_bytes(ptr: *const u8, len: usize, label: &str) -> OcbResult<Vec<u8>> {
+        unsafe { raw_typed(ptr, len, label) }
+    }
+
+    #[cfg(test)]
+    mod conversion_tests {
+        use super::*;
+
+        fn raw_primitive_i32(data: *const i32, len: usize) -> sys::ArcadiaTioOcbPrimitiveValues {
+            sys::ArcadiaTioOcbPrimitiveValues {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbPrimitiveValues>(),
+                physical_type: sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32,
+                data: data.cast(),
+                len,
+                reserved: [0; 3],
+            }
+        }
+
+        fn raw_column_i32(
+            name: *mut c_char,
+            data: *const i32,
+            len: usize,
+        ) -> sys::ArcadiaTioOcbColumnArray {
+            sys::ArcadiaTioOcbColumnArray {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbColumnArray>(),
+                column_id: 0,
+                name,
+                physical_type: sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32,
+                logical_kind: sys::ARCADIA_TIO_OCB_LOGICAL_KIND_PLAIN,
+                has_dictionary_id: 0,
+                dictionary_id: 0,
+                values: raw_primitive_i32(data, len),
+                has_validity: 0,
+                validity: sys::ArcadiaTioOcbValidityBitmap {
+                    version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                    struct_size: mem::size_of::<sys::ArcadiaTioOcbValidityBitmap>(),
+                    data: ptr::null(),
+                    len: 0,
+                    row_count: 0,
+                    reserved: [0; 3],
+                },
+                reserved: [0; 4],
+            }
+        }
+
+        #[test]
+        fn metadata_rejects_null_required_format_name() {
+            let raw = empty_metadata();
+            let result = unsafe { metadata_from_raw(&raw) };
+            assert!(
+                result.is_err(),
+                "null required format name must fail closed"
+            );
+        }
+
+        #[test]
+        fn metadata_rejects_invalid_utf8_required_format_name() {
+            let mut invalid_utf8 = [0xff_u8, 0];
+            let mut raw = empty_metadata();
+            raw.format_name = invalid_utf8.as_mut_ptr().cast();
+            let result = unsafe { metadata_from_raw(&raw) };
+            assert!(
+                result.is_err(),
+                "invalid UTF-8 required format name must fail closed"
+            );
+        }
+
+        #[test]
+        fn metadata_rejects_null_columns_with_nonzero_length() {
+            let format_name = CString::new("OCB").expect("cstring");
+            let mut raw = empty_metadata();
+            raw.format_name = format_name.as_ptr().cast_mut();
+            raw.columns_len = 1;
+            let result = unsafe { metadata_from_raw(&raw) };
+            assert!(result.is_err(), "null/nonzero columns must fail closed");
+        }
+
+        #[test]
+        fn dictionary_values_reject_null_required_string_entry() {
+            let name = CString::new("symbols").expect("cstring");
+            let mut strings = [ptr::null_mut()];
+            let mut raw = empty_dictionary_values();
+            raw.name = name.as_ptr().cast_mut();
+            raw.string_values = strings.as_mut_ptr();
+            raw.string_values_len = strings.len();
+            let result = unsafe { dictionary_values_from_raw(&raw) };
+            assert!(
+                result.is_err(),
+                "null required dictionary value must fail closed"
+            );
+        }
+
+        #[test]
+        fn primitive_values_reject_null_data_with_nonzero_length() {
+            let raw = raw_primitive_i32(ptr::null(), 1);
+            let result = unsafe { primitive_values_from_raw(&raw) };
+            assert!(
+                result.is_err(),
+                "null/nonzero primitive data must fail closed"
+            );
+        }
+
+        #[test]
+        fn column_batch_rejects_value_count_different_from_row_count() {
+            let name = CString::new("price").expect("cstring");
+            let values = [7i32];
+            let mut column =
+                raw_column_i32(name.as_ptr().cast_mut(), values.as_ptr(), values.len());
+            let raw = sys::ArcadiaTioOcbColumnBatch {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbColumnBatch>(),
+                row_group_id: 0,
+                base_row: 0,
+                row_count: 2,
+                columns: &mut column,
+                columns_len: 1,
+                reserved: [0; 4],
+            };
+            let result = unsafe { column_batch_from_raw(&raw) };
+            assert!(result.is_err(), "column values must match batch row count");
+        }
+
+        #[test]
+        fn column_batch_rejects_inconsistent_validity_bitmap() {
+            let name = CString::new("price").expect("cstring");
+            let values = [0i32; 9];
+            let validity = [0xffu8];
+            let mut column =
+                raw_column_i32(name.as_ptr().cast_mut(), values.as_ptr(), values.len());
+            column.has_validity = 1;
+            column.validity.data = validity.as_ptr();
+            column.validity.len = validity.len();
+            column.validity.row_count = values.len() as u64;
+            let raw = sys::ArcadiaTioOcbColumnBatch {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbColumnBatch>(),
+                row_group_id: 0,
+                base_row: 0,
+                row_count: values.len() as u64,
+                columns: &mut column,
+                columns_len: 1,
+                reserved: [0; 4],
+            };
+            let result = unsafe { column_batch_from_raw(&raw) };
+            assert!(
+                result.is_err(),
+                "validity byte length must cover every row exactly"
+            );
+        }
+
+        #[test]
+        fn fixed_binary_values_reject_zero_width() {
+            let byte = [0u8];
+            let raw = sys::ArcadiaTioOcbPrimitiveValues {
+                version: sys::ARCADIA_TIO_OCB_ABI_VERSION,
+                struct_size: mem::size_of::<sys::ArcadiaTioOcbPrimitiveValues>(),
+                physical_type: sys::ARCADIA_TIO_OCB_PHYSICAL_TYPE_FIXED_BINARY,
+                data: byte.as_ptr().cast(),
+                len: 1,
+                reserved: [0; 3],
+            };
+            let result = unsafe { primitive_values_from_raw(&raw) };
+            assert!(result.is_err(), "fixed-binary width zero must fail closed");
+        }
     }
 }
 
@@ -21545,6 +22390,230 @@ mod tests {
                 "expected {expected}, got {actual}"
             );
         }
+    }
+
+    fn empty_file_meta() -> sys::ArcadiaTioFileMeta {
+        empty_file_meta_output()
+    }
+
+    #[test]
+    fn native_abi_range_accepts_only_authoritative_version_three() {
+        let below = validate_native_abi_version(2).expect_err("ABI below minimum must reject");
+        assert_eq!(below.code(), ErrorCode::Unimplemented);
+        assert!(validate_native_abi_version(3).is_ok());
+        let above = validate_native_abi_version(4).expect_err("ABI above maximum must reject");
+        assert_eq!(above.code(), ErrorCode::Unimplemented);
+        assert_eq!(MIN_SUPPORTED_NATIVE_ABI_VERSION, 3);
+        assert_eq!(MAX_SUPPORTED_NATIVE_ABI_VERSION, 3);
+    }
+
+    #[test]
+    fn native_abi_gate_caches_success_and_incompatibility() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let success_queries = AtomicUsize::new(0);
+        let success_gate = AbiGate::new();
+        for _ in 0..2 {
+            assert!(
+                success_gate
+                    .get_or_query(|| {
+                        success_queries.fetch_add(1, Ordering::SeqCst);
+                        3
+                    })
+                    .is_ok()
+            );
+        }
+        assert_eq!(success_queries.load(Ordering::SeqCst), 1);
+
+        let rejected_queries = AtomicUsize::new(0);
+        let rejected_gate = AbiGate::new();
+        for _ in 0..2 {
+            let error = rejected_gate
+                .get_or_query(|| {
+                    rejected_queries.fetch_add(1, Ordering::SeqCst);
+                    4
+                })
+                .expect_err("unsupported ABI must stay rejected");
+            assert_eq!(error.code(), ErrorCode::Unimplemented);
+        }
+        assert_eq!(rejected_queries.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn native_output_guards_free_exactly_once_on_success_and_conversion_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static VALUE_FREES: AtomicUsize = AtomicUsize::new(0);
+        static ARRAY_FREES: AtomicUsize = AtomicUsize::new(0);
+        static POINTER_FREES: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn free_value(_: *mut u32) {
+            VALUE_FREES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe extern "C" fn free_array(_: *mut u8, _: usize) {
+            ARRAY_FREES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe extern "C" fn free_pointer(_: *mut u8) {
+            POINTER_FREES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        VALUE_FREES.store(0, Ordering::SeqCst);
+        let result: Result<()> = {
+            let _guard = NativeOutput::new(7u32, free_value);
+            Err(TioError::conversion("synthetic conversion error"))
+        };
+        assert!(result.is_err());
+        assert_eq!(VALUE_FREES.load(Ordering::SeqCst), 1);
+        {
+            let _guard = NativeOutput::new(8u32, free_value);
+        }
+        assert_eq!(VALUE_FREES.load(Ordering::SeqCst), 2);
+
+        ARRAY_FREES.store(0, Ordering::SeqCst);
+        let result: Result<()> = {
+            let mut guard = NativeArrayOutput::<u8>::new(free_array);
+            unsafe {
+                *guard.ptr_out() = NonNull::<u8>::dangling().as_ptr();
+                *guard.len_out() = 1;
+            }
+            Err(TioError::conversion("synthetic array conversion error"))
+        };
+        assert!(result.is_err());
+        assert_eq!(ARRAY_FREES.load(Ordering::SeqCst), 1);
+
+        POINTER_FREES.store(0, Ordering::SeqCst);
+        let result: Result<()> = {
+            let mut guard = NativePointerOutput::<u8>::new(free_pointer);
+            unsafe {
+                *guard.out() = NonNull::<u8>::dangling().as_ptr();
+            }
+            Err(TioError::conversion("synthetic pointer conversion error"))
+        };
+        assert!(result.is_err());
+        assert_eq!(POINTER_FREES.load(Ordering::SeqCst), 1);
+
+        let transferred = {
+            let mut guard = NativePointerOutput::<u8>::new(free_pointer);
+            unsafe {
+                *guard.out() = NonNull::<u8>::dangling().as_ptr();
+            }
+            guard.take()
+        };
+        assert_eq!(POINTER_FREES.load(Ordering::SeqCst), 1);
+        unsafe { free_pointer(transferred) };
+        assert_eq!(POINTER_FREES.load(Ordering::SeqCst), 2);
+
+        {
+            let _guard = NativePointerOutput::<u8>::new(free_pointer);
+        }
+        assert_eq!(POINTER_FREES.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn checked_native_slice_rejects_misalignment_and_unrepresentable_lengths() {
+        let misaligned = ptr::without_provenance::<u32>(1);
+        let error = unsafe { checked_slice(misaligned, 1, "synthetic u32 output") }
+            .expect_err("misaligned pointer must reject before dereference");
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+
+        let aligned = NonNull::<u64>::dangling().as_ptr().cast_const();
+        let error = unsafe { checked_slice(aligned, usize::MAX, "synthetic huge output") }
+            .expect_err("unrepresentable byte length must reject before dereference");
+        assert_eq!(error.code(), ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn file_meta_rejects_null_dimensions_with_nonzero_rank() {
+        let mut raw = empty_file_meta();
+        raw.rank = 1;
+        let result = copy_file_meta(&raw);
+        assert!(result.is_err(), "null/nonzero dimensions must fail closed");
+    }
+
+    #[test]
+    fn file_meta_rejects_null_required_axis_label_name() {
+        let mut dim = sys::ArcadiaTioDimSpec {
+            kind: sys::ARCADIA_TIO_AXIS_TIME,
+            len: 0,
+            name: ptr::null_mut(),
+        };
+        let mut label = sys::ArcadiaTioAxisLabel {
+            id: 7,
+            name: ptr::null_mut(),
+        };
+        let mut raw = empty_file_meta();
+        raw.dims = &mut dim;
+        raw.rank = 1;
+        raw.symbols = &mut label;
+        raw.symbols_len = 1;
+        let result = copy_file_meta(&raw);
+        assert!(
+            result.is_err(),
+            "null required axis-label name must fail closed"
+        );
+    }
+
+    #[test]
+    fn file_meta_rejects_invalid_utf8_optional_dimension_name() {
+        let mut invalid_utf8 = [0xff_u8, 0];
+        let mut dim = sys::ArcadiaTioDimSpec {
+            kind: sys::ARCADIA_TIO_AXIS_TIME,
+            len: 0,
+            name: invalid_utf8.as_mut_ptr().cast(),
+        };
+        let mut raw = empty_file_meta();
+        raw.dims = &mut dim;
+        raw.rank = 1;
+        let result = copy_file_meta(&raw);
+        assert!(
+            result.is_err(),
+            "invalid UTF-8 optional dimension name must fail closed"
+        );
+    }
+
+    #[test]
+    fn coordinate_dictionary_rejects_null_entries_with_nonzero_length() {
+        let raw = sys::ArcadiaTioCoordinateDictionaryV2 {
+            entries: ptr::null_mut(),
+            entries_len: 1,
+            ..sys::ArcadiaTioCoordinateDictionaryV2::default()
+        };
+        let result = unsafe { CoordinateDictionaryV2::from_raw_borrowed(&raw) };
+        assert!(
+            result.is_err(),
+            "null/nonzero dictionary entries must fail closed"
+        );
+    }
+
+    #[test]
+    fn coordinate_value_slice_rejects_null_data_with_nonzero_length() {
+        let raw = sys::ArcadiaTioCoordinateValueSliceV2 {
+            data: ptr::null_mut(),
+            len: 1,
+            element_size: mem::size_of::<i32>(),
+            ..sys::ArcadiaTioCoordinateValueSliceV2::default()
+        };
+        let result = unsafe { CoordinateValueSliceV2::from_raw_borrowed(&raw) };
+        assert!(
+            result.is_err(),
+            "null/nonzero coordinate values must fail closed"
+        );
+    }
+
+    #[test]
+    fn coordinate_lookup_rejects_null_positions_with_nonzero_length() {
+        let raw = sys::ArcadiaTioCoordinateLookupResultV2 {
+            positions: ptr::null_mut(),
+            positions_len: 1,
+            ..sys::ArcadiaTioCoordinateLookupResultV2::default()
+        };
+        let result = unsafe { CoordinateLookupResultV2::from_raw_borrowed(&raw) };
+        assert!(
+            result.is_err(),
+            "null/nonzero lookup positions must fail closed"
+        );
     }
 
     #[test]

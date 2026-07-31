@@ -4,8 +4,10 @@
 
 use core::ffi::{c_char, c_double, c_float, c_int, c_void};
 
-/// Current C ABI version expected by this sys crate.
-pub const ARCADIA_TIO_ABI_VERSION: u32 = 1;
+/// Exact base C ABI version expected by this sys crate.
+pub const ARCADIA_TIO_ABI_VERSION: u32 = 3;
+/// Pointer-based compaction family version expected by this sys crate.
+pub const ARCADIA_TIO_COMPACTION_ABI_VERSION: u32 = 1;
 /// Current OCB C ABI version expected by this sys crate.
 #[cfg(feature = "format-ocb")]
 pub const ARCADIA_TIO_OCB_ABI_VERSION: u32 = 1;
@@ -614,6 +616,31 @@ pub struct ArcadiaTioOcbOpenOptions {
     pub struct_size: usize,
     /// Open validation depth.
     pub validation: ArcadiaTioOcbOpenValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Finite OCB read limits retained by one selected-snapshot handle.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbResourceLimits {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum encoded size of one OCB body object.
+    pub max_encoded_object_bytes: u64,
+    /// Maximum encoded size of one compressed column-chunk payload.
+    pub max_compressed_chunk_bytes: u64,
+    /// Maximum decoded size of one column-chunk payload.
+    pub max_decompressed_chunk_bytes: u64,
+    /// Maximum decoded/materialized size of one projected row group.
+    pub max_projected_row_group_bytes: u64,
+    /// Maximum owned-read compressed bytes and unique open-time auxiliary bytes.
+    pub max_owned_selected_compressed_bytes: u64,
+    /// Maximum owned-read bytes and one root candidate's metadata materialization.
+    pub max_owned_decoded_materialized_bytes: u64,
     /// Reserved words; callers set to zero.
     pub reserved: [u64; 4],
 }
@@ -4132,6 +4159,8 @@ unsafe extern "C" {
     pub fn arcadia_tio_last_error_code() -> ArcadiaTioErrorCode;
     /// Returns the native library ABI version.
     pub fn arcadia_tio_abi_version() -> u32;
+    /// Returns the pointer-based compaction function-family version.
+    pub fn arcadia_tio_compaction_abi_version() -> u32;
 
     /// Returns machine-readable OCB error kind for the current thread.
     #[cfg(feature = "format-ocb")]
@@ -4147,6 +4176,13 @@ unsafe extern "C" {
     pub fn arcadia_tio_ocb_open_with_options(
         path: *const c_char,
         options: *const ArcadiaTioOcbOpenOptions,
+    ) -> *mut ArcadiaTioOcbFile;
+    /// Opens an appendable OCB file with explicit validation and finite resource limits.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_open_with_options_and_resource_limits(
+        path: *const c_char,
+        options: *const ArcadiaTioOcbOpenOptions,
+        resource_limits: *const ArcadiaTioOcbResourceLimits,
     ) -> *mut ArcadiaTioOcbFile;
     /// Clones an immutable selected-snapshot OCB reader handle.
     #[cfg(feature = "format-ocb")]
@@ -4368,6 +4404,9 @@ unsafe extern "C" {
     /// Initializes OCB open options.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_open_options_init(options: *mut ArcadiaTioOcbOpenOptions);
+    /// Initializes OCB resource limits to Policy A.
+    #[cfg(feature = "format-ocb")]
+    pub fn arcadia_tio_ocb_resource_limits_init(resource_limits: *mut ArcadiaTioOcbResourceLimits);
     /// Initializes an OCB write column.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_write_column_init(column: *mut ArcadiaTioOcbWriteColumn);
@@ -5777,6 +5816,13 @@ unsafe extern "C" {
         retain_commits: u32,
         mode: ArcadiaTioCompactionMode,
     ) -> c_int;
+    /// Compacts live chunks through the portable pointer-based family.
+    pub fn arcadia_tio_compact_to_ex(
+        handle: *mut ArcadiaTioHandle,
+        dst_path: *const c_char,
+        retain_commits: u32,
+        mode: *const ArcadiaTioCompactionMode,
+    ) -> c_int;
     /// Conditionally compacts live chunks into a destination file.
     pub fn arcadia_tio_maybe_compact(
         handle: *mut ArcadiaTioHandle,
@@ -5785,6 +5831,16 @@ unsafe extern "C" {
         min_dead_bytes: u64,
         retain_commits: u32,
         mode: ArcadiaTioCompactionMode,
+        out_compacted: *mut u8,
+    ) -> c_int;
+    /// Conditionally compacts through the portable pointer-based family.
+    pub fn arcadia_tio_maybe_compact_ex(
+        handle: *mut ArcadiaTioHandle,
+        dst_path: *const c_char,
+        dead_ratio_threshold: c_double,
+        min_dead_bytes: u64,
+        retain_commits: u32,
+        mode: *const ArcadiaTioCompactionMode,
         out_compacted: *mut u8,
     ) -> c_int;
     /// Reads auto-compaction metadata configuration.

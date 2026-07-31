@@ -39,6 +39,29 @@ surfaces only: they are not benchmark evidence and do not create performance,
 phase-percentage, zero-copy, storage, cache, layout, external-format, or
 release-readiness claims.
 
+## Native ABI and owned-output safety
+
+This wrapper supports native base ABI `3` exactly. Every safe native entry path
+checks that contract through a process-cached gate before constructors, handle
+methods, or native-owned output conversion can cross the C boundary. Only
+`arcadia_tio_abi_version()` is called before compatibility is known. Both a
+successful result and an incompatibility error are cached; an incompatibility
+error is constructed locally and does not read native last-error storage. Use
+`check_native_abi_compatibility()` for an explicit check, and
+`MIN_SUPPORTED_NATIVE_ABI_VERSION` / `MAX_SUPPORTED_NATIVE_ABI_VERSION` to
+inspect the compiled range.
+
+Newer optional symbol families remain ordinary static-link requirements. For
+example, enabling `format-ocb` requires the linked library to export the OCB
+family; a missing symbol fails during linking or loading and is not treated as
+evidence that an incompatible base ABI is safe. Native pointer/length outputs
+are checked before borrowing or copying. Null pointers with nonzero lengths,
+misaligned or unrepresentable ranges, missing required strings, invalid UTF-8,
+and inconsistent batch/value/validity/fixed-width counts return errors. RAII
+output guards retain partially returned value, array, string, file, plan, and
+session ownership until validation succeeds, and release native allocations
+exactly once when status handling or Rust-side conversion fails.
+
 ## 0.3.6 source-release posture
 
 The 0.3.6 workspace tag carries the 0.3.5 bounded-session API unchanged and
@@ -77,7 +100,17 @@ write diagnostics for one create/append operation,
 `ocb::append` to add sorted suffix commits that repeat the frozen
 schema/dictionary/order declarations, `ColumnBundleFile::open` to bind a handle
 to one committed snapshot, `open_with_options` when explicit full-payload
-validation is required before reads, and `metadata`, `dictionary_values`,
+validation is required before reads, and `open_with_resource_limits` or
+`open_with_options_and_resource_limits` when reviewed finite limits must replace
+the default `ResourceLimits::policy_a()` policy. The policy bounds one encoded
+object, compressed/decompressed chunks, a projected row group, and aggregate
+compressed/decoded bytes retained by an owned request. Those aggregate fields
+also independently bound unique dictionary/key-tuple auxiliary bytes across the
+whole open and logical metadata allocations for one root-candidate validation;
+V2 can try at most two candidates sequentially and drops a rejected candidate
+before fallback. Exact auxiliary references are validated once and FullPayload
+chunks are excluded from that auxiliary total. Reader clones retain the same
+limits. Use `metadata`, `dictionary_values`,
 `row_group_summaries`, and `read_batches` to copy native-owned OCB
 metadata/dictionaries/summaries/batches into Rust-owned structs before the C
 buffers are freed. `ReadRequest::from_ordering_key_ranges` and

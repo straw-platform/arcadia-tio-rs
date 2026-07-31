@@ -11,6 +11,26 @@ constants, `repr(C)` metadata/read/write structs, opaque file handles,
 init/free helpers, manifest build/validate carriers, compact-L2 physical-v2
 artifact certification carriers, and
 open/create/append/read/dictionary/cleanup/manifest/certification declarations.
+`ARCADIA_TIO_ABI_VERSION` is the authoritative base ABI expected by this sys
+release and is exactly `3`. This unsafe crate declares symbols but does not
+perform a runtime compatibility check; safe callers should use the gate in
+`arcadia-tio-rs` before calling any symbol other than
+`arcadia_tio_abi_version()`.
+`ARCADIA_TIO_COMPACTION_ABI_VERSION` independently describes the additive
+pointer-based compaction family and is exactly `1`. That family consists of
+`arcadia_tio_compaction_abi_version`, `arcadia_tio_compact_to_ex`, and
+`arcadia_tio_maybe_compact_ex`; the `_ex` functions borrow a non-null
+`ArcadiaTioCompactionMode` pointer. The original by-value functions remain
+declared for source and binary compatibility. A runtime loader must resolve the
+family-version symbol optionally before assuming either `_ex` symbol exists;
+this statically linked sys crate still requires every symbol that a consumer
+references to exist in the selected native library.
+The OCB declarations include the versioned `ArcadiaTioOcbResourceLimits`
+carrier, its Policy A initializer, and the combined validation/resource-limit
+open entry point. Reserved fields must remain zero, and reader clones retain
+the selected policy. Its two aggregate owned-read fields also independently
+bound unique dictionary/key-tuple bytes across the whole open and logical
+metadata allocations for one root-candidate validation.
 The 0.3.5 additions include the opaque bounded parallel read
 session, initialized options/result/report carriers, blocking caller-thread
 polling, idempotent cancellation, terminal reporting, and paired result/report/
@@ -29,7 +49,10 @@ Fixed-binary OCB columns reuse reserved ABI fields through the documented
 while fixed-binary fill-buffer `values_len` is byte capacity. The linked native
 library must export the matching `arcadia_tio_ocb_*` symbols when
 `format-ocb` is enabled; missing-symbol link errors mean the native library is
-older than the OCB C ABI surface.
+older than the OCB C ABI surface. The same link-time rule applies to other
+statically declared newer symbol families: Cargo features control which
+declarations are referenced, but they do not weaken the mandatory base-ABI
+check.
 
 ## Link discovery
 

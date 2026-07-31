@@ -3,6 +3,27 @@ use std::slice;
 
 use arcadia_tio_sys::*;
 
+#[cfg(feature = "format-ocb")]
+#[test]
+fn ocb_resource_limits_initializer_returns_policy_a_and_zero_reserved_fields() {
+    let mut limits = std::mem::MaybeUninit::<ArcadiaTioOcbResourceLimits>::uninit();
+    unsafe { arcadia_tio_ocb_resource_limits_init(limits.as_mut_ptr()) };
+    let limits = unsafe { limits.assume_init() };
+
+    assert_eq!(limits.version, ARCADIA_TIO_OCB_ABI_VERSION);
+    assert_eq!(
+        limits.struct_size,
+        std::mem::size_of::<ArcadiaTioOcbResourceLimits>()
+    );
+    assert_eq!(limits.max_encoded_object_bytes, 1_073_741_824);
+    assert_eq!(limits.max_compressed_chunk_bytes, 536_870_912);
+    assert_eq!(limits.max_decompressed_chunk_bytes, 536_870_912);
+    assert_eq!(limits.max_projected_row_group_bytes, 1_073_741_824);
+    assert_eq!(limits.max_owned_selected_compressed_bytes, 8_589_934_592);
+    assert_eq!(limits.max_owned_decoded_materialized_bytes, 17_179_869_184);
+    assert_eq!(limits.reserved, [0; 4]);
+}
+
 #[test]
 fn linked_native_library_can_roundtrip_tiny_f64_tensor() {
     let path = unique_path("arcadia-tio-sys-smoke-f64.tio");
@@ -11,7 +32,11 @@ fn linked_native_library_can_roundtrip_tiny_f64_tensor() {
     let dim_lens = [0_u32];
 
     unsafe {
-        assert!(arcadia_tio_abi_version() >= ARCADIA_TIO_ABI_VERSION);
+        assert_eq!(arcadia_tio_abi_version(), ARCADIA_TIO_ABI_VERSION);
+        assert_eq!(
+            arcadia_tio_compaction_abi_version(),
+            ARCADIA_TIO_COMPACTION_ABI_VERSION
+        );
 
         let handle = arcadia_tio_create_streaming(
             c_path.as_ptr(),
@@ -130,7 +155,12 @@ fn linked_native_library_can_roundtrip_tiny_f64_tensor() {
 
 fn unique_path(name: &str) -> std::path::PathBuf {
     let nonce = format!("{}-{}", std::process::id(), unique_counter());
-    std::env::temp_dir().join(format!("{nonce}-{name}"))
+    let dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("sys-tests");
+    std::fs::create_dir_all(&dir).expect("create project-local sys test directory");
+    dir.join(format!("{nonce}-{name}"))
 }
 
 fn unique_counter() -> usize {

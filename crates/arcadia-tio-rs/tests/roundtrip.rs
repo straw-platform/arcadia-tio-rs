@@ -39,6 +39,16 @@ fn u16_bytes(values: &[u16]) -> Vec<u8> {
 }
 
 #[test]
+fn safe_wrapper_accepts_the_current_native_base_abi() {
+    assert_eq!(
+        arcadia_tio_rs::check_native_abi_compatibility()
+            .expect("current native base ABI is supported"),
+        3
+    );
+    assert_eq!(TensorFile::native_abi_version(), 3);
+}
+
+#[test]
 fn safe_wrapper_roundtrips_f64_with_metadata_and_coordinates() {
     let path = unique_path("safe-wrapper-f64.tio");
     let dims = vec![
@@ -3999,7 +4009,12 @@ fn roundtrip_dtype(
 
 fn unique_path(name: &str) -> PathBuf {
     let nonce = format!("{}-{}", std::process::id(), unique_counter());
-    std::env::temp_dir().join(format!("{nonce}-{name}"))
+    let dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("safe-wrapper-tests");
+    fs::create_dir_all(&dir).expect("create project-local wrapper test directory");
+    dir.join(format!("{nonce}-{name}"))
 }
 
 fn unique_counter() -> usize {
