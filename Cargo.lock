@@ -29,6 +29,7 @@ dependencies = [
 name = "arcadia-tio-ocb-core"
 version = "0.3.6"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "sha2",

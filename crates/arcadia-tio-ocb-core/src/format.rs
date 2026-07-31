@@ -7,6 +7,14 @@
 
 use std::io::{Cursor, ErrorKind, Read, Write};
 
+use super::resource_limits::{
+    MetadataMaterializationBudget, OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES,
+    OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES, OcbResourceLimits,
+};
+#[cfg(test)]
+use super::resource_limits::{
+    OCB_POLICY_A_MAX_ENCODED_OBJECT_BYTES, OCB_POLICY_A_MAX_OWNED_DECODED_MATERIALIZED_BYTES,
+};
 use crate::{ArcadiaTioError, Result};
 
 pub(crate) const OCB_FORMAT_MAJOR_V1: u16 = 1;
@@ -27,6 +35,13 @@ pub(crate) const OCB_STAT_SCALAR_V1_LEN: usize = 16;
 pub(crate) const OCB_COLUMN_STATS_V1_LEN: usize = 48;
 pub(crate) const OCB_ORDERING_KEY_V1_LEN: usize = 8;
 pub(crate) const OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN: usize = 72;
+// The writer accepts zstd levels 1..=22; level 22 can declare a 2^27-byte
+// window even for a tiny payload. Keep that bounded compatibility floor so a
+// small custom output limit does not make writer-produced bytes unreadable.
+// Output allocation remains exact, while an accepted frame may require up to
+// 128 MiB of decoder history; these limits are not a peak-RSS guarantee.
+const OCB_ZSTD_WRITER_COMPAT_WINDOW_LOG: u32 = 27;
+const OCB_ZSTD_PLATFORM_MAX_WINDOW_LOG: u32 = if usize::BITS <= 32 { 30 } else { 31 };
 
 pub(crate) const OCB_BOOTSTRAP_MAGIC_V1: [u8; 8] = *b"TIOOCB1\0";
 pub(crate) const OCB_BOOTSTRAP_MAGIC_V2: [u8; 8] = *b"TIOOCB2\0";
@@ -202,7 +217,9 @@ impl OcbChunkCodecV1 {
         match value {
             0 => Ok(Self::None),
             1 => Ok(Self::Zstd),
-            _ => Err(ArcadiaTioError::ocb_corrupt_file("unknown OCB chunk codec")),
+            _ => Err(ArcadiaTioError::ocb_unsupported_format(
+                "unknown OCB chunk codec",
+            )),
         }
     }
 }
@@ -1382,6 +1399,18 @@ impl OcbStringTableV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -1419,7 +1448,29 @@ impl OcbStringTableV1 {
             4,
             "OCB string table string count",
         )?;
-        let mut strings = Vec::with_capacity(string_count);
+        let strings_start = cursor.position();
+        let mut string_bytes = 0u64;
+        for _ in 0..string_count {
+            let len = inspect_string_u32_bounded(&mut cursor, bytes.len())?;
+            string_bytes = string_bytes
+                .checked_add(u64::try_from(len).map_err(|_| {
+                    ArcadiaTioError::ocb_corrupt_file("OCB string length exceeds u64")
+                })?)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB string table materialized byte count overflows",
+                ))?;
+        }
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<String>(string_count)?,
+            string_bytes,
+        ])?;
+        budget.charge(retained_bytes)?;
+
+        cursor.set_position(strings_start);
+        let mut strings = try_vec_with_capacity(
+            string_count,
+            "OCB string-table allocation failed within resource limit",
+        )?;
         for _ in 0..string_count {
             strings.push(read_string_u32_bounded(&mut cursor, bytes.len())?);
         }
@@ -1566,6 +1617,18 @@ impl OcbSchemaV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -1602,10 +1665,21 @@ impl OcbSchemaV1 {
             OCB_COLUMN_DESC_V1_LEN,
             "OCB schema column count",
         )?;
-        let mut columns = Vec::with_capacity(column_count);
-        for _ in 0..column_count {
-            columns.push(OcbColumnDescV1::read_from(&mut cursor)?);
-        }
+        let columns_start = cursor.position();
+        validate_record_sequence(&mut cursor, column_count, |reader| {
+            OcbColumnDescV1::read_from(reader)
+        })?;
+        budget.charge(checked_materialized_vec_bytes::<OcbColumnDescV1>(
+            column_count,
+        )?)?;
+
+        cursor.set_position(columns_start);
+        let columns = read_record_sequence(
+            &mut cursor,
+            column_count,
+            "OCB schema allocation failed within resource limit",
+            |reader| OcbColumnDescV1::read_from(reader),
+        )?;
         Ok(Self {
             version,
             string_table_ref,
@@ -1700,6 +1774,18 @@ impl OcbDictionaryIndexV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -1737,10 +1823,21 @@ impl OcbDictionaryIndexV1 {
             56,
             "OCB dictionary index count",
         )?;
-        let mut dictionaries = Vec::with_capacity(dictionary_count);
-        for _ in 0..dictionary_count {
-            dictionaries.push(OcbDictionaryDescV1::read_from(&mut cursor)?);
-        }
+        let dictionaries_start = cursor.position();
+        validate_record_sequence(&mut cursor, dictionary_count, |reader| {
+            OcbDictionaryDescV1::read_from(reader)
+        })?;
+        budget.charge(checked_materialized_vec_bytes::<OcbDictionaryDescV1>(
+            dictionary_count,
+        )?)?;
+
+        cursor.set_position(dictionaries_start);
+        let dictionaries = read_record_sequence(
+            &mut cursor,
+            dictionary_count,
+            "OCB dictionary-index allocation failed within resource limit",
+            |reader| OcbDictionaryDescV1::read_from(reader),
+        )?;
         Ok(Self {
             version,
             dictionaries,
@@ -1787,6 +1884,18 @@ impl OcbDictionaryValuesV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -1835,11 +1944,31 @@ impl OcbDictionaryValuesV1 {
             8,
             "OCB dictionary values offset count",
         )?;
-        let mut offsets = Vec::with_capacity(offset_count);
-        for _ in 0..offset_count {
-            offsets.push(read_u64(&mut cursor)?);
+        let entry_count = offset_count.saturating_sub(1);
+        let offsets_start = cursor.position();
+        let mut previous_offset = read_u64(&mut cursor)?;
+        if previous_offset != 0 {
+            return Err(ArcadiaTioError::ocb_corrupt_file(
+                "OCB dictionary values offsets do not cover data bytes",
+            ));
         }
-        if offsets.first().copied() != Some(0) || offsets.last().copied() != Some(data_bytes) {
+        for _ in 0..entry_count {
+            let next_offset = read_u64(&mut cursor)?;
+            if previous_offset > next_offset || next_offset > data_bytes {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB dictionary values offsets are invalid",
+                ));
+            }
+            if value_kind == OcbDictionaryValueKindV1::FixedBytes
+                && next_offset - previous_offset != u64::from(fixed_width)
+            {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB fixed-byte dictionary value length does not match fixed width",
+                ));
+            }
+            previous_offset = next_offset;
+        }
+        if previous_offset != data_bytes {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB dictionary values offsets do not cover data bytes",
             ));
@@ -1850,24 +1979,46 @@ impl OcbDictionaryValuesV1 {
             data_bytes,
             "OCB dictionary values data length",
         )?;
-        let mut data = vec![0u8; data_len];
-        read_exact_ocb(&mut cursor, &mut data)?;
-        let mut values = Vec::with_capacity(offset_count.saturating_sub(1));
-        for pair in offsets.windows(2) {
-            if pair[0] > pair[1] || pair[1] > data_bytes {
-                return Err(ArcadiaTioError::ocb_corrupt_file(
-                    "OCB dictionary values offsets are invalid",
-                ));
-            }
-            let value = data[pair[0] as usize..pair[1] as usize].to_vec();
-            if value_kind == OcbDictionaryValueKindV1::FixedBytes
-                && value.len() as u32 != fixed_width
-            {
-                return Err(ArcadiaTioError::ocb_corrupt_file(
-                    "OCB fixed-byte dictionary value length does not match fixed width",
-                ));
-            }
+        let data_start = usize::try_from(cursor.position()).map_err(|_| {
+            ArcadiaTioError::ocb_corrupt_file(
+                "OCB dictionary data offset exceeds addressable memory",
+            )
+        })?;
+        let data_end =
+            data_start
+                .checked_add(data_len)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB dictionary data range overflows",
+                ))?;
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<Vec<u8>>(entry_count)?,
+            u64::try_from(data_len).map_err(|_| {
+                ArcadiaTioError::ocb_corrupt_file("OCB dictionary data length exceeds u64")
+            })?,
+        ])?;
+        budget.charge(retained_bytes)?;
+
+        let data = &bytes[data_start..data_end];
+        let mut values = try_vec_with_capacity(
+            entry_count,
+            "OCB dictionary-value allocation failed within resource limit",
+        )?;
+        cursor.set_position(offsets_start);
+        let mut previous_offset = read_u64(&mut cursor)?;
+        for _ in 0..entry_count {
+            let next_offset = read_u64(&mut cursor)?;
+            let value_start = usize::try_from(previous_offset).map_err(|_| {
+                ArcadiaTioError::ocb_corrupt_file("OCB dictionary value offset exceeds usize")
+            })?;
+            let value_end = usize::try_from(next_offset).map_err(|_| {
+                ArcadiaTioError::ocb_corrupt_file("OCB dictionary value offset exceeds usize")
+            })?;
+            let value = copy_bytes_fallibly(
+                &data[value_start..value_end],
+                "OCB dictionary-entry allocation failed within resource limit",
+            )?;
             values.push(value);
+            previous_offset = next_offset;
         }
         Ok(Self {
             version,
@@ -2161,6 +2312,18 @@ impl OcbRowGroupIndexV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -2202,10 +2365,10 @@ impl OcbRowGroupIndexV1 {
             OCB_ROW_GROUP_DESC_V1_LEN,
             "OCB row-group index row-group count",
         )?;
-        let mut row_groups = Vec::with_capacity(row_group_count);
-        for _ in 0..row_group_count {
-            row_groups.push(OcbRowGroupDescV1::read_from(&mut cursor)?);
-        }
+        let records_start = cursor.position();
+        validate_record_sequence(&mut cursor, row_group_count, |reader| {
+            OcbRowGroupDescV1::read_from(reader)
+        })?;
         let column_chunk_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2213,10 +2376,9 @@ impl OcbRowGroupIndexV1 {
             OCB_COLUMN_CHUNK_DESC_V1_LEN,
             "OCB row-group index column-chunk count",
         )?;
-        let mut column_chunks = Vec::with_capacity(column_chunk_count);
-        for _ in 0..column_chunk_count {
-            column_chunks.push(OcbColumnChunkDescV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, column_chunk_count, |reader| {
+            OcbColumnChunkDescV1::read_from(reader)
+        })?;
         let stat_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2224,10 +2386,34 @@ impl OcbRowGroupIndexV1 {
             OCB_COLUMN_STATS_V1_LEN,
             "OCB row-group index stat count",
         )?;
-        let mut stats = Vec::with_capacity(stat_count);
-        for _ in 0..stat_count {
-            stats.push(OcbColumnStatsV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, stat_count, |reader| {
+            OcbColumnStatsV1::read_from(reader)
+        })?;
+        budget.charge(checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<OcbRowGroupDescV1>(row_group_count)?,
+            checked_materialized_vec_bytes::<OcbColumnChunkDescV1>(column_chunk_count)?,
+            checked_materialized_vec_bytes::<OcbColumnStatsV1>(stat_count)?,
+        ])?)?;
+
+        cursor.set_position(records_start);
+        let row_groups = read_record_sequence(
+            &mut cursor,
+            row_group_count,
+            "OCB row-group allocation failed within resource limit",
+            |reader| OcbRowGroupDescV1::read_from(reader),
+        )?;
+        let column_chunks = read_record_sequence(
+            &mut cursor,
+            column_chunk_count,
+            "OCB column-chunk descriptor allocation failed within resource limit",
+            |reader| OcbColumnChunkDescV1::read_from(reader),
+        )?;
+        let stats = read_record_sequence(
+            &mut cursor,
+            stat_count,
+            "OCB column-stat allocation failed within resource limit",
+            |reader| OcbColumnStatsV1::read_from(reader),
+        )?;
         Ok(Self {
             version,
             flags,
@@ -2299,6 +2485,18 @@ impl OcbRowGroupIndexDeltaV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -2347,10 +2545,10 @@ impl OcbRowGroupIndexDeltaV1 {
             OCB_ROW_GROUP_DESC_V1_LEN,
             "OCB row-group index delta row-group count",
         )?;
-        let mut row_groups = Vec::with_capacity(row_group_count);
-        for _ in 0..row_group_count {
-            row_groups.push(OcbRowGroupDescV1::read_from(&mut cursor)?);
-        }
+        let records_start = cursor.position();
+        validate_record_sequence(&mut cursor, row_group_count, |reader| {
+            OcbRowGroupDescV1::read_from(reader)
+        })?;
         let column_chunk_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2358,10 +2556,9 @@ impl OcbRowGroupIndexDeltaV1 {
             OCB_COLUMN_CHUNK_DESC_V1_LEN,
             "OCB row-group index delta column-chunk count",
         )?;
-        let mut column_chunks = Vec::with_capacity(column_chunk_count);
-        for _ in 0..column_chunk_count {
-            column_chunks.push(OcbColumnChunkDescV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, column_chunk_count, |reader| {
+            OcbColumnChunkDescV1::read_from(reader)
+        })?;
         let stat_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2369,10 +2566,9 @@ impl OcbRowGroupIndexDeltaV1 {
             OCB_COLUMN_STATS_V1_LEN,
             "OCB row-group index delta stat count",
         )?;
-        let mut stats = Vec::with_capacity(stat_count);
-        for _ in 0..stat_count {
-            stats.push(OcbColumnStatsV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, stat_count, |reader| {
+            OcbColumnStatsV1::read_from(reader)
+        })?;
         let ordering_key_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2380,10 +2576,9 @@ impl OcbRowGroupIndexDeltaV1 {
             OCB_ORDERING_KEY_V1_LEN,
             "OCB row-group index delta ordering-key count",
         )?;
-        let mut ordering_keys = Vec::with_capacity(ordering_key_count);
-        for _ in 0..ordering_key_count {
-            ordering_keys.push(OcbOrderingKeyV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, ordering_key_count, |reader| {
+            OcbOrderingKeyV1::read_from(reader)
+        })?;
         let ordering_proof_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2391,10 +2586,48 @@ impl OcbRowGroupIndexDeltaV1 {
             OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN,
             "OCB row-group index delta ordering-proof count",
         )?;
-        let mut row_group_ordering_proofs = Vec::with_capacity(ordering_proof_count);
-        for _ in 0..ordering_proof_count {
-            row_group_ordering_proofs.push(OcbRowGroupOrderingProofV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, ordering_proof_count, |reader| {
+            OcbRowGroupOrderingProofV1::read_from(reader)
+        })?;
+        budget.charge(checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<OcbRowGroupDescV1>(row_group_count)?,
+            checked_materialized_vec_bytes::<OcbColumnChunkDescV1>(column_chunk_count)?,
+            checked_materialized_vec_bytes::<OcbColumnStatsV1>(stat_count)?,
+            checked_materialized_vec_bytes::<OcbOrderingKeyV1>(ordering_key_count)?,
+            checked_materialized_vec_bytes::<OcbRowGroupOrderingProofV1>(ordering_proof_count)?,
+        ])?)?;
+
+        cursor.set_position(records_start);
+        let row_groups = read_record_sequence(
+            &mut cursor,
+            row_group_count,
+            "OCB row-group delta allocation failed within resource limit",
+            |reader| OcbRowGroupDescV1::read_from(reader),
+        )?;
+        let column_chunks = read_record_sequence(
+            &mut cursor,
+            column_chunk_count,
+            "OCB column-chunk delta allocation failed within resource limit",
+            |reader| OcbColumnChunkDescV1::read_from(reader),
+        )?;
+        let stats = read_record_sequence(
+            &mut cursor,
+            stat_count,
+            "OCB column-stat delta allocation failed within resource limit",
+            |reader| OcbColumnStatsV1::read_from(reader),
+        )?;
+        let ordering_keys = read_record_sequence(
+            &mut cursor,
+            ordering_key_count,
+            "OCB ordering-key delta allocation failed within resource limit",
+            |reader| OcbOrderingKeyV1::read_from(reader),
+        )?;
+        let row_group_ordering_proofs = read_record_sequence(
+            &mut cursor,
+            ordering_proof_count,
+            "OCB ordering-proof delta allocation failed within resource limit",
+            |reader| OcbRowGroupOrderingProofV1::read_from(reader),
+        )?;
         Ok(Self {
             version,
             flags,
@@ -2557,6 +2790,18 @@ impl OcbOrderingProofV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let mut budget = policy_a_metadata_materialization_budget();
+        Self::read_from_bytes_with_budget(bytes, &mut budget)
+    }
+
+    pub(crate) fn read_from_bytes_with_budget(
+        mut bytes: Vec<u8>,
+        budget: &mut MetadataMaterializationBudget,
+    ) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -2596,10 +2841,10 @@ impl OcbOrderingProofV1 {
             OCB_ORDERING_KEY_V1_LEN,
             "OCB ordering proof key count",
         )?;
-        let mut keys = Vec::with_capacity(key_count);
-        for _ in 0..key_count {
-            keys.push(OcbOrderingKeyV1::read_from(&mut cursor)?);
-        }
+        let records_start = cursor.position();
+        validate_record_sequence(&mut cursor, key_count, |reader| {
+            OcbOrderingKeyV1::read_from(reader)
+        })?;
         let row_group_count = checked_record_count(
             bytes.len(),
             cursor.position(),
@@ -2607,10 +2852,27 @@ impl OcbOrderingProofV1 {
             OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN,
             "OCB ordering proof row-group count",
         )?;
-        let mut row_group_proofs = Vec::with_capacity(row_group_count);
-        for _ in 0..row_group_count {
-            row_group_proofs.push(OcbRowGroupOrderingProofV1::read_from(&mut cursor)?);
-        }
+        validate_record_sequence(&mut cursor, row_group_count, |reader| {
+            OcbRowGroupOrderingProofV1::read_from(reader)
+        })?;
+        budget.charge(checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<OcbOrderingKeyV1>(key_count)?,
+            checked_materialized_vec_bytes::<OcbRowGroupOrderingProofV1>(row_group_count)?,
+        ])?)?;
+
+        cursor.set_position(records_start);
+        let keys = read_record_sequence(
+            &mut cursor,
+            key_count,
+            "OCB ordering-key allocation failed within resource limit",
+            |reader| OcbOrderingKeyV1::read_from(reader),
+        )?;
+        let row_group_proofs = read_record_sequence(
+            &mut cursor,
+            row_group_count,
+            "OCB ordering-proof allocation failed within resource limit",
+            |reader| OcbRowGroupOrderingProofV1::read_from(reader),
+        )?;
         Ok(Self {
             version,
             flags,
@@ -2672,6 +2934,10 @@ impl OcbColumnChunkObjectV1 {
     pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
+        Self::read_from_bytes(bytes)
+    }
+
+    pub(crate) fn read_from_bytes(mut bytes: Vec<u8>) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -2723,8 +2989,20 @@ impl OcbColumnChunkObjectV1 {
                 "OCB uncompressed column chunk value byte length does not match header",
             ));
         }
-        let mut payload = vec![0u8; payload_len];
-        read_exact_ocb(&mut cursor, &mut payload)?;
+        let payload_start = usize::try_from(cursor.position()).map_err(|_| {
+            ArcadiaTioError::ocb_corrupt_file(
+                "OCB column chunk payload offset exceeds addressable memory",
+            )
+        })?;
+        let payload_end =
+            payload_start
+                .checked_add(payload_len)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB column chunk payload range overflows",
+                ))?;
+        drop(cursor);
+        bytes.copy_within(payload_start..payload_end, 0);
+        bytes.truncate(payload_len);
         Ok(Self {
             version,
             physical_type,
@@ -2734,7 +3012,7 @@ impl OcbColumnChunkObjectV1 {
             column_id,
             row_count,
             uncompressed_bytes: value_bytes,
-            payload,
+            payload: bytes,
             crc32c: actual_crc,
         })
     }
@@ -2754,6 +3032,17 @@ impl OcbColumnChunkObjectV1 {
     }
 
     pub(crate) fn decode_payload(&self) -> Result<Vec<u8>> {
+        self.decode_payload_with_limits(
+            OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES,
+            OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES,
+        )
+    }
+
+    pub(crate) fn decode_payload_with_limits(
+        &self,
+        max_compressed_bytes: u64,
+        max_decompressed_bytes: u64,
+    ) -> Result<Vec<u8>> {
         let expected_value_bytes = self.uncompressed_value_bytes()?;
         match self.codec {
             OcbChunkCodecV1::None => {
@@ -2762,19 +3051,102 @@ impl OcbColumnChunkObjectV1 {
                         "OCB uncompressed column chunk value byte length does not match header",
                     ));
                 }
-                Ok(self.payload.clone())
-            }
-            OcbChunkCodecV1::Zstd => {
-                let payload = zstd::stream::decode_all(Cursor::new(self.payload.as_slice()))
-                    .map_err(|_| {
-                        ArcadiaTioError::ocb_corrupt_file("OCB zstd column chunk decode failed")
-                    })?;
-                if payload.len() as u64 != expected_value_bytes {
-                    return Err(ArcadiaTioError::ocb_corrupt_file(
-                        "OCB zstd column chunk decoded byte length does not match header",
+                let encoded_bytes = u64::try_from(self.payload.len()).map_err(|_| {
+                    ArcadiaTioError::ocb_corrupt_file(
+                        "OCB uncompressed column chunk payload exceeds addressable length",
+                    )
+                })?;
+                if encoded_bytes > max_compressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB encoded column chunk exceeds resource limit",
                     ));
                 }
-                Ok(payload)
+                if expected_value_bytes > max_decompressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB decoded column chunk exceeds resource limit",
+                    ));
+                }
+                copy_bytes_fallibly(
+                    &self.payload,
+                    "OCB decoded payload allocation failed within resource limit",
+                )
+            }
+            OcbChunkCodecV1::Zstd => {
+                if self.payload.is_empty() {
+                    return Err(ArcadiaTioError::ocb_corrupt_file(
+                        "OCB zstd column chunk payload must not be empty",
+                    ));
+                }
+                let compressed_bytes = u64::try_from(self.payload.len()).map_err(|_| {
+                    ArcadiaTioError::ocb_corrupt_file(
+                        "OCB zstd column chunk payload exceeds addressable length",
+                    )
+                })?;
+                if compressed_bytes > max_compressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB compressed column chunk exceeds resource limit",
+                    ));
+                }
+                decode_zstd_payload_bounded(
+                    &self.payload,
+                    expected_value_bytes,
+                    max_decompressed_bytes,
+                )
+            }
+        }
+    }
+
+    pub(crate) fn into_decoded_payload_with_limits(
+        self,
+        max_compressed_bytes: u64,
+        max_decompressed_bytes: u64,
+    ) -> Result<Vec<u8>> {
+        let expected_value_bytes = self.uncompressed_value_bytes()?;
+        match self.codec {
+            OcbChunkCodecV1::None => {
+                if self.payload.len() as u64 != expected_value_bytes {
+                    return Err(ArcadiaTioError::ocb_corrupt_file(
+                        "OCB uncompressed column chunk value byte length does not match header",
+                    ));
+                }
+                let encoded_bytes = u64::try_from(self.payload.len()).map_err(|_| {
+                    ArcadiaTioError::ocb_corrupt_file(
+                        "OCB uncompressed column chunk payload exceeds addressable length",
+                    )
+                })?;
+                if encoded_bytes > max_compressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB encoded column chunk exceeds resource limit",
+                    ));
+                }
+                if expected_value_bytes > max_decompressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB decoded column chunk exceeds resource limit",
+                    ));
+                }
+                Ok(self.payload)
+            }
+            OcbChunkCodecV1::Zstd => {
+                if self.payload.is_empty() {
+                    return Err(ArcadiaTioError::ocb_corrupt_file(
+                        "OCB zstd column chunk payload must not be empty",
+                    ));
+                }
+                let compressed_bytes = u64::try_from(self.payload.len()).map_err(|_| {
+                    ArcadiaTioError::ocb_corrupt_file(
+                        "OCB zstd column chunk payload exceeds addressable length",
+                    )
+                })?;
+                if compressed_bytes > max_compressed_bytes {
+                    return Err(ArcadiaTioError::ocb_invalid_input(
+                        "OCB compressed column chunk exceeds resource limit",
+                    ));
+                }
+                decode_zstd_payload_bounded(
+                    &self.payload,
+                    expected_value_bytes,
+                    max_decompressed_bytes,
+                )
             }
         }
     }
@@ -2818,6 +3190,94 @@ impl OcbColumnChunkObjectV1 {
         write_u32(&mut buf, 0)?;
         Ok(buf)
     }
+}
+
+fn decode_zstd_payload_bounded(
+    encoded: &[u8],
+    expected_bytes: u64,
+    max_decoded_bytes: u64,
+) -> Result<Vec<u8>> {
+    expected_bytes
+        .checked_add(1)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB decoded column chunk byte length overflows",
+        ))?;
+    let expected_len = usize::try_from(expected_bytes).map_err(|_| {
+        ArcadiaTioError::ocb_corrupt_file(
+            "OCB decoded column chunk byte length exceeds addressable memory",
+        )
+    })?;
+    if expected_bytes > max_decoded_bytes {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB decoded column chunk exceeds resource limit",
+        ));
+    }
+
+    let mut decoded = allocate_zeroed_bytes_fallibly(
+        expected_len,
+        "OCB decoded payload allocation failed within resource limit",
+    )?;
+    let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(encoded))
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB zstd column chunk decode failed"))?;
+    decoder
+        .window_log_max(zstd_window_log_for_decoded_limit(max_decoded_bytes))
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB zstd column chunk decode failed"))?;
+    if !decoded.is_empty() {
+        decoder.read_exact(&mut decoded).map_err(|_| {
+            ArcadiaTioError::ocb_corrupt_file("OCB zstd column chunk decode failed")
+        })?;
+    }
+    let mut extra = [0u8; 1];
+    match decoder.read(&mut extra) {
+        Ok(0) => Ok(decoded),
+        Ok(_) => Err(ArcadiaTioError::ocb_corrupt_file(
+            "OCB zstd column chunk decoded byte length does not match header",
+        )),
+        Err(_) => Err(ArcadiaTioError::ocb_corrupt_file(
+            "OCB zstd column chunk decode failed",
+        )),
+    }
+}
+
+fn zstd_window_log_for_decoded_limit(max_decoded_bytes: u64) -> u32 {
+    let floor_log = if max_decoded_bytes == 0 {
+        0
+    } else {
+        u64::BITS - 1 - max_decoded_bytes.leading_zeros()
+    };
+    floor_log.clamp(
+        OCB_ZSTD_WRITER_COMPAT_WINDOW_LOG,
+        OCB_ZSTD_PLATFORM_MAX_WINDOW_LOG,
+    )
+}
+
+fn copy_bytes_fallibly(bytes: &[u8], allocation_message: &'static str) -> Result<Vec<u8>> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len())
+        .map_err(|_| ocb_allocation_error(allocation_message))?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
+
+fn try_vec_with_capacity<T>(capacity: usize, allocation_message: &'static str) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| ocb_allocation_error(allocation_message))?;
+    Ok(values)
+}
+
+fn allocate_zeroed_bytes_fallibly(len: usize, allocation_message: &'static str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| ocb_allocation_error(allocation_message))?;
+    bytes.resize(len, 0);
+    Ok(bytes)
+}
+
+fn ocb_allocation_error(message: &'static str) -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(ErrorKind::OutOfMemory, message))
 }
 
 fn write_u16<W: Write>(writer: &mut W, value: u16) -> Result<()> {
@@ -2884,7 +3344,10 @@ fn write_bytes_u32<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<()> {
 
 fn read_bytes_u32<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     let len = read_u32(reader)? as usize;
-    let mut bytes = vec![0u8; len];
+    let mut bytes = allocate_zeroed_bytes_fallibly(
+        len,
+        "OCB byte-payload allocation failed within resource limit",
+    )?;
     read_exact_ocb(reader, &mut bytes)?;
     Ok(bytes)
 }
@@ -2902,10 +3365,83 @@ fn read_string_u32_bounded(reader: &mut Cursor<&[u8]>, total_len: usize) -> Resu
         u64::from(len),
         "OCB string byte length",
     )?;
-    let mut bytes = vec![0u8; len];
+    let mut bytes =
+        allocate_zeroed_bytes_fallibly(len, "OCB string allocation failed within resource limit")?;
     read_exact_ocb(reader, &mut bytes)?;
     String::from_utf8(bytes)
         .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB string is not valid UTF-8"))
+}
+
+fn inspect_string_u32_bounded(reader: &mut Cursor<&[u8]>, total_len: usize) -> Result<usize> {
+    let _ = checked_payload_len(total_len, reader.position(), 4, "OCB string byte length")?;
+    let len = read_u32(reader)?;
+    let len = checked_payload_len(
+        total_len,
+        reader.position(),
+        u64::from(len),
+        "OCB string byte length",
+    )?;
+    let start = usize::try_from(reader.position())
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB string offset exceeds usize"))?;
+    let end = start
+        .checked_add(len)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB string byte range overflows",
+        ))?;
+    std::str::from_utf8(&reader.get_ref()[start..end])
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB string is not valid UTF-8"))?;
+    reader.set_position(end as u64);
+    Ok(len)
+}
+
+fn validate_record_sequence<T>(
+    reader: &mut Cursor<&[u8]>,
+    count: usize,
+    mut read_record: impl FnMut(&mut Cursor<&[u8]>) -> Result<T>,
+) -> Result<()> {
+    for _ in 0..count {
+        let _ = read_record(reader)?;
+    }
+    Ok(())
+}
+
+fn read_record_sequence<T>(
+    reader: &mut Cursor<&[u8]>,
+    count: usize,
+    allocation_message: &'static str,
+    mut read_record: impl FnMut(&mut Cursor<&[u8]>) -> Result<T>,
+) -> Result<Vec<T>> {
+    let mut records = try_vec_with_capacity(count, allocation_message)?;
+    for _ in 0..count {
+        records.push(read_record(reader)?);
+    }
+    Ok(records)
+}
+
+fn checked_materialized_vec_bytes<T>(count: usize) -> Result<u64> {
+    let count = u64::try_from(count)
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB metadata vector count exceeds u64"))?;
+    let item_bytes = u64::try_from(std::mem::size_of::<T>())
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB metadata record size exceeds u64"))?;
+    count
+        .checked_mul(item_bytes)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB metadata materialized byte count overflows",
+        ))
+}
+
+fn checked_materialized_sum(parts: &[u64]) -> Result<u64> {
+    parts.iter().try_fold(0u64, |total, part| {
+        total
+            .checked_add(*part)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB metadata materialized byte count overflows",
+            ))
+    })
+}
+
+fn policy_a_metadata_materialization_budget() -> MetadataMaterializationBudget {
+    MetadataMaterializationBudget::from_limits(OcbResourceLimits::policy_a())
 }
 
 fn checked_record_count(
@@ -3482,6 +4018,247 @@ mod tests {
     }
 
     #[test]
+    fn string_table_materialization_budget_is_exact_aggregate_and_structure_first() {
+        let strings = OcbStringTableV1 {
+            version: 1,
+            strings: vec!["alpha".into(), "beta".into()],
+            crc32c: 0,
+        };
+        let bytes = write_object(|buf| strings.write_to(buf));
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<String>(2).expect("string descriptors"),
+            9,
+        ])
+        .expect("string-table retained bytes");
+
+        let mut exact = MetadataMaterializationBudget::new(retained_bytes);
+        let decoded = OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut exact)
+            .expect("exact metadata budget");
+        assert_eq!(decoded.strings, strings.strings);
+        assert_eq!(exact.charged_bytes(), retained_bytes);
+
+        let mut short = MetadataMaterializationBudget::new(retained_bytes - 1);
+        let err = OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut short)
+            .expect_err("exact-minus-one metadata budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(short.charged_bytes(), 0);
+
+        let aggregate_limit = retained_bytes.checked_mul(2).expect("two allocations");
+        let mut aggregate = MetadataMaterializationBudget::new(aggregate_limit);
+        OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut aggregate)
+            .expect("first aggregate allocation");
+        OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut aggregate)
+            .expect("second aggregate allocation at exact limit");
+        assert_eq!(aggregate.charged_bytes(), aggregate_limit);
+
+        let mut aggregate_short = MetadataMaterializationBudget::new(aggregate_limit - 1);
+        OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut aggregate_short)
+            .expect("first aggregate allocation");
+        let err =
+            OcbStringTableV1::read_from_bytes_with_budget(bytes.clone(), &mut aggregate_short)
+                .expect_err("second aggregate allocation exceeds shared limit");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(aggregate_short.charged_bytes(), retained_bytes);
+
+        let mut oversized_length = bytes.clone();
+        oversized_length[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        refresh_crc(&mut oversized_length);
+        let mut zero = MetadataMaterializationBudget::new(0);
+        let err = OcbStringTableV1::read_from_bytes_with_budget(oversized_length, &mut zero)
+            .expect_err("truncated string length wins over zero policy budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::CorruptFile)
+        );
+        assert_eq!(zero.charged_bytes(), 0);
+
+        let mut malformed = bytes;
+        malformed[24] = 0xFF;
+        refresh_crc(&mut malformed);
+        let mut zero = MetadataMaterializationBudget::new(0);
+        let err = OcbStringTableV1::read_from_bytes_with_budget(malformed, &mut zero)
+            .expect_err("malformed UTF-8 wins over zero policy budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::CorruptFile)
+        );
+        assert_eq!(zero.charged_bytes(), 0);
+    }
+
+    #[test]
+    fn dictionary_values_materialization_budget_is_exact_and_structure_first() {
+        let values = OcbDictionaryValuesV1 {
+            version: 1,
+            value_kind: OcbDictionaryValueKindV1::Utf8,
+            fixed_width: 0,
+            values: vec![b"alpha".to_vec(), b"beta".to_vec()],
+            crc32c: 0,
+        };
+        let bytes = write_object(|buf| values.write_to(buf));
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<Vec<u8>>(2).expect("value descriptors"),
+            9,
+        ])
+        .expect("dictionary retained bytes");
+
+        let mut exact = MetadataMaterializationBudget::new(retained_bytes);
+        let decoded = OcbDictionaryValuesV1::read_from_bytes_with_budget(bytes.clone(), &mut exact)
+            .expect("exact dictionary budget");
+        assert_eq!(decoded.values, values.values);
+        assert_eq!(exact.charged_bytes(), retained_bytes);
+
+        let mut short = MetadataMaterializationBudget::new(retained_bytes - 1);
+        let err = OcbDictionaryValuesV1::read_from_bytes_with_budget(bytes.clone(), &mut short)
+            .expect_err("exact-minus-one dictionary budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(short.charged_bytes(), 0);
+
+        let mut malformed = bytes;
+        malformed[48..56].copy_from_slice(&10u64.to_le_bytes());
+        refresh_crc(&mut malformed);
+        let mut zero = MetadataMaterializationBudget::new(0);
+        let err = OcbDictionaryValuesV1::read_from_bytes_with_budget(malformed, &mut zero)
+            .expect_err("malformed offsets win over zero policy budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::CorruptFile)
+        );
+        assert_eq!(zero.charged_bytes(), 0);
+    }
+
+    #[test]
+    fn row_group_index_materialization_budget_covers_fixed_record_vectors() {
+        let index = OcbRowGroupIndexV1 {
+            version: 1,
+            flags: 0,
+            row_groups: vec![OcbRowGroupDescV1 {
+                row_group_id: 0,
+                flags: 0,
+                base_row: 0,
+                row_count: 0,
+                chunk_desc_begin: 0,
+                chunk_desc_count: 0,
+                stat_begin: 0,
+                stat_count: 0,
+                first_key_tuple_ref: OcbBodyRefV2::NULL,
+                last_key_tuple_ref: OcbBodyRefV2::NULL,
+            }],
+            column_chunks: Vec::new(),
+            stats: Vec::new(),
+            crc32c: 0,
+        };
+        let bytes = write_object(|buf| index.write_to(buf));
+        let retained_bytes =
+            checked_materialized_vec_bytes::<OcbRowGroupDescV1>(1).expect("row-group bytes");
+
+        let mut exact = MetadataMaterializationBudget::new(retained_bytes);
+        let decoded = OcbRowGroupIndexV1::read_from_bytes_with_budget(bytes.clone(), &mut exact)
+            .expect("exact fixed-record budget");
+        assert_eq!(decoded.row_groups.len(), 1);
+        assert_eq!(exact.charged_bytes(), retained_bytes);
+
+        let mut short = MetadataMaterializationBudget::new(retained_bytes - 1);
+        let err = OcbRowGroupIndexV1::read_from_bytes_with_budget(bytes, &mut short)
+            .expect_err("fixed-record exact-minus-one budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(short.charged_bytes(), 0);
+    }
+
+    #[test]
+    fn ordering_proof_materialization_budget_covers_fixed_record_vectors() {
+        let ordering = OcbOrderingProofV1 {
+            version: 1,
+            flags: 0,
+            keys: vec![OcbOrderingKeyV1 {
+                column_id: 0,
+                direction: OcbOrderingDirectionV1::Ascending,
+                null_order: OcbNullOrderV1::NoNulls,
+                reserved0: 0,
+            }],
+            row_group_proofs: vec![OcbRowGroupOrderingProofV1 {
+                row_group_id: 0,
+                flags: 0,
+                first_tuple_ref: OcbBodyRefV2::NULL,
+                last_tuple_ref: OcbBodyRefV2::NULL,
+            }],
+            crc32c: 0,
+        };
+        let bytes = write_object(|buf| ordering.write_to(buf));
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<OcbOrderingKeyV1>(1).expect("ordering-key bytes"),
+            checked_materialized_vec_bytes::<OcbRowGroupOrderingProofV1>(1)
+                .expect("ordering-proof bytes"),
+        ])
+        .expect("ordering metadata bytes");
+
+        let mut exact = MetadataMaterializationBudget::new(retained_bytes);
+        let decoded = OcbOrderingProofV1::read_from_bytes_with_budget(bytes.clone(), &mut exact)
+            .expect("exact ordering budget");
+        assert_eq!(decoded.keys.len(), 1);
+        assert_eq!(decoded.row_group_proofs.len(), 1);
+        assert_eq!(exact.charged_bytes(), retained_bytes);
+
+        let mut short = MetadataMaterializationBudget::new(retained_bytes - 1);
+        let err = OcbOrderingProofV1::read_from_bytes_with_budget(bytes, &mut short)
+            .expect_err("ordering exact-minus-one budget");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(short.charged_bytes(), 0);
+    }
+
+    #[test]
+    fn policy_a_accepts_inferred_yearly_index_materialization_by_arithmetic_only() {
+        const ROW_GROUP_COUNT: usize = 342_582;
+        const COLUMN_CHUNK_COUNT: usize = 4_796_148;
+        const STAT_COUNT: usize = 4_796_148;
+
+        // Storage A permits only fixed-width arithmetic here: this test neither
+        // creates nor opens a yearly OCB artifact.
+        let encoded_bytes = 32u64
+            + ROW_GROUP_COUNT as u64 * OCB_ROW_GROUP_DESC_V1_LEN as u64
+            + COLUMN_CHUNK_COUNT as u64 * OCB_COLUMN_CHUNK_DESC_V1_LEN as u64
+            + STAT_COUNT as u64 * OCB_COLUMN_STATS_V1_LEN as u64
+            + 4;
+        assert_eq!(encoded_bytes, 731_755_188);
+        assert!(encoded_bytes <= OCB_POLICY_A_MAX_ENCODED_OBJECT_BYTES);
+
+        let retained_bytes = checked_materialized_sum(&[
+            checked_materialized_vec_bytes::<OcbRowGroupDescV1>(ROW_GROUP_COUNT)
+                .expect("row-group materialization"),
+            checked_materialized_vec_bytes::<OcbColumnChunkDescV1>(COLUMN_CHUNK_COUNT)
+                .expect("chunk materialization"),
+            checked_materialized_vec_bytes::<OcbColumnStatsV1>(STAT_COUNT)
+                .expect("stat materialization"),
+        ])
+        .expect("inferred retained bytes");
+        assert!(std::mem::size_of::<OcbRowGroupDescV1>() <= OCB_ROW_GROUP_DESC_V1_LEN);
+        assert!(std::mem::size_of::<OcbColumnChunkDescV1>() <= OCB_COLUMN_CHUNK_DESC_V1_LEN);
+        assert!(std::mem::size_of::<OcbColumnStatsV1>() <= OCB_COLUMN_STATS_V1_LEN);
+        assert!(retained_bytes <= encoded_bytes - 36);
+        assert!(retained_bytes <= OCB_POLICY_A_MAX_OWNED_DECODED_MATERIALIZED_BYTES);
+
+        let mut policy_a = policy_a_metadata_materialization_budget();
+        policy_a
+            .charge(retained_bytes)
+            .expect("inferred fixed-width index fits Policy A");
+        assert_eq!(policy_a.charged_bytes(), retained_bytes);
+    }
+
+    #[test]
     fn column_chunk_roundtrip_validates_payload_length() {
         let mut payload = Vec::new();
         for value in [1_i64, 2, 3, 4] {
@@ -3514,6 +4291,174 @@ mod tests {
                 .expect_err("payload length mismatch")
                 .to_string()
                 .contains("payload length")
+        );
+    }
+
+    #[test]
+    fn bounded_zstd_decode_rejects_malformed_and_over_limit_output() {
+        fn encoded(bytes: &[u8]) -> Vec<u8> {
+            zstd::stream::encode_all(Cursor::new(bytes), 1).expect("encode zstd fixture")
+        }
+
+        let exact = encoded(&[1, 2, 3]);
+        assert_eq!(
+            decode_zstd_payload_bounded(&exact, 3, 3).expect("exact decode"),
+            [1, 2, 3]
+        );
+        assert_eq!(
+            decode_zstd_payload_bounded(&encoded(&[1]), 1, 1)
+                .expect("tiny output limit retains writer window compatibility"),
+            [1]
+        );
+        let high_compression =
+            zstd::stream::encode_all(Cursor::new([2]), 22).expect("level-22 zstd fixture");
+        assert_eq!(
+            decode_zstd_payload_bounded(&high_compression, 1, 1)
+                .expect("level-22 tiny payload remains readable"),
+            [2]
+        );
+
+        let empty = encoded(&[]);
+        assert!(
+            decode_zstd_payload_bounded(&empty, 0, 0)
+                .expect("empty decode")
+                .is_empty()
+        );
+
+        let mut concatenated = encoded(&[4, 5]);
+        concatenated.extend_from_slice(&encoded(&[6, 7]));
+        assert_eq!(
+            decode_zstd_payload_bounded(&concatenated, 4, 4).expect("concatenated frame decode"),
+            [4, 5, 6, 7]
+        );
+
+        let extra = encoded(&[8, 9]);
+        let err = decode_zstd_payload_bounded(&extra, 1, 1)
+            .expect_err("expected+1 output must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        let bomb = encoded(&vec![0; 4096]);
+        let err = decode_zstd_payload_bounded(&bomb, 1, 4096)
+            .expect_err("tiny compressed expansion must be bounded");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        let mut truncated = encoded(&[10, 11, 12]);
+        truncated.truncate(truncated.len() - 2);
+        let err = decode_zstd_payload_bounded(&truncated, 3, 3)
+            .expect_err("truncated frame must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        let err = decode_zstd_payload_bounded(&[0, 1, 2, 3], 1, 1)
+            .expect_err("invalid frame must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        let err = decode_zstd_payload_bounded(&exact, 3, 2)
+            .expect_err("decoded policy limit+1 must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::InvalidInput)
+        );
+
+        let err = decode_zstd_payload_bounded(&empty, u64::MAX, u64::MAX)
+            .expect_err("expected+1 arithmetic overflow must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        assert_eq!(zstd_window_log_for_decoded_limit(0), 27);
+        assert_eq!(zstd_window_log_for_decoded_limit(1), 27);
+        assert_eq!(zstd_window_log_for_decoded_limit(1 << 10), 27);
+        assert_eq!(zstd_window_log_for_decoded_limit(1 << 27), 27);
+        assert_eq!(zstd_window_log_for_decoded_limit((1 << 29) - 1), 28);
+        assert_eq!(zstd_window_log_for_decoded_limit(1 << 29), 29);
+        assert_eq!(zstd_window_log_for_decoded_limit(1 << 30), 30);
+
+        // Standard zstd frame: no content-size field, a 2^30-byte window,
+        // and one empty final raw block. Reject the window before allocating
+        // decoder history for it.
+        let oversized_window = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0xA0, 0x01, 0x00, 0x00];
+        let err = decode_zstd_payload_bounded(&oversized_window, 0, 0)
+            .expect_err("oversized zstd window must be rejected");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
+        );
+
+        let err = allocate_zeroed_bytes_fallibly(
+            usize::MAX,
+            "OCB decoded payload allocation failed within resource limit",
+        )
+        .expect_err("capacity overflow must be reported without allocation");
+        assert!(matches!(err, ArcadiaTioError::Io(ref io) if io.kind() == ErrorKind::OutOfMemory));
+
+        let err = try_vec_with_capacity::<u64>(
+            usize::MAX,
+            "OCB parser allocation failed within resource limit",
+        )
+        .expect_err("parser capacity overflow must be reported without allocation");
+        assert!(matches!(err, ArcadiaTioError::Io(ref io) if io.kind() == ErrorKind::OutOfMemory));
+    }
+
+    #[test]
+    fn uncompressed_chunk_enforces_encoded_and_decoded_limits() {
+        let chunk = OcbColumnChunkObjectV1 {
+            version: 1,
+            physical_type: OcbPhysicalTypeV1::I64,
+            codec: OcbChunkCodecV1::None,
+            flags: 0,
+            row_group_id: 0,
+            column_id: 0,
+            row_count: 1,
+            uncompressed_bytes: 8,
+            payload: vec![0; 8],
+            crc32c: 0,
+        };
+        assert_eq!(
+            chunk
+                .decode_payload_with_limits(8, 8)
+                .expect("exact limits"),
+            [0; 8]
+        );
+
+        let compressed = chunk
+            .decode_payload_with_limits(7, 8)
+            .expect_err("encoded limit+1");
+        assert_eq!(
+            compressed.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::InvalidInput)
+        );
+
+        let decoded = chunk
+            .decode_payload_with_limits(8, 7)
+            .expect_err("decoded limit+1");
+        assert_eq!(
+            decoded.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::InvalidInput)
+        );
+
+        let structurally_invalid = OcbColumnChunkObjectV1 {
+            payload: vec![0; 7],
+            ..chunk
+        };
+        let err = structurally_invalid
+            .decode_payload_with_limits(0, 0)
+            .expect_err("structure wins over policy");
+        assert_eq!(
+            err.ocb_failure_cause(),
+            Some(crate::error::OcbFailureCause::CorruptFile)
         );
     }
 }

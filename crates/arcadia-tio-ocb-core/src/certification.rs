@@ -1,8 +1,8 @@
 //! Certification helpers for channel-sharded compact-L2 OCB artifacts.
 
-use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -19,13 +19,14 @@ use crate::compact_l2::{
     decode_compact_l2_fixed_binary_header_v1,
 };
 use crate::manifest::{
-    ChannelArtifactEntryV1, ChannelShardedManifestV1, resolve_manifest_relative_artifact_path,
-    validate_hex_hash,
+    ChannelArtifactEntryV1, ChannelShardedManifestV1, ManifestArtifactResolver, validate_hex_hash,
 };
+use crate::read::OcbReadSource;
 use crate::{
     ArcadiaTioError, ColumnBundleFile, ColumnBundleReadCursorOptions, ColumnBundleReadOptions,
     ColumnBundleReadRequest, ColumnBundleRowGroupSummary, ColumnBundleVisitControl,
-    ColumnPhysicalType, ColumnProjection, OcbErrorKind, PrimitiveColumnValuesRef, Result,
+    ColumnPhysicalType, ColumnProjection, OcbErrorKind, OcbResourceLimits,
+    PrimitiveColumnValuesRef, Result,
 };
 
 /// Options for channel-sharded compact-L2 artifact certification.
@@ -341,8 +342,23 @@ pub fn certify_channel_sharded_artifact_v1(
     manifest_path: impl AsRef<Path>,
     options: &CertificationOptions,
 ) -> Result<CertificationReport> {
+    certify_channel_sharded_artifact_v1_with_resource_limits(
+        manifest_path,
+        options,
+        OcbResourceLimits::policy_a(),
+    )
+}
+
+/// Certify a channel-sharded compact-L2 artifact manifest using explicit
+/// finite OCB resource limits.
+pub fn certify_channel_sharded_artifact_v1_with_resource_limits(
+    manifest_path: impl AsRef<Path>,
+    options: &CertificationOptions,
+    resource_limits: OcbResourceLimits,
+) -> Result<CertificationReport> {
     let manifest_path = manifest_path.as_ref();
     let manifest = ChannelShardedManifestV1::from_path(manifest_path)?;
+    let resolver = ManifestArtifactResolver::new(manifest_path)?;
     if manifest.artifact_format != options.artifact_format {
         return Err(ArcadiaTioError::ocb_diagnostic(
             OcbErrorKind::UnsupportedFormat,
@@ -379,13 +395,17 @@ pub fn certify_channel_sharded_artifact_v1(
         }
     }
 
-    let mut reports = Vec::with_capacity(manifest.channels.len());
+    let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(manifest.channels.len())
+        .map_err(|_| certification_allocation_error())?;
     for channel in &manifest.channels {
         reports.push(certify_channel_artifact(
-            manifest_path,
+            &resolver,
             &manifest,
             channel,
             options,
+            resource_limits,
         )?);
     }
 
@@ -425,10 +445,33 @@ pub fn certify_compact_l2_physical_v2_artifact(
     artifact_path: impl AsRef<Path>,
     options: &CompactL2PhysicalV2CertificationOptions,
 ) -> Result<CompactL2PhysicalV2CertificationReport> {
+    certify_compact_l2_physical_v2_artifact_with_resource_limits(
+        artifact_path,
+        options,
+        OcbResourceLimits::policy_a(),
+    )
+}
+
+/// Certify one compact-L2 physical-v2 OCB artifact using explicit finite OCB
+/// resource limits.
+pub fn certify_compact_l2_physical_v2_artifact_with_resource_limits(
+    artifact_path: impl AsRef<Path>,
+    options: &CompactL2PhysicalV2CertificationOptions,
+    resource_limits: OcbResourceLimits,
+) -> Result<CompactL2PhysicalV2CertificationReport> {
+    let file =
+        ColumnBundleFile::open_with_resource_limits(artifact_path.as_ref(), resource_limits)?;
+    certify_compact_l2_physical_v2_file(&file, options, resource_limits)
+}
+
+fn certify_compact_l2_physical_v2_file(
+    file: &ColumnBundleFile,
+    options: &CompactL2PhysicalV2CertificationOptions,
+    resource_limits: OcbResourceLimits,
+) -> Result<CompactL2PhysicalV2CertificationReport> {
     if let Some(expected) = &options.expected_legacy_payload_hash_fnv1a64 {
         validate_hex_hash(expected, 16, OcbErrorKind::ChecksumMismatch)?;
     }
-    let file = ColumnBundleFile::open(artifact_path.as_ref())?;
     let metadata = file.metadata()?;
     if let Some(expected) = options.expected_row_count {
         if metadata.row_count != expected {
@@ -494,9 +537,8 @@ pub fn certify_compact_l2_physical_v2_artifact(
                         })?;
             }
             if let Some(hash) = &mut legacy_hash {
-                let mut payload = Vec::with_capacity(
-                    view.row_count * COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1 as usize,
-                );
+                validate_legacy_reconstruction_resource_limit(resource_limits, view.row_count)?;
+                let mut payload = Vec::new();
                 view.append_fixed_binary_v1_payloads(&mut payload)?;
                 hash.update(&payload);
             }
@@ -603,8 +645,23 @@ pub fn certify_compact_l2_physical_v2_manifest(
     manifest_path: impl AsRef<Path>,
     options: &CompactL2PhysicalV2ManifestCertificationOptions,
 ) -> Result<CompactL2PhysicalV2ManifestCertificationReport> {
+    certify_compact_l2_physical_v2_manifest_with_resource_limits(
+        manifest_path,
+        options,
+        OcbResourceLimits::policy_a(),
+    )
+}
+
+/// Certify a channel-sharded compact-L2 physical-v2 artifact manifest using
+/// explicit finite OCB resource limits.
+pub fn certify_compact_l2_physical_v2_manifest_with_resource_limits(
+    manifest_path: impl AsRef<Path>,
+    options: &CompactL2PhysicalV2ManifestCertificationOptions,
+    resource_limits: OcbResourceLimits,
+) -> Result<CompactL2PhysicalV2ManifestCertificationReport> {
     let manifest_path = manifest_path.as_ref();
     let manifest = ChannelShardedManifestV1::from_path(manifest_path)?;
+    let resolver = ManifestArtifactResolver::new(manifest_path)?;
     if manifest.artifact_format != options.artifact_format {
         return Err(ArcadiaTioError::ocb_diagnostic(
             OcbErrorKind::UnsupportedFormat,
@@ -641,13 +698,17 @@ pub fn certify_compact_l2_physical_v2_manifest(
         }
     }
 
-    let mut reports = Vec::with_capacity(manifest.channels.len());
+    let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(manifest.channels.len())
+        .map_err(|_| certification_allocation_error())?;
     for channel in &manifest.channels {
         reports.push(certify_physical_v2_channel_artifact(
-            manifest_path,
+            &resolver,
             &manifest,
             channel,
             options,
+            resource_limits,
         )?);
     }
 
@@ -677,21 +738,119 @@ pub fn certify_compact_l2_physical_v2_manifest(
     })
 }
 
-fn certify_channel_artifact(
-    manifest_path: &Path,
-    manifest: &ChannelShardedManifestV1,
-    channel: &ChannelArtifactEntryV1,
-    options: &CertificationOptions,
-) -> Result<ChannelCertificationReport> {
-    let artifact_canonical = canonicalize_manifest_artifact_path(manifest_path, channel)?;
+fn validate_legacy_reconstruction_resource_limit(
+    resource_limits: OcbResourceLimits,
+    row_count: usize,
+) -> Result<()> {
+    let row_count = u64::try_from(row_count).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 reconstructed row count does not fit resource accounting",
+        )
+    })?;
+    let reconstructed_bytes = row_count
+        .checked_mul(u64::from(COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1))
+        .ok_or(ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 reconstructed payload resource accounting overflows",
+        ))?;
+    if reconstructed_bytes > resource_limits.max_projected_row_group_bytes() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 reconstructed payload exceeds projected row-group resource limit",
+        ));
+    }
+    Ok(())
+}
 
-    let checksum_verified = if options.verify_hashes {
-        verify_optional_hashes(&artifact_canonical, channel)?
+fn certification_allocation_error() -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(
+        std::io::ErrorKind::OutOfMemory,
+        "OCB certification allocation failed within resource limit",
+    ))
+}
+
+#[derive(Debug)]
+struct OpenedManifestArtifact {
+    file: ColumnBundleFile,
+    checksum_verified: bool,
+}
+
+fn open_manifest_artifact_for_certification_with_identity_hook(
+    resolver: &ManifestArtifactResolver,
+    channel: &ChannelArtifactEntryV1,
+    verify_hashes: bool,
+    resource_limits: OcbResourceLimits,
+    identity_hook: impl FnOnce(),
+) -> Result<OpenedManifestArtifact> {
+    open_manifest_artifact_for_certification_with_hooks(
+        resolver,
+        channel,
+        verify_hashes,
+        resource_limits,
+        || {},
+        identity_hook,
+    )
+}
+
+fn open_manifest_artifact_for_certification_with_hooks(
+    resolver: &ManifestArtifactResolver,
+    channel: &ChannelArtifactEntryV1,
+    verify_hashes: bool,
+    resource_limits: OcbResourceLimits,
+    resolution_hook: impl FnOnce(),
+    identity_hook: impl FnOnce(),
+) -> Result<OpenedManifestArtifact> {
+    let source = Arc::new(
+        resolver.open_artifact_with_resolution_hook(&channel.relative_path, resolution_hook)?,
+    );
+    let file = ColumnBundleFile::open_from_source_with_resource_limits(source, resource_limits)?;
+
+    identity_hook();
+    let checksum_verified = if verify_hashes {
+        verify_optional_hashes_from_source(file.read_source(), channel)?
     } else {
         false
     };
 
-    let file = ColumnBundleFile::open(&artifact_canonical)?;
+    Ok(OpenedManifestArtifact {
+        file,
+        checksum_verified,
+    })
+}
+
+fn certify_channel_artifact(
+    resolver: &ManifestArtifactResolver,
+    manifest: &ChannelShardedManifestV1,
+    channel: &ChannelArtifactEntryV1,
+    options: &CertificationOptions,
+    resource_limits: OcbResourceLimits,
+) -> Result<ChannelCertificationReport> {
+    certify_channel_artifact_with_identity_hook(
+        resolver,
+        manifest,
+        channel,
+        options,
+        resource_limits,
+        || {},
+    )
+}
+
+fn certify_channel_artifact_with_identity_hook(
+    resolver: &ManifestArtifactResolver,
+    manifest: &ChannelShardedManifestV1,
+    channel: &ChannelArtifactEntryV1,
+    options: &CertificationOptions,
+    resource_limits: OcbResourceLimits,
+    identity_hook: impl FnOnce(),
+) -> Result<ChannelCertificationReport> {
+    let OpenedManifestArtifact {
+        file,
+        checksum_verified,
+    } = open_manifest_artifact_for_certification_with_identity_hook(
+        resolver,
+        channel,
+        options.verify_hashes,
+        resource_limits,
+        identity_hook,
+    )?;
     let metadata = file.metadata()?;
     if metadata.row_count != channel.row_count {
         return Err(ArcadiaTioError::ocb_diagnostic(
@@ -881,21 +1040,42 @@ fn certify_channel_artifact(
 }
 
 fn certify_physical_v2_channel_artifact(
-    manifest_path: &Path,
+    resolver: &ManifestArtifactResolver,
     manifest: &ChannelShardedManifestV1,
     channel: &ChannelArtifactEntryV1,
     options: &CompactL2PhysicalV2ManifestCertificationOptions,
+    resource_limits: OcbResourceLimits,
 ) -> Result<CompactL2PhysicalV2ChannelCertificationReport> {
-    let artifact_canonical = canonicalize_manifest_artifact_path(manifest_path, channel)?;
+    certify_physical_v2_channel_artifact_with_identity_hook(
+        resolver,
+        manifest,
+        channel,
+        options,
+        resource_limits,
+        || {},
+    )
+}
 
-    let checksum_verified = if options.verify_hashes {
-        verify_optional_hashes(&artifact_canonical, channel)?
-    } else {
-        false
-    };
-
-    let artifact_report = certify_compact_l2_physical_v2_artifact(
-        &artifact_canonical,
+fn certify_physical_v2_channel_artifact_with_identity_hook(
+    resolver: &ManifestArtifactResolver,
+    manifest: &ChannelShardedManifestV1,
+    channel: &ChannelArtifactEntryV1,
+    options: &CompactL2PhysicalV2ManifestCertificationOptions,
+    resource_limits: OcbResourceLimits,
+    identity_hook: impl FnOnce(),
+) -> Result<CompactL2PhysicalV2ChannelCertificationReport> {
+    let OpenedManifestArtifact {
+        file,
+        checksum_verified,
+    } = open_manifest_artifact_for_certification_with_identity_hook(
+        resolver,
+        channel,
+        options.verify_hashes,
+        resource_limits,
+        identity_hook,
+    )?;
+    let artifact_report = certify_compact_l2_physical_v2_file(
+        &file,
         &CompactL2PhysicalV2CertificationOptions {
             expected_row_count: Some(channel.row_count),
             expected_trading_day: options
@@ -917,6 +1097,7 @@ fn certify_physical_v2_channel_artifact(
             read_threads: options.read_threads,
             max_in_flight_row_groups: options.max_in_flight_row_groups,
         },
+        resource_limits,
     )?;
 
     if channel.row_group_count != 0 && artifact_report.row_group_count != channel.row_group_count {
@@ -996,49 +1177,6 @@ fn certify_physical_v2_channel_artifact(
         legacy_payload_hash_fnv1a64: artifact_report.legacy_payload_hash_fnv1a64,
         checksum_verified,
     })
-}
-
-fn canonicalize_manifest_artifact_path(
-    manifest_path: &Path,
-    channel: &ChannelArtifactEntryV1,
-) -> Result<std::path::PathBuf> {
-    let artifact_path =
-        resolve_manifest_relative_artifact_path(manifest_path, &channel.relative_path)?;
-    if !artifact_path.exists() {
-        return Err(ArcadiaTioError::ocb_diagnostic(
-            OcbErrorKind::MissingArtifact,
-            format!(
-                "channel-sharded OCB artifact is missing: channel={}",
-                channel.channel_id
-            ),
-        ));
-    }
-    let root = manifest_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let root_canonical = fs::canonicalize(root).map_err(|_| {
-        ArcadiaTioError::ocb_diagnostic(
-            OcbErrorKind::UnsafeManifestPath,
-            "channel-sharded OCB manifest root could not be canonicalized",
-        )
-    })?;
-    let artifact_canonical = fs::canonicalize(&artifact_path).map_err(|_| {
-        ArcadiaTioError::ocb_diagnostic(
-            OcbErrorKind::MissingArtifact,
-            format!(
-                "channel-sharded OCB artifact could not be canonicalized: channel={}",
-                channel.channel_id
-            ),
-        )
-    })?;
-    if !artifact_canonical.starts_with(&root_canonical) {
-        return Err(ArcadiaTioError::ocb_diagnostic(
-            OcbErrorKind::UnsafeManifestPath,
-            "channel-sharded OCB artifact path escapes manifest root",
-        ));
-    }
-    Ok(artifact_canonical)
 }
 
 fn scan_payload_headers(
@@ -1437,11 +1575,14 @@ fn scan_compact_l2_physical_v2_batch(
     Ok(())
 }
 
-fn verify_optional_hashes(path: &Path, channel: &ChannelArtifactEntryV1) -> Result<bool> {
+fn verify_optional_hashes_from_source(
+    source: &OcbReadSource,
+    channel: &ChannelArtifactEntryV1,
+) -> Result<bool> {
     let mut verified = false;
     if let Some(expected) = &channel.payload_sha256 {
         validate_hex_hash(expected, 64, OcbErrorKind::ChecksumMismatch)?;
-        let actual = sha256_file_hex(path)?;
+        let actual = sha256_source_hex(source)?;
         if !expected.eq_ignore_ascii_case(&actual) {
             return Err(ArcadiaTioError::ocb_diagnostic(
                 OcbErrorKind::ChecksumMismatch,
@@ -1455,11 +1596,7 @@ fn verify_optional_hashes(path: &Path, channel: &ChannelArtifactEntryV1) -> Resu
     }
     if let Some(fingerprint) = &channel.fingerprint {
         if let Some(expected_bytes) = fingerprint.file_bytes {
-            let actual_bytes = fs::metadata(path)
-                .map_err(|_| {
-                    ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "stat artifact failed")
-                })?
-                .len();
+            let actual_bytes = source.file_len();
             if actual_bytes != expected_bytes {
                 return Err(ArcadiaTioError::ocb_diagnostic(
                     OcbErrorKind::ChecksumMismatch,
@@ -1473,7 +1610,7 @@ fn verify_optional_hashes(path: &Path, channel: &ChannelArtifactEntryV1) -> Resu
         }
         if let Some(expected) = &fingerprint.content_hash_fnv1a64 {
             validate_hex_hash(expected, 16, OcbErrorKind::ChecksumMismatch)?;
-            let actual = fnv1a64_file_hex(path)?;
+            let actual = fnv1a64_source_hex(source)?;
             if !expected.eq_ignore_ascii_case(&actual) {
                 return Err(ArcadiaTioError::ocb_diagnostic(
                     OcbErrorKind::ChecksumMismatch,
@@ -1489,43 +1626,50 @@ fn verify_optional_hashes(path: &Path, channel: &ChannelArtifactEntryV1) -> Resu
     Ok(verified)
 }
 
-fn sha256_file_hex(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path).map_err(|_| {
-        ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "open artifact for sha256 failed")
-    })?;
+fn sha256_source_hex(source: &OcbReadSource) -> Result<String> {
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|_| {
-            ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "read artifact for sha256 failed")
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
+    visit_source_bytes(source, "read artifact for sha256 failed", |bytes| {
+        hasher.update(bytes);
+    })?;
     Ok(hex_bytes(&hasher.finalize()))
 }
 
-fn fnv1a64_file_hex(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path).map_err(|_| {
-        ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "open artifact for fnv failed")
-    })?;
+fn fnv1a64_source_hex(source: &OcbReadSource) -> Result<String> {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|_| {
-            ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "read artifact for fnv failed")
-        })?;
-        if read == 0 {
-            break;
-        }
-        for byte in &buffer[..read] {
+    visit_source_bytes(source, "read artifact for fnv failed", |bytes| {
+        for byte in bytes {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-    }
+    })?;
     Ok(format!("{hash:016x}"))
+}
+
+fn visit_source_bytes(
+    source: &OcbReadSource,
+    read_error: &'static str,
+    mut visit: impl FnMut(&[u8]),
+) -> Result<()> {
+    let mut file = source.cursor();
+    let mut remaining = source.file_len();
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining != 0 {
+        let read_len = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded source hash chunk fits usize");
+        file.read_exact(&mut buffer[..read_len])
+            .map_err(|_| ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, read_error))?;
+        visit(&buffer[..read_len]);
+        remaining -= read_len as u64;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn sha256_file_hex(path: &Path) -> Result<String> {
+    let source = OcbReadSource::open(path).map_err(|_| {
+        ArcadiaTioError::ocb_diagnostic(OcbErrorKind::Io, "open artifact for sha256 failed")
+    })?;
+    sha256_source_hex(&source)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1613,6 +1757,305 @@ mod tests {
         assert!(report.safe_summary.path_redacted);
         assert!(!format!("{:?}", report.safe_summary).contains(&root.display().to_string()));
         cleanup_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_intermediate_component_replacement_between_resolution_and_open_fails_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("manifest_intermediate_component_replacement");
+        let outside = fixture_root("manifest_intermediate_component_replacement_outside");
+        let artifact = root.join("channels/2011/l2_mutations.ocb");
+        let outside_artifact = outside.join("2011/l2_mutations.ocb");
+        for path in [&artifact, &outside_artifact] {
+            write_compact_l2_fixture(
+                path,
+                20260702,
+                2011,
+                &[1, 2, 3],
+                &[
+                    COMPACT_L2_RECORD_KIND_ORDER,
+                    COMPACT_L2_RECORD_KIND_TRADE,
+                    COMPACT_L2_RECORD_KIND_ORDER,
+                ],
+                COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1,
+                None,
+            );
+        }
+        let manifest = root.join("manifest.json");
+        write_manifest(&manifest, 20260702, 2011, 3, 2, 1, 2, 1);
+        let manifest_model =
+            ChannelShardedManifestV1::from_path(&manifest).expect("parse test manifest");
+        let resolver = ManifestArtifactResolver::new(&manifest).expect("bind manifest root");
+        let original_channels = root.join("original-channels");
+        let outside_canonical = fs::canonicalize(&outside).expect("canonical outside root");
+
+        let error = open_manifest_artifact_for_certification_with_hooks(
+            &resolver,
+            &manifest_model.channels[0],
+            false,
+            OcbResourceLimits::policy_a(),
+            || {
+                fs::rename(root.join("channels"), &original_channels)
+                    .expect("move verified intermediate directory");
+                symlink(&outside_canonical, root.join("channels"))
+                    .expect("replace intermediate directory with escaping symlink");
+            },
+            || {},
+        )
+        .expect_err("component replacement must not switch to the escaping object");
+        assert_eq!(
+            OcbErrorKind::from_error(&error),
+            Some(OcbErrorKind::UnsafeManifestPath)
+        );
+
+        cleanup_root(&root);
+        cleanup_root(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_final_object_replacement_between_resolution_and_open_fails_closed() {
+        let root = fixture_root("manifest_final_object_replacement");
+        let artifact = root.join("channels/2011/l2_mutations.ocb");
+        let replacement = root.join("channels/2011/replacement.ocb");
+        for path in [&artifact, &replacement] {
+            write_compact_l2_fixture(
+                path,
+                20260702,
+                2011,
+                &[1, 2, 3],
+                &[
+                    COMPACT_L2_RECORD_KIND_ORDER,
+                    COMPACT_L2_RECORD_KIND_TRADE,
+                    COMPACT_L2_RECORD_KIND_ORDER,
+                ],
+                COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1,
+                None,
+            );
+        }
+        let manifest = root.join("manifest.json");
+        write_manifest(&manifest, 20260702, 2011, 3, 2, 1, 2, 1);
+        let manifest_model =
+            ChannelShardedManifestV1::from_path(&manifest).expect("parse test manifest");
+        let resolver = ManifestArtifactResolver::new(&manifest).expect("bind manifest root");
+
+        let error = open_manifest_artifact_for_certification_with_hooks(
+            &resolver,
+            &manifest_model.channels[0],
+            false,
+            OcbResourceLimits::policy_a(),
+            || fs::rename(&replacement, &artifact).expect("replace final artifact object"),
+            || {},
+        )
+        .expect_err("final replacement must not switch to a byte-compatible object");
+        assert_eq!(
+            OcbErrorKind::from_error(&error),
+            Some(OcbErrorKind::UnsafeManifestPath)
+        );
+
+        cleanup_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn certification_hash_and_payload_stay_on_one_identity_during_path_replacement() {
+        let root = fixture_root("certification_bound_file_identity");
+        let artifact = root.join("channels/2011/l2_mutations.ocb");
+        let replacement = root.join("channels/2011/replacement.ocb");
+        write_compact_l2_fixture(
+            &artifact,
+            20260702,
+            2011,
+            &[1, 2, 3],
+            &[
+                COMPACT_L2_RECORD_KIND_ORDER,
+                COMPACT_L2_RECORD_KIND_TRADE,
+                COMPACT_L2_RECORD_KIND_ORDER,
+            ],
+            COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1,
+            None,
+        );
+        write_compact_l2_fixture(
+            &replacement,
+            20260702,
+            2011,
+            &[1, 2, 3],
+            &[
+                COMPACT_L2_RECORD_KIND_ORDER,
+                COMPACT_L2_RECORD_KIND_TRADE,
+                COMPACT_L2_RECORD_KIND_ORDER,
+            ],
+            COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1,
+            Some(2999),
+        );
+        let expected_sha256 = sha256_file_hex(&artifact).expect("hash original artifact");
+        let manifest = root.join("manifest.json");
+        write_manifest_with_payload_sha256(
+            &manifest,
+            20260702,
+            2011,
+            3,
+            2,
+            1,
+            2,
+            1,
+            Some(&expected_sha256),
+        );
+        let manifest_model =
+            ChannelShardedManifestV1::from_path(&manifest).expect("parse test manifest");
+        let resolver = ManifestArtifactResolver::new(&manifest).expect("bind manifest root");
+
+        let report = certify_channel_artifact_with_identity_hook(
+            &resolver,
+            &manifest_model,
+            &manifest_model.channels[0],
+            &CertificationOptions::default(),
+            OcbResourceLimits::policy_a(),
+            || fs::rename(&replacement, &artifact).expect("atomically replace artifact path"),
+        )
+        .expect("hash and payload certification must remain on the original identity");
+        assert!(report.checksum_verified);
+
+        cleanup_root(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_v2_certification_hash_and_rows_stay_on_one_identity() {
+        let root = fixture_root("physical_v2_certification_bound_file_identity");
+        let artifact = root.join("channels/2011/l2_mutations.physical-v2.ocb");
+        let replacement = root.join("channels/2011/replacement.physical-v2.ocb");
+        let original_records = vec![
+            compact_l2_record(20260702, 2011, 1, COMPACT_L2_RECORD_KIND_ORDER),
+            compact_l2_record(20260702, 2011, 2, COMPACT_L2_RECORD_KIND_TRADE),
+            compact_l2_record(20260702, 2011, 3, COMPACT_L2_RECORD_KIND_ORDER),
+        ];
+        let replacement_records = vec![
+            compact_l2_record(20260702, 2999, 1, COMPACT_L2_RECORD_KIND_ORDER),
+            compact_l2_record(20260702, 2999, 2, COMPACT_L2_RECORD_KIND_TRADE),
+            compact_l2_record(20260702, 2999, 3, COMPACT_L2_RECORD_KIND_ORDER),
+        ];
+        write_compact_l2_physical_v2_fixture(&artifact, &original_records, None);
+        write_compact_l2_physical_v2_fixture(&replacement, &replacement_records, None);
+        let expected_sha256 = sha256_file_hex(&artifact).expect("hash original artifact");
+
+        let manifest = root.join("manifest.json");
+        write_physical_v2_manifest(&manifest, 20260702, 2011, 3, 2, 1, 2, 1);
+        let mut manifest_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).expect("read physical-v2 manifest"))
+                .expect("parse physical-v2 manifest JSON");
+        manifest_json["channels"][0]["payload_sha256"] = json!(expected_sha256);
+        fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&manifest_json).expect("encode physical-v2 manifest"),
+        )
+        .expect("write physical-v2 manifest hash");
+        let manifest_model =
+            ChannelShardedManifestV1::from_path(&manifest).expect("parse physical-v2 manifest");
+        let resolver = ManifestArtifactResolver::new(&manifest).expect("bind manifest root");
+
+        let report = certify_physical_v2_channel_artifact_with_identity_hook(
+            &resolver,
+            &manifest_model,
+            &manifest_model.channels[0],
+            &CompactL2PhysicalV2ManifestCertificationOptions::default(),
+            OcbResourceLimits::policy_a(),
+            || fs::rename(&replacement, &artifact).expect("atomically replace physical-v2 path"),
+        )
+        .expect("physical-v2 hash and row certification remain on original identity");
+        assert_eq!(report.channel_id, 2011);
+        assert_eq!(report.row_count, 3);
+        assert!(report.checksum_verified);
+
+        cleanup_root(&root);
+    }
+
+    #[test]
+    fn custom_resource_limits_reach_all_certification_ocb_opens() {
+        let root = fixture_root("custom_resource_limits_reach_certification_opens");
+        let denied = OcbResourceLimits::policy_a()
+            .with_max_encoded_object_bytes(0)
+            .expect("zero encoded-object limit is valid");
+
+        let fixed_artifact = root.join("channels/2011/l2_mutations.ocb");
+        write_compact_l2_fixture(
+            &fixed_artifact,
+            20260702,
+            2011,
+            &[1],
+            &[COMPACT_L2_RECORD_KIND_ORDER],
+            COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1,
+            None,
+        );
+        let fixed_manifest = root.join("fixed-manifest.json");
+        write_manifest(&fixed_manifest, 20260702, 2011, 1, 1, 1, 1, 0);
+        let fixed_error = certify_channel_sharded_artifact_v1_with_resource_limits(
+            &fixed_manifest,
+            &CertificationOptions::default(),
+            denied,
+        )
+        .expect_err("fixed-binary manifest certification must honor custom limits");
+        assert_eq!(
+            OcbErrorKind::from_error(&fixed_error),
+            Some(OcbErrorKind::InvalidInput)
+        );
+
+        let physical_artifact = root.join("channels/2011/l2_mutations.physical-v2.ocb");
+        let records = vec![compact_l2_record(
+            20260702,
+            2011,
+            1,
+            COMPACT_L2_RECORD_KIND_ORDER,
+        )];
+        write_compact_l2_physical_v2_fixture(&physical_artifact, &records, None);
+        let artifact_error = certify_compact_l2_physical_v2_artifact_with_resource_limits(
+            &physical_artifact,
+            &CompactL2PhysicalV2CertificationOptions::default(),
+            denied,
+        )
+        .expect_err("physical-v2 artifact certification must honor custom limits");
+        assert_eq!(
+            OcbErrorKind::from_error(&artifact_error),
+            Some(OcbErrorKind::InvalidInput)
+        );
+
+        let physical_manifest = root.join("physical-manifest.json");
+        write_physical_v2_manifest(&physical_manifest, 20260702, 2011, 1, 1, 1, 1, 0);
+        let manifest_error = certify_compact_l2_physical_v2_manifest_with_resource_limits(
+            &physical_manifest,
+            &CompactL2PhysicalV2ManifestCertificationOptions::default(),
+            denied,
+        )
+        .expect_err("physical-v2 manifest certification must honor custom limits");
+        assert_eq!(
+            OcbErrorKind::from_error(&manifest_error),
+            Some(OcbErrorKind::InvalidInput)
+        );
+
+        cleanup_root(&root);
+    }
+
+    #[test]
+    fn legacy_reconstruction_resource_limit_boundary_is_exact() {
+        let exact = OcbResourceLimits::policy_a()
+            .with_max_projected_row_group_bytes(u64::from(COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1))
+            .expect("exact projected limit");
+        validate_legacy_reconstruction_resource_limit(exact, 1)
+            .expect("exact reconstructed payload must fit");
+
+        let below = exact
+            .with_max_projected_row_group_bytes(u64::from(
+                COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1 - 1,
+            ))
+            .expect("below-exact projected limit");
+        let err = validate_legacy_reconstruction_resource_limit(below, 1)
+            .expect_err("one byte below exact reconstructed payload must fail");
+        assert_eq!(
+            OcbErrorKind::from_error(&err),
+            Some(OcbErrorKind::InvalidInput)
+        );
     }
 
     #[test]

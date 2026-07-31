@@ -16,6 +16,36 @@ replay, owner assignment, factor/KOB logic, shm-ring transport, production LIVE
 orchestration, native libraries, release artifacts, or performance/storage
 claims.
 
+## Finite resource limits
+
+Every ordinary open uses `OcbResourceLimits::policy_a()`. Policy A currently
+sets these finite byte ceilings:
+
+- encoded object: 1 GiB;
+- compressed column chunk: 512 MiB;
+- decompressed column chunk: 512 MiB;
+- projected row group: 1 GiB;
+- selected compressed bytes for an owned result: 8 GiB;
+- decoded/materialized bytes for an owned result: 16 GiB.
+
+The two aggregate fields also bound independent open-time work: unique
+dictionary/key-tuple auxiliary objects across the whole open are capped by the
+selected-compressed limit, while logical metadata allocations for one root
+candidate are capped by the decoded/materialized limit. V1 has one candidate;
+V2 can validate at most two sequential candidates, dropping a rejected
+candidate before fallback. Exact duplicate auxiliary references are validated
+once; full-payload column-chunk validation is not charged to that auxiliary
+budget. These are logical accounting bounds, not a promise about peak RSS.
+
+`ColumnBundleFile::open_with_resource_limits(...)` and
+`ColumnBundleFile::open_with_options_and_resource_limits(...)` provide the
+additive path for reviewed workloads that require different finite limits. The
+`*_with_resource_limits` parallel-read and certification helpers propagate the
+same policy to every OCB open they perform. Exceeding a configured policy is
+reported as invalid input; malformed references, checksums, lengths, or object
+structure remain corrupt-file errors. Streaming and visitor APIs remain the
+preferred choice when an owned result would exceed the aggregate defaults.
+
 ## 0.3.4 release boundary
 
 The 0.3.4 public Rust workspace source boundary adds opt-in bounded parallel
@@ -121,7 +151,11 @@ per-worker read/preparation totals. The singular
 `parallel_prepare_compact_l2_physical_v2_channel(...)` helper adds ChannelID to
 the same context and validates the physical-v2 view inside the worker. It does
 not call the channel-parallel reader and therefore does not create a nested
-worker pool.
+worker pool. For manifest-derived artifacts,
+`compact_l2_physical_v2_bound_inputs_from_manifest(...)` returns private-handle
+inputs consumed by the additive `*_bound_channel` and `*_bound_channels`
+prepare/read helpers. Those helpers retain the checked file identity while
+sharing the same scheduling, validation, ordering, and resource-limit logic.
 
 Parallel-prepare instrumentation has the following stable interpretation for
 downstream reports:
@@ -185,7 +219,22 @@ market-data runtime semantics to OCB.
 ## Channel-sharded compact-L2 manifests and certification
 
 `ChannelShardedManifestV1::from_path(...)` parses the upstream JSON manifest
-schema and rejects unsafe absolute/traversing artifact paths. The public
+schema and rejects empty components, platform prefixes, absolute paths, and
+traversal. Certification and bound manifest reads resolve each accepted target
+beneath one canonical manifest root, open it through descriptor-relative
+no-follow component walks on Unix (or equivalent opened-handle identity and
+final-path checks on Windows), and use that handle for all later metadata,
+payload, and hash I/O. Intermediate or final symlinks are accepted only when
+their resolved targets remain beneath the root; replacements between resolution
+and open fail closed. Diagnostic paths are never reused as I/O authority.
+
+`compact_l2_physical_v2_inputs_from_manifest(...)` remains a path-only 0.3.x
+compatibility helper because its public input struct supports downstream struct
+literals. Callers crossing a manifest trust boundary should use
+`compact_l2_physical_v2_bound_inputs_from_manifest(...)`; its returned
+`CompactL2PhysicalV2ManifestReadInput` keeps the checked handle private and
+continues reading the selected object even if the pathname is later replaced.
+The public
 constants `OCB_CORE_READER_API_VERSION`,
 `CHANNEL_SHARDED_MANIFEST_SCHEMA_VERSION_V1`, and
 `COMPACT_L2_FIXED_BINARY_SCHEMA_VERSION_V1` identify the supported reader and

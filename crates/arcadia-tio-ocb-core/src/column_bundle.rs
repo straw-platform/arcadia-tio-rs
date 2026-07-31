@@ -7,8 +7,8 @@
 //! semantics to columns.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,10 +25,15 @@ use crate::parallel_prepare::{
     ColumnBundleParallelPrepareReport, ParallelPrepareTaskSpec, execute_parallel_prepare,
 };
 use crate::read::{
-    OcbMetadataV1, OcbOpenValidationMode, OcbReadObjectAttribution, read_column_chunk,
-    read_metadata, read_metadata_with_validation, read_object_bytes,
-    read_object_bytes_with_attribution,
+    OcbMetadataV1, OcbOpenValidationMode, OcbReadObjectAttribution, OcbReadSource,
+    read_column_chunk_from_source_with_attribution_and_resource_limits,
+    read_column_chunk_from_source_with_resource_limits,
+    read_metadata_from_source_with_validation_and_resource_limits,
+    read_object_bytes_with_attribution_and_resource_limits, read_object_bytes_with_resource_limits,
+    read_uncompressed_fixed_binary_chunk_from_source_into_with_attribution_and_resource_limits,
+    read_uncompressed_fixed_binary_chunk_from_source_into_with_resource_limits,
 };
+use crate::resource_limits::{MetadataMaterializationBudget, OcbResourceLimits};
 use crate::{ArcadiaTioError, OcbFailureCause, Result};
 
 pub const OCB_FALLBACK_THREAD_CAP_ONE: &str = "thread_cap_one";
@@ -1131,17 +1136,17 @@ pub enum ReusableFixedBinaryFieldValues {
 }
 
 impl ReusableFixedBinaryFieldValues {
-    fn new(field_type: FixedBinaryFieldType, capacity: usize) -> Self {
-        match field_type {
-            FixedBinaryFieldType::U8 => Self::U8(vec![0; capacity]),
-            FixedBinaryFieldType::I8 => Self::I8(vec![0; capacity]),
-            FixedBinaryFieldType::U16Le => Self::U16(vec![0; capacity]),
-            FixedBinaryFieldType::I16Le => Self::I16(vec![0; capacity]),
-            FixedBinaryFieldType::U32Le => Self::U32(vec![0; capacity]),
-            FixedBinaryFieldType::I32Le => Self::I32(vec![0; capacity]),
-            FixedBinaryFieldType::U64Le => Self::U64(vec![0; capacity]),
-            FixedBinaryFieldType::I64Le => Self::I64(vec![0; capacity]),
-        }
+    fn new(field_type: FixedBinaryFieldType, capacity: usize) -> Result<Self> {
+        Ok(match field_type {
+            FixedBinaryFieldType::U8 => Self::U8(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::I8 => Self::I8(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::U16Le => Self::U16(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::I16Le => Self::I16(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::U32Le => Self::U32(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::I32Le => Self::I32(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::U64Le => Self::U64(zeroed_vec_fallibly(capacity)?),
+            FixedBinaryFieldType::I64Le => Self::I64(zeroed_vec_fallibly(capacity)?),
+        })
     }
 
     fn field_type(&self) -> FixedBinaryFieldType {
@@ -1233,18 +1238,21 @@ impl ColumnBundleFixedBinaryProjectionBuffer {
         projection: &FixedBinaryRecordProjection,
         capacity: usize,
     ) -> Result<Self> {
-        let fields = projection
-            .fields
-            .iter()
-            .map(|field| ColumnBundleFixedBinaryProjectedFieldBuffer {
-                name: field.name.clone(),
+        let mut fields = try_column_bundle_vec_with_capacity(projection.fields.len())?;
+        for field in &projection.fields {
+            fields.push(ColumnBundleFixedBinaryProjectedFieldBuffer {
+                name: field
+                    .name
+                    .as_deref()
+                    .map(clone_column_bundle_string_fallibly)
+                    .transpose()?,
                 offset: field.offset,
-                values: ReusableFixedBinaryFieldValues::new(field.field_type, capacity),
-            })
-            .collect();
+                values: ReusableFixedBinaryFieldValues::new(field.field_type, capacity)?,
+            });
+        }
         Ok(Self {
             source_column_id: source_column.id,
-            source_column_name: source_column.name.clone(),
+            source_column_name: clone_column_bundle_string_fallibly(&source_column.name)?,
             source_width: projection.expected_width,
             fields,
             row_count: 0,
@@ -1630,10 +1638,10 @@ impl ReusablePrimitiveColumnValues {
 
     fn resize_for_rows(&mut self, row_count: usize) -> Result<()> {
         match self {
-            Self::I32(values) => values.resize(row_count, 0),
-            Self::I64(values) => values.resize(row_count, 0),
-            Self::F32(values) => values.resize(row_count, 0.0),
-            Self::F64(values) => values.resize(row_count, 0.0),
+            Self::I32(values) => resize_vec_fallibly(values, row_count, 0)?,
+            Self::I64(values) => resize_vec_fallibly(values, row_count, 0)?,
+            Self::F32(values) => resize_vec_fallibly(values, row_count, 0.0)?,
+            Self::F64(values) => resize_vec_fallibly(values, row_count, 0.0)?,
             Self::FixedBinary { width: 0, .. } => {
                 return Err(ArcadiaTioError::ocb_invalid_input(
                     "OCB reusable fixed-binary buffer requires width > 0",
@@ -1645,7 +1653,7 @@ impl ReusablePrimitiveColumnValues {
                         "OCB reusable fixed-binary byte count overflows",
                     ),
                 )?;
-                bytes.resize(byte_count, 0);
+                resize_vec_fallibly(bytes, byte_count, 0)?;
             }
         }
         Ok(())
@@ -1769,13 +1777,13 @@ impl ColumnBundleReusableColumnBuffer {
         };
         Ok(Self {
             column_id: column.id,
-            name: column.name.clone(),
+            name: clone_column_bundle_string_fallibly(&column.name)?,
             physical_type: column.physical_type,
             logical_kind: column.logical_kind,
             dictionary_id: column.dictionary_id,
             nullable: column.nullable,
             values,
-            validity_bytes: vec![0; validity_capacity],
+            validity_bytes: zeroed_vec_fallibly(validity_capacity)?,
             allow_nulls,
         })
     }
@@ -1783,7 +1791,7 @@ impl ColumnBundleReusableColumnBuffer {
     fn prepare_for_rows(&mut self, row_count: usize) -> Result<()> {
         self.values.resize_for_rows(row_count)?;
         if self.allow_nulls {
-            self.validity_bytes.resize(row_count.div_ceil(8), 0);
+            resize_vec_fallibly(&mut self.validity_bytes, row_count.div_ceil(8), 0)?;
         } else {
             self.validity_bytes.clear();
         }
@@ -1858,17 +1866,19 @@ impl ColumnBundleReusableBuffers {
     }
 
     fn for_columns(
-        columns: &[BundleColumn],
+        columns: &[&BundleColumn],
         row_capacity: usize,
         allow_nulls: bool,
     ) -> Result<Self> {
-        let columns = columns
-            .iter()
-            .map(|column| {
-                ColumnBundleReusableColumnBuffer::for_column(column, row_capacity, allow_nulls)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self { columns })
+        let mut buffers = try_column_bundle_vec_with_capacity(columns.len())?;
+        for column in columns {
+            buffers.push(ColumnBundleReusableColumnBuffer::for_column(
+                column,
+                row_capacity,
+                allow_nulls,
+            )?);
+        }
+        Ok(Self { columns: buffers })
     }
 
     fn prepare_for_rows(&mut self, row_count: usize) -> Result<()> {
@@ -1878,11 +1888,14 @@ impl ColumnBundleReusableBuffers {
         Ok(())
     }
 
-    fn fill_buffers(&mut self) -> Vec<ColumnBundleColumnFillBuffer<'_>> {
-        self.columns
-            .iter_mut()
-            .map(ColumnBundleReusableColumnBuffer::as_fill_buffer)
-            .collect()
+    fn fill_buffers(&mut self) -> Result<Vec<ColumnBundleColumnFillBuffer<'_>>> {
+        let mut buffers = try_column_bundle_vec_with_capacity(self.columns.len())?;
+        buffers.extend(
+            self.columns
+                .iter_mut()
+                .map(ColumnBundleReusableColumnBuffer::as_fill_buffer),
+        );
+        Ok(buffers)
     }
 }
 
@@ -2581,8 +2594,8 @@ impl ColumnBundleReadRequest {
         }
         let mut ranges = ranges;
         ranges.sort_by_key(|range| range.key_index);
-        let mut seen = BTreeSet::new();
-        let mut predicates = Vec::with_capacity(ranges.len());
+        let mut seen = try_column_bundle_hash_set_with_capacity(ranges.len())?;
+        let mut predicates = try_column_bundle_vec_with_capacity(ranges.len())?;
         for range in ranges {
             if !seen.insert(range.key_index) {
                 return Err(ArcadiaTioError::ocb_invalid_input(
@@ -2626,7 +2639,7 @@ impl ColumnBundleReadRequest {
                 }
             }
             predicates.push(RowGroupPredicate::new(
-                key.column_name.clone(),
+                clone_column_bundle_string_fallibly(&key.column_name)?,
                 range.lower,
                 range.upper,
             ));
@@ -2675,9 +2688,11 @@ pub struct ColumnBundleOpenOptions {
 /// One-file ordered column bundle reader.
 #[derive(Debug, Clone)]
 pub struct ColumnBundleFile {
-    path: PathBuf,
+    source: Arc<OcbReadSource>,
     metadata: Arc<OcbMetadataV1>,
     columns: Arc<Vec<BundleColumn>>,
+    resource_limits: OcbResourceLimits,
+    open_metadata_materialized_bytes: u64,
 }
 
 impl ColumnBundleFile {
@@ -2687,9 +2702,23 @@ impl ColumnBundleFile {
     /// [`Self::open_with_options`] with [`ColumnBundleOpenValidation::FullPayload`]
     /// when whole-file payload integrity must be verified before reads.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let metadata = Arc::new(read_metadata(&path)?);
-        Self::from_metadata(path, metadata)
+        Self::open_with_options_and_resource_limits(
+            path,
+            ColumnBundleOpenOptions::default(),
+            OcbResourceLimits::policy_a(),
+        )
+    }
+
+    /// Open one OCB file using explicit finite resource limits.
+    pub fn open_with_resource_limits(
+        path: impl AsRef<Path>,
+        resource_limits: OcbResourceLimits,
+    ) -> Result<Self> {
+        Self::open_with_options_and_resource_limits(
+            path,
+            ColumnBundleOpenOptions::default(),
+            resource_limits,
+        )
     }
 
     /// Open one OCB file with explicit validation options.
@@ -2697,22 +2726,75 @@ impl ColumnBundleFile {
         path: impl AsRef<Path>,
         options: ColumnBundleOpenOptions,
     ) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let metadata = Arc::new(read_metadata_with_validation(
-            &path,
-            OcbOpenValidationMode::from(options.validation),
-        )?);
-        Self::from_metadata(path, metadata)
+        Self::open_with_options_and_resource_limits(path, options, OcbResourceLimits::policy_a())
     }
 
-    fn from_metadata(path: PathBuf, metadata: Arc<OcbMetadataV1>) -> Result<Self> {
+    /// Open one OCB file with explicit validation and finite resource limits.
+    pub fn open_with_options_and_resource_limits(
+        path: impl AsRef<Path>,
+        options: ColumnBundleOpenOptions,
+        resource_limits: OcbResourceLimits,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let source = Arc::new(OcbReadSource::open(&path)?);
+        Self::open_from_source_with_options_and_resource_limits(source, options, resource_limits)
+    }
+
+    pub(crate) fn open_from_source_with_resource_limits(
+        source: Arc<OcbReadSource>,
+        resource_limits: OcbResourceLimits,
+    ) -> Result<Self> {
+        Self::open_from_source_with_options_and_resource_limits(
+            source,
+            ColumnBundleOpenOptions::default(),
+            resource_limits,
+        )
+    }
+
+    fn open_from_source_with_options_and_resource_limits(
+        source: Arc<OcbReadSource>,
+        options: ColumnBundleOpenOptions,
+        resource_limits: OcbResourceLimits,
+    ) -> Result<Self> {
+        let metadata = Arc::new(
+            read_metadata_from_source_with_validation_and_resource_limits(
+                &source,
+                OcbOpenValidationMode::from(options.validation),
+                resource_limits,
+            )?,
+        );
+        Self::from_metadata(source, metadata, resource_limits)
+    }
+
+    fn from_metadata(
+        source: Arc<OcbReadSource>,
+        metadata: Arc<OcbMetadataV1>,
+        resource_limits: OcbResourceLimits,
+    ) -> Result<Self> {
         validate_metadata(&metadata)?;
+        let mut metadata_budget = MetadataMaterializationBudget::from_limits(resource_limits);
+        metadata_budget.charge(metadata.open_metadata_materialized_bytes)?;
+        let resolved_columns_materialized_bytes =
+            preflight_resolved_columns_materialized_bytes(&metadata)?;
+        metadata_budget.charge(resolved_columns_materialized_bytes)?;
+        let open_metadata_materialized_bytes = metadata_budget.charged_bytes();
         let columns = Arc::new(resolve_columns(&metadata)?);
         Ok(Self {
-            path,
+            source,
             metadata,
             columns,
+            resource_limits,
+            open_metadata_materialized_bytes,
         })
+    }
+
+    /// Return the finite resource policy selected when this handle was opened.
+    pub const fn resource_limits(&self) -> OcbResourceLimits {
+        self.resource_limits
+    }
+
+    pub(crate) fn read_source(&self) -> &OcbReadSource {
+        &self.source
     }
 
     /// Return the resolved generic schema columns.
@@ -2732,66 +2814,68 @@ impl ColumnBundleFile {
 
     /// Return a stable metadata summary for the opened snapshot.
     pub fn metadata(&self) -> Result<ColumnBundleMetadata> {
-        let dictionaries = self
+        let dictionary_count = self
             .metadata
             .dictionary_index
             .as_ref()
-            .map(|index| {
-                index
-                    .dictionaries
-                    .iter()
-                    .map(|dictionary| {
-                        let name = self
-                            .metadata
-                            .string_table
-                            .strings
-                            .get(dictionary.name_string_id as usize)
-                            .ok_or(ArcadiaTioError::ocb_corrupt_file(
-                                "OCB dictionary name string id is out of range",
-                            ))?
-                            .clone();
-                        Ok(BundleDictionaryDescriptor {
-                            dictionary_id: dictionary.dictionary_id,
-                            name,
-                            code_physical_type: scalar_column_physical_type(
-                                dictionary.code_physical_type,
-                            )?,
-                            value_kind: dictionary.value_kind.into(),
-                            entry_count: dictionary.entry_count,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
+            .map_or(0, |index| index.dictionaries.len());
+        let mut dictionaries = try_column_bundle_vec_with_capacity(dictionary_count)?;
+        if let Some(index) = &self.metadata.dictionary_index {
+            for dictionary in &index.dictionaries {
+                let name = self
+                    .metadata
+                    .string_table
+                    .strings
+                    .get(dictionary.name_string_id as usize)
+                    .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                        "OCB dictionary name string id is out of range",
+                    ))?;
+                dictionaries.push(BundleDictionaryDescriptor {
+                    dictionary_id: dictionary.dictionary_id,
+                    name: clone_column_bundle_string_fallibly(name)?,
+                    code_physical_type: scalar_column_physical_type(dictionary.code_physical_type)?,
+                    value_kind: dictionary.value_kind.into(),
+                    entry_count: dictionary.entry_count,
+                });
+            }
+        }
 
-        let ordering_keys = self
+        let ordering_key_count = self
             .metadata
             .ordering_proof
             .as_ref()
-            .map(|proof| {
-                proof
-                    .keys
+            .map_or(0, |proof| proof.keys.len());
+        let mut ordering_keys = try_column_bundle_vec_with_capacity(ordering_key_count)?;
+        if let Some(proof) = &self.metadata.ordering_proof {
+            for key in &proof.keys {
+                let column = self
+                    .columns
                     .iter()
-                    .map(|key| {
-                        let column = self
-                            .columns
-                            .iter()
-                            .find(|column| column.id == key.column_id)
-                            .ok_or(ArcadiaTioError::ocb_corrupt_file(
-                                "OCB ordering key column id is out of range",
-                            ))?;
-                        Ok(BundleOrderingKey {
-                            column_id: key.column_id,
-                            column_name: column.name.clone(),
-                            direction: key.direction.into(),
-                            null_order: key.null_order.into(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
+                    .find(|column| column.id == key.column_id)
+                    .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                        "OCB ordering key column id is out of range",
+                    ))?;
+                ordering_keys.push(BundleOrderingKey {
+                    column_id: key.column_id,
+                    column_name: clone_column_bundle_string_fallibly(&column.name)?,
+                    direction: key.direction.into(),
+                    null_order: key.null_order.into(),
+                });
+            }
+        }
+
+        let mut columns = try_column_bundle_vec_with_capacity(self.columns.len())?;
+        for column in self.columns.iter() {
+            columns.push(BundleColumn {
+                id: column.id,
+                name: clone_column_bundle_string_fallibly(&column.name)?,
+                physical_type: column.physical_type,
+                logical_kind: column.logical_kind,
+                dictionary_id: column.dictionary_id,
+                scale: column.scale,
+                nullable: column.nullable,
+            });
+        }
 
         let column_chunk_count = u32::try_from(self.metadata.row_group_index.column_chunks.len())
             .map_err(|_| {
@@ -2806,7 +2890,7 @@ impl ColumnBundleFile {
             row_count: self.metadata.root.row_count,
             row_group_count: self.metadata.root.row_group_count,
             column_chunk_count,
-            columns: self.columns.as_ref().clone(),
+            columns,
             dictionaries,
             ordering_keys,
         })
@@ -2837,11 +2921,9 @@ impl ColumnBundleFile {
         plan: &ColumnBundleReadPlan,
     ) -> Result<Vec<ColumnBundleRowGroupSummary>> {
         self.validate_read_plan(plan)?;
-        let projected_column_ids = plan
-            .projected_column_ids
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
+        let mut projected_column_ids =
+            try_column_bundle_hash_set_with_capacity(plan.projected_column_ids.len())?;
+        projected_column_ids.extend(plan.projected_column_ids.iter().copied());
         self.build_row_group_summaries(
             plan.row_group_ids.iter().copied(),
             Some(&projected_column_ids),
@@ -2907,6 +2989,7 @@ impl ColumnBundleFile {
 
     /// Decode one file-local dictionary on the explicit cold path.
     pub fn dictionary_values(&self, dictionary_id: u32) -> Result<BundleDictionaryValues> {
+        let mut metadata_budget = MetadataMaterializationBudget::from_limits(self.resource_limits);
         let dictionary_index =
             self.metadata
                 .dictionary_index
@@ -2921,14 +3004,16 @@ impl ColumnBundleFile {
             .ok_or(ArcadiaTioError::ocb_invalid_input(
                 "OCB dictionary id not found",
             ))?;
-        let mut file = std::fs::File::open(&self.path)?;
-        let bytes = read_object_bytes(
+        let mut file = self.source.cursor();
+        let bytes = read_object_bytes_with_resource_limits(
             &mut file,
             self.metadata.file_len,
             dictionary.values_ref,
             OcbBodyKindV1::DictionaryValues,
+            self.resource_limits,
         )?;
-        let raw_values = OcbDictionaryValuesV1::read_from(std::io::Cursor::new(bytes))?;
+        let raw_values =
+            OcbDictionaryValuesV1::read_from_bytes_with_budget(bytes, &mut metadata_budget)?;
         if raw_values.value_kind != dictionary.value_kind {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB dictionary values kind does not match dictionary descriptor",
@@ -2946,8 +3031,19 @@ impl ColumnBundleFile {
             .get(dictionary.name_string_id as usize)
             .ok_or(ArcadiaTioError::ocb_corrupt_file(
                 "OCB dictionary name string id is out of range",
-            ))?
-            .clone();
+            ))?;
+        let conversion_materialized_bytes =
+            preflight_dictionary_conversion_materialized_bytes(&raw_values)?;
+        let name_bytes = u64::try_from(name.len()).map_err(|_| {
+            ArcadiaTioError::ocb_corrupt_file("OCB dictionary name length exceeds u64")
+        })?;
+        let returned_materialized_bytes = conversion_materialized_bytes
+            .checked_add(name_bytes)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB dictionary result materialization size overflows",
+            ))?;
+        metadata_budget.charge(returned_materialized_bytes)?;
+        let name = clone_column_bundle_string_fallibly(name)?;
         Ok(BundleDictionaryValues {
             dictionary_id,
             name,
@@ -2972,7 +3068,8 @@ impl ColumnBundleFile {
         let predicates = self.resolve_predicates(&request.predicates)?;
         self.require_predicate_stats_available(&predicates)?;
 
-        let mut row_group_ids = Vec::new();
+        let mut row_group_ids =
+            try_column_bundle_vec_with_capacity(self.metadata.row_group_index.row_groups.len())?;
         let mut pruned_row_groups = 0usize;
         for row_group in &self.metadata.row_group_index.row_groups {
             if row_group_matches_predicates(&self.metadata, row_group, &predicates)? {
@@ -3004,7 +3101,8 @@ impl ColumnBundleFile {
         validate_read_options(&request.options)?;
         let selected = self.resolve_projection(&request.projection)?;
         let predicates = self.resolve_predicates(&request.predicates)?;
-        let mut row_group_ids = Vec::new();
+        let mut row_group_ids =
+            try_column_bundle_vec_with_capacity(self.metadata.row_group_index.row_groups.len())?;
         let mut pruned_row_groups = 0usize;
         for row_group in &self.metadata.row_group_index.row_groups {
             if row_group_matches_predicates(&self.metadata, row_group, &predicates)? {
@@ -3029,21 +3127,23 @@ impl ColumnBundleFile {
     /// Read every column for one file-local row group id.
     #[doc(hidden)]
     pub fn read_row_group_by_id(&self, row_group_id: u32) -> Result<ColumnBatch> {
-        self.validate_read_plan(&ColumnBundleReadPlan {
-            projected_column_ids: self.columns.iter().map(|column| column.id).collect(),
-            row_group_ids: vec![row_group_id],
+        let mut projected_column_ids = try_column_bundle_vec_with_capacity(self.columns.len())?;
+        projected_column_ids.extend(self.columns.iter().map(|column| column.id));
+        let mut row_group_ids = try_column_bundle_vec_with_capacity(1)?;
+        row_group_ids.push(row_group_id);
+        let plan = ColumnBundleReadPlan {
+            projected_column_ids,
+            row_group_ids,
             report: build_read_report(1, 1, 0, self.columns.len()),
-        })?;
+        };
+        self.validate_read_plan(&plan)?;
+        validate_owned_plan_resource_limits(&self.metadata, &plan)?;
         read_row_group(
-            &self.path,
+            &self.source,
             &self.metadata,
             &self.columns,
             row_group_id,
-            &self
-                .columns
-                .iter()
-                .map(|column| column.id)
-                .collect::<Vec<_>>(),
+            &plan.projected_column_ids,
         )
     }
 
@@ -3087,7 +3187,7 @@ impl ColumnBundleFile {
     ) -> Result<ColumnBundleReadFillReport> {
         validate_read_fill_options(options)?;
         read_row_group_into(
-            &self.path,
+            &self.source,
             &self.metadata,
             &self.columns,
             row_group_id,
@@ -3115,7 +3215,19 @@ impl ColumnBundleFile {
         }
         let projected_columns = projected_columns_for_plan(&self.columns, plan)?;
         let row_capacity = max_row_count_for_plan(&self.metadata, plan)?;
-        let mut buffers = Vec::with_capacity(max_in_flight_row_groups);
+        validate_sliding_in_flight_plan_resource_limits(
+            &self.metadata,
+            plan,
+            max_in_flight_row_groups,
+        )?;
+        validate_reusable_pool_allocation_resource_limits(
+            &self.metadata,
+            &projected_columns,
+            row_capacity,
+            max_in_flight_row_groups,
+            allow_nulls,
+        )?;
+        let mut buffers = try_column_bundle_vec_with_capacity(max_in_flight_row_groups)?;
         for _ in 0..max_in_flight_row_groups {
             buffers.push(ColumnBundleReusableBuffers::for_columns(
                 &projected_columns,
@@ -3139,7 +3251,14 @@ impl ColumnBundleFile {
         self.validate_read_plan(plan)?;
         let source_column =
             validate_fixed_binary_record_projection(&self.columns, plan, projection)?;
+        validate_in_flight_plan_resource_limits(&self.metadata, plan, 1)?;
         let row_capacity = max_row_count_for_plan(&self.metadata, plan)?;
+        validate_fixed_binary_projection_resource_limits(
+            &self.metadata,
+            plan,
+            projection,
+            row_capacity,
+        )?;
         ColumnBundleFixedBinaryProjectionBuffer::for_projection(
             source_column,
             projection,
@@ -3201,8 +3320,8 @@ impl ColumnBundleFile {
         validate_read_cursor_options(cursor_options)?;
         let report = execution_report_for_plan(plan, plan.row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
-            row_group_ids: plan.row_group_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
+            row_group_ids: clone_column_bundle_u32s_fallibly(&plan.row_group_ids)?,
             report,
         };
         self.visit_execution_plan(&execution_plan, cursor_options, visitor)
@@ -3235,8 +3354,8 @@ impl ColumnBundleFile {
         validate_read_cursor_options(cursor_options)?;
         let report = execution_report_for_plan(plan, plan.row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
-            row_group_ids: plan.row_group_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
+            row_group_ids: clone_column_bundle_u32s_fallibly(&plan.row_group_ids)?,
             report,
         };
         self.visit_execution_plan_with_attribution(
@@ -3273,7 +3392,7 @@ impl ColumnBundleFile {
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report,
         };
@@ -3301,7 +3420,7 @@ impl ColumnBundleFile {
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report,
         };
@@ -3371,7 +3490,18 @@ impl ColumnBundleFile {
         self.validate_read_plan(plan)?;
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
-        let mut tasks = Vec::with_capacity(selected_row_group_ids.len());
+        validate_sliding_in_flight_plan_resource_limits(
+            &self.metadata,
+            &ColumnBundleReadPlan {
+                projected_column_ids: clone_column_bundle_u32s_fallibly(
+                    &plan.projected_column_ids,
+                )?,
+                row_group_ids: clone_column_bundle_u32s_fallibly(&selected_row_group_ids)?,
+                report: report.clone(),
+            },
+            options.max_in_flight_row_groups,
+        )?;
+        let mut tasks = try_column_bundle_vec_with_capacity(selected_row_group_ids.len())?;
         for (selected_row_group_ordinal, row_group_id) in
             selected_row_group_ids.iter().copied().enumerate()
         {
@@ -3402,14 +3532,14 @@ impl ColumnBundleFile {
             options,
             |row_group_id| {
                 read_row_group_with_attribution(
-                    &self.path,
+                    &self.source,
                     &self.metadata,
                     &self.columns,
                     row_group_id,
                     &plan.projected_column_ids,
                 )
             },
-            prepare,
+            move |context, batch| prepare(context, &batch),
             ordered_commit,
         )
     }
@@ -3437,7 +3567,7 @@ impl ColumnBundleFile {
         validate_reusable_buffer_pool(buffers, plan, &self.columns)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report,
         };
@@ -3466,7 +3596,7 @@ impl ColumnBundleFile {
         validate_reusable_buffer_pool(buffers, plan, &self.columns)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report,
         };
@@ -3512,7 +3642,7 @@ impl ColumnBundleFile {
         validate_fixed_binary_projection_buffer(projection_buffer, projection)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report,
         };
@@ -3538,8 +3668,8 @@ impl ColumnBundleFile {
         self.validate_read_plan(plan)?;
         let report = execution_report_for_plan(plan, plan.row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
-            row_group_ids: plan.row_group_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
+            row_group_ids: clone_column_bundle_u32s_fallibly(&plan.row_group_ids)?,
             report: report.clone(),
         };
         let batches = self.execute_plan(&execution_plan)?;
@@ -3562,8 +3692,8 @@ impl ColumnBundleFile {
         self.validate_read_plan(plan)?;
         let report = execution_report_for_plan(plan, plan.row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
-            row_group_ids: plan.row_group_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
+            row_group_ids: clone_column_bundle_u32s_fallibly(&plan.row_group_ids)?,
             report: report.clone(),
         };
         let execute_started = Instant::now();
@@ -3594,7 +3724,7 @@ impl ColumnBundleFile {
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report: report.clone(),
         };
@@ -3612,7 +3742,7 @@ impl ColumnBundleFile {
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
         let execution_plan = ColumnBundleReadPlan {
-            projected_column_ids: plan.projected_column_ids.clone(),
+            projected_column_ids: clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?,
             row_group_ids: selected_row_group_ids,
             report: report.clone(),
         };
@@ -3654,28 +3784,29 @@ impl ColumnBundleFile {
             .effective_threads
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1));
+        validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
         for wave in plan.row_group_ids.chunks(wave_size) {
             let wave_batches = if wave_size <= 1 {
                 let row_group_id = wave[0];
                 vec![read_row_group(
-                    &self.path,
+                    &self.source,
                     &self.metadata,
                     &self.columns,
                     row_group_id,
                     &plan.projected_column_ids,
                 )?]
             } else {
-                let mut handles = Vec::with_capacity(wave.len());
+                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
                 for row_group_id in wave.iter().copied() {
-                    let path = self.path.clone();
+                    let source = Arc::clone(&self.source);
                     let metadata = Arc::clone(&self.metadata);
                     let columns = Arc::clone(&self.columns);
-                    let selected = plan.projected_column_ids.clone();
+                    let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
                     handles.push(thread::spawn(move || {
-                        read_row_group(&path, &metadata, &columns, row_group_id, &selected)
+                        read_row_group(&source, &metadata, &columns, row_group_id, &selected)
                     }));
                 }
-                let mut wave_batches = Vec::with_capacity(handles.len());
+                let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
                 let mut first_error = None;
                 for handle in handles {
                     match handle.join() {
@@ -3757,11 +3888,12 @@ impl ColumnBundleFile {
             .effective_threads
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1));
+        validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
         for wave in plan.row_group_ids.chunks(wave_size) {
             let wave_batches = if wave_size <= 1 {
                 let row_group_id = wave[0];
                 let (batch, row_attr) = read_row_group_with_attribution(
-                    &self.path,
+                    &self.source,
                     &self.metadata,
                     &self.columns,
                     row_group_id,
@@ -3770,15 +3902,15 @@ impl ColumnBundleFile {
                 accumulator.add(row_attr);
                 vec![batch]
             } else {
-                let mut handles = Vec::with_capacity(wave.len());
+                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
                 for row_group_id in wave.iter().copied() {
-                    let path = self.path.clone();
+                    let source = Arc::clone(&self.source);
                     let metadata = Arc::clone(&self.metadata);
                     let columns = Arc::clone(&self.columns);
-                    let selected = plan.projected_column_ids.clone();
+                    let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
                     handles.push(thread::spawn(move || {
                         read_row_group_with_attribution(
-                            &path,
+                            &source,
                             &metadata,
                             &columns,
                             row_group_id,
@@ -3786,7 +3918,7 @@ impl ColumnBundleFile {
                         )
                     }));
                 }
-                let mut wave_batches = Vec::with_capacity(handles.len());
+                let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
                 let mut first_error = None;
                 for handle in handles {
                     match handle.join() {
@@ -3886,19 +4018,20 @@ impl ColumnBundleFile {
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
+        validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
         for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = Vec::with_capacity(wave.len());
+            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
             thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(wave.len());
+                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
                 for (slot, row_group_id) in buffers.buffers[..wave.len()]
                     .iter_mut()
                     .zip(wave.iter().copied())
                 {
-                    let path = self.path.as_path();
+                    let source = &self.source;
                     let metadata = &self.metadata;
                     let columns = &self.columns;
                     handles.push(scope.spawn(move || {
-                        read_row_group_into_reusable(path, metadata, columns, row_group_id, slot)
+                        read_row_group_into_reusable(source, metadata, columns, row_group_id, slot)
                     }));
                 }
                 let mut first_error = None;
@@ -3991,20 +4124,21 @@ impl ColumnBundleFile {
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
+        validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
         for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = Vec::with_capacity(wave.len());
+            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
             thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(wave.len());
+                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
                 for (slot, row_group_id) in buffers.buffers[..wave.len()]
                     .iter_mut()
                     .zip(wave.iter().copied())
                 {
-                    let path = self.path.as_path();
+                    let source = &self.source;
                     let metadata = &self.metadata;
                     let columns = &self.columns;
                     handles.push(scope.spawn(move || {
                         read_row_group_into_reusable_with_attribution(
-                            path,
+                            source,
                             metadata,
                             columns,
                             row_group_id,
@@ -4130,20 +4264,21 @@ impl ColumnBundleFile {
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
+        validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
         for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = Vec::with_capacity(wave.len());
+            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
             thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(wave.len());
+                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
                 for (slot, row_group_id) in buffers.buffers[..wave.len()]
                     .iter_mut()
                     .zip(wave.iter().copied())
                 {
-                    let path = self.path.as_path();
+                    let source = &self.source;
                     let metadata = &self.metadata;
                     let columns = &self.columns;
                     handles.push(scope.spawn(move || {
                         read_row_group_into_reusable_with_attribution(
-                            path,
+                            source,
                             metadata,
                             columns,
                             row_group_id,
@@ -4233,39 +4368,38 @@ impl ColumnBundleFile {
     }
 
     fn execute_plan(&self, plan: &ColumnBundleReadPlan) -> Result<Vec<ColumnBatch>> {
+        validate_owned_plan_resource_limits(&self.metadata, plan)?;
         if plan.row_group_ids.is_empty() {
             return Ok(Vec::new());
         }
         if plan.report.effective_threads <= 1 {
-            return plan
-                .row_group_ids
-                .iter()
-                .map(|row_group_id| {
-                    read_row_group(
-                        &self.path,
-                        &self.metadata,
-                        &self.columns,
-                        *row_group_id,
-                        &plan.projected_column_ids,
-                    )
-                })
-                .collect();
+            let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
+            for row_group_id in &plan.row_group_ids {
+                batches.push(read_row_group(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    *row_group_id,
+                    &plan.projected_column_ids,
+                )?);
+            }
+            return Ok(batches);
         }
 
-        let mut batches = Vec::with_capacity(plan.row_group_ids.len());
+        let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
         for wave in plan.row_group_ids.chunks(plan.report.effective_threads) {
-            let mut handles = Vec::with_capacity(wave.len());
+            let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
             for row_group_id in wave.iter().copied() {
-                let path = self.path.clone();
+                let source = Arc::clone(&self.source);
                 let metadata = Arc::clone(&self.metadata);
                 let columns = Arc::clone(&self.columns);
-                let selected = plan.projected_column_ids.clone();
+                let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
                 handles.push(thread::spawn(move || {
-                    read_row_group(&path, &metadata, &columns, row_group_id, &selected)
+                    read_row_group(&source, &metadata, &columns, row_group_id, &selected)
                 }));
             }
 
-            let mut wave_batches = Vec::with_capacity(handles.len());
+            let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
             let mut first_error = None;
             for handle in handles {
                 match handle.join() {
@@ -4296,15 +4430,16 @@ impl ColumnBundleFile {
         &self,
         plan: &ColumnBundleReadPlan,
     ) -> Result<(Vec<ColumnBatch>, ReadAttributionAccumulator)> {
+        validate_owned_plan_resource_limits(&self.metadata, plan)?;
         if plan.row_group_ids.is_empty() {
             return Ok((Vec::new(), ReadAttributionAccumulator::default()));
         }
         if plan.report.effective_threads <= 1 {
-            let mut batches = Vec::with_capacity(plan.row_group_ids.len());
+            let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
             let mut attribution = ReadAttributionAccumulator::default();
             for row_group_id in &plan.row_group_ids {
                 let (batch, row_attr) = read_row_group_with_attribution(
-                    &self.path,
+                    &self.source,
                     &self.metadata,
                     &self.columns,
                     *row_group_id,
@@ -4316,18 +4451,18 @@ impl ColumnBundleFile {
             return Ok((batches, attribution));
         }
 
-        let mut batches = Vec::with_capacity(plan.row_group_ids.len());
+        let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
         let mut attribution = ReadAttributionAccumulator::default();
         for wave in plan.row_group_ids.chunks(plan.report.effective_threads) {
-            let mut handles = Vec::with_capacity(wave.len());
+            let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
             for row_group_id in wave.iter().copied() {
-                let path = self.path.clone();
+                let source = Arc::clone(&self.source);
                 let metadata = Arc::clone(&self.metadata);
                 let columns = Arc::clone(&self.columns);
-                let selected = plan.projected_column_ids.clone();
+                let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
                 handles.push(thread::spawn(move || {
                     read_row_group_with_attribution(
-                        &path,
+                        &source,
                         &metadata,
                         &columns,
                         row_group_id,
@@ -4336,7 +4471,7 @@ impl ColumnBundleFile {
                 }));
             }
 
-            let mut wave_batches = Vec::with_capacity(handles.len());
+            let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
             let mut first_error = None;
             for handle in handles {
                 match handle.join() {
@@ -4367,12 +4502,10 @@ impl ColumnBundleFile {
     }
 
     fn validate_read_plan(&self, plan: &ColumnBundleReadPlan) -> Result<()> {
-        let available_columns = self
-            .columns
-            .iter()
-            .map(|column| column.id)
-            .collect::<BTreeSet<_>>();
-        let mut seen_columns = BTreeSet::new();
+        let mut available_columns = try_column_bundle_hash_set_with_capacity(self.columns.len())?;
+        available_columns.extend(self.columns.iter().map(|column| column.id));
+        let mut seen_columns =
+            try_column_bundle_hash_set_with_capacity(plan.projected_column_ids.len())?;
         for column_id in &plan.projected_column_ids {
             if !available_columns.contains(column_id) {
                 return Err(ArcadiaTioError::ocb_invalid_input(
@@ -4386,14 +4519,18 @@ impl ColumnBundleFile {
             }
         }
 
-        let available_row_groups = self
-            .metadata
-            .row_group_index
-            .row_groups
-            .iter()
-            .map(|row_group| row_group.row_group_id)
-            .collect::<BTreeSet<_>>();
-        let mut seen_row_groups = BTreeSet::new();
+        let mut available_row_groups = try_column_bundle_hash_set_with_capacity(
+            self.metadata.row_group_index.row_groups.len(),
+        )?;
+        available_row_groups.extend(
+            self.metadata
+                .row_group_index
+                .row_groups
+                .iter()
+                .map(|row_group| row_group.row_group_id),
+        );
+        let mut seen_row_groups =
+            try_column_bundle_hash_set_with_capacity(plan.row_group_ids.len())?;
         for row_group_id in &plan.row_group_ids {
             if !available_row_groups.contains(row_group_id) {
                 return Err(ArcadiaTioError::ocb_invalid_input(
@@ -4412,20 +4549,22 @@ impl ColumnBundleFile {
     fn build_row_group_summaries<I>(
         &self,
         row_group_ids: I,
-        projected_column_ids: Option<&BTreeSet<u32>>,
+        projected_column_ids: Option<&HashSet<u32>>,
     ) -> Result<Vec<ColumnBundleRowGroupSummary>>
     where
         I: IntoIterator<Item = u32>,
     {
-        let by_id = self
-            .metadata
-            .row_group_index
-            .row_groups
-            .iter()
-            .map(|row_group| (row_group.row_group_id, row_group))
-            .collect::<BTreeMap<_, _>>();
-        let mut summaries = Vec::new();
-        let mut seen = BTreeSet::new();
+        let row_group_count = self.metadata.row_group_index.row_groups.len();
+        let mut by_id = try_column_bundle_hash_map_with_capacity(row_group_count)?;
+        by_id.extend(
+            self.metadata
+                .row_group_index
+                .row_groups
+                .iter()
+                .map(|row_group| (row_group.row_group_id, row_group)),
+        );
+        let mut summaries = try_column_bundle_vec_with_capacity(row_group_count)?;
+        let mut seen = try_column_bundle_hash_set_with_capacity(row_group_count)?;
         for row_group_id in row_group_ids {
             if !seen.insert(row_group_id) {
                 return Err(ArcadiaTioError::ocb_invalid_input(
@@ -4447,14 +4586,14 @@ impl ColumnBundleFile {
     fn build_row_group_summary(
         &self,
         row_group: &OcbRowGroupDescV1,
-        projected_column_ids: Option<&BTreeSet<u32>>,
+        projected_column_ids: Option<&HashSet<u32>>,
     ) -> Result<ColumnBundleRowGroupSummary> {
         let chunks = column_chunks_for_row_group(
             &self.metadata,
             row_group.chunk_desc_begin,
             row_group.chunk_desc_count,
         )?;
-        let mut chunk_summaries = Vec::new();
+        let mut chunk_summaries = try_column_bundle_vec_with_capacity(chunks.len())?;
         for chunk in chunks {
             if chunk.row_group_id != row_group.row_group_id {
                 return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -4483,7 +4622,7 @@ impl ColumnBundleFile {
             chunk_summaries.push(ColumnBundleColumnChunkSummary {
                 row_group_id: chunk.row_group_id,
                 column_id: chunk.column_id,
-                column_name: column.name.clone(),
+                column_name: clone_column_bundle_string_fallibly(&column.name)?,
                 physical_type,
                 logical_kind: column.logical_kind,
                 fixed_binary_width,
@@ -4498,7 +4637,7 @@ impl ColumnBundleFile {
 
         let stats =
             stats_for_row_group(&self.metadata, row_group.stat_begin, row_group.stat_count)?;
-        let mut stat_summaries = Vec::with_capacity(stats.len());
+        let mut stat_summaries = try_column_bundle_vec_with_capacity(stats.len())?;
         for stat in stats {
             if stat.row_group_id != row_group.row_group_id {
                 return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -4515,7 +4654,7 @@ impl ColumnBundleFile {
             stat_summaries.push(ColumnBundleColumnStatsSummary {
                 row_group_id: stat.row_group_id,
                 column_id: stat.column_id,
-                column_name: column.name.clone(),
+                column_name: clone_column_bundle_string_fallibly(&column.name)?,
                 physical_type,
                 null_count: stat.null_count,
                 min: ColumnPredicateValue::from_stat(stat.min_value),
@@ -4578,15 +4717,20 @@ impl ColumnBundleFile {
 
     fn resolve_projection(&self, projection: &ColumnProjection) -> Result<Vec<u32>> {
         match projection {
-            ColumnProjection::All => Ok(self.columns.iter().map(|column| column.id).collect()),
+            ColumnProjection::All => {
+                let mut selected = try_column_bundle_vec_with_capacity(self.columns.len())?;
+                selected.extend(self.columns.iter().map(|column| column.id));
+                Ok(selected)
+            }
             ColumnProjection::Names(names) => {
-                let by_name = self
-                    .columns
-                    .iter()
-                    .map(|column| (column.name.as_str(), column.id))
-                    .collect::<BTreeMap<_, _>>();
-                let mut selected = Vec::with_capacity(names.len());
-                let mut seen = BTreeSet::new();
+                let mut by_name = try_column_bundle_hash_map_with_capacity(self.columns.len())?;
+                by_name.extend(
+                    self.columns
+                        .iter()
+                        .map(|column| (column.name.as_str(), column.id)),
+                );
+                let mut selected = try_column_bundle_vec_with_capacity(names.len())?;
+                let mut seen = try_column_bundle_hash_set_with_capacity(names.len())?;
                 for name in names {
                     let Some(column_id) = by_name.get(name.as_str()) else {
                         return Err(ArcadiaTioError::ocb_invalid_input(
@@ -4609,12 +4753,13 @@ impl ColumnBundleFile {
         &self,
         predicates: &[RowGroupPredicate],
     ) -> Result<Vec<ResolvedRowGroupPredicate>> {
-        let by_name = self
-            .columns
-            .iter()
-            .map(|column| (column.name.as_str(), column))
-            .collect::<BTreeMap<_, _>>();
-        let mut resolved = Vec::with_capacity(predicates.len());
+        let mut by_name = try_column_bundle_hash_map_with_capacity(self.columns.len())?;
+        by_name.extend(
+            self.columns
+                .iter()
+                .map(|column| (column.name.as_str(), column)),
+        );
+        let mut resolved = try_column_bundle_vec_with_capacity(predicates.len())?;
         for predicate in predicates {
             let Some(column) = by_name.get(predicate.column.as_str()) else {
                 return Err(ArcadiaTioError::ocb_invalid_input(
@@ -4658,32 +4803,56 @@ impl ColumnBundleFile {
 
 fn decode_dictionary_values(raw: OcbDictionaryValuesV1) -> Result<DictionaryValues> {
     match raw.value_kind {
-        OcbDictionaryValueKindV1::Utf8 => raw
-            .values
-            .into_iter()
-            .map(|bytes| {
-                String::from_utf8(bytes).map_err(|_| {
-                    ArcadiaTioError::ocb_corrupt_file("OCB UTF-8 dictionary value is invalid")
-                })
-            })
-            .collect::<Result<Vec<_>>>()
-            .map(DictionaryValues::Utf8),
+        OcbDictionaryValueKindV1::Utf8 => {
+            decode_utf8_dictionary_values(raw.values, "OCB UTF-8 dictionary value is invalid")
+                .map(DictionaryValues::Utf8)
+        }
         OcbDictionaryValueKindV1::Bytes => Ok(DictionaryValues::Bytes(raw.values)),
         OcbDictionaryValueKindV1::FixedBytes => Ok(DictionaryValues::FixedBytes {
             fixed_width: raw.fixed_width,
             values: raw.values,
         }),
-        OcbDictionaryValueKindV1::EnumLabels => raw
-            .values
-            .into_iter()
-            .map(|bytes| {
-                String::from_utf8(bytes).map_err(|_| {
-                    ArcadiaTioError::ocb_corrupt_file("OCB enum-label dictionary value is invalid")
-                })
-            })
-            .collect::<Result<Vec<_>>>()
-            .map(DictionaryValues::EnumLabels),
+        OcbDictionaryValueKindV1::EnumLabels => {
+            decode_utf8_dictionary_values(raw.values, "OCB enum-label dictionary value is invalid")
+                .map(DictionaryValues::EnumLabels)
+        }
     }
+}
+
+fn preflight_dictionary_conversion_materialized_bytes(raw: &OcbDictionaryValuesV1) -> Result<u64> {
+    let invalid_message = match raw.value_kind {
+        OcbDictionaryValueKindV1::Utf8 => Some("OCB UTF-8 dictionary value is invalid"),
+        OcbDictionaryValueKindV1::EnumLabels => Some("OCB enum-label dictionary value is invalid"),
+        OcbDictionaryValueKindV1::Bytes | OcbDictionaryValueKindV1::FixedBytes => None,
+    };
+    let Some(invalid_message) = invalid_message else {
+        return Ok(0);
+    };
+    for value in &raw.values {
+        std::str::from_utf8(value)
+            .map_err(|_| ArcadiaTioError::ocb_corrupt_file(invalid_message))?;
+    }
+    let value_count = u64::try_from(raw.values.len())
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB dictionary value count exceeds u64"))?;
+    value_count
+        .checked_mul(std::mem::size_of::<String>() as u64)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB dictionary string descriptor materialization size overflows",
+        ))
+}
+
+fn decode_utf8_dictionary_values(
+    values: Vec<Vec<u8>>,
+    invalid_message: &'static str,
+) -> Result<Vec<String>> {
+    let mut decoded = try_column_bundle_vec_with_capacity(values.len())?;
+    for bytes in values {
+        decoded.push(
+            String::from_utf8(bytes)
+                .map_err(|_| ArcadiaTioError::ocb_corrupt_file(invalid_message))?,
+        );
+    }
+    Ok(decoded)
 }
 
 fn validate_read_cursor_options(options: ColumnBundleReadCursorOptions) -> Result<()> {
@@ -4700,22 +4869,22 @@ fn validate_read_cursor_options(options: ColumnBundleReadCursorOptions) -> Resul
     Ok(())
 }
 
-fn projected_columns_for_plan(
-    columns: &[BundleColumn],
+fn projected_columns_for_plan<'a>(
+    columns: &'a [BundleColumn],
     plan: &ColumnBundleReadPlan,
-) -> Result<Vec<BundleColumn>> {
-    plan.projected_column_ids
-        .iter()
-        .map(|column_id| {
+) -> Result<Vec<&'a BundleColumn>> {
+    let mut projected = try_column_bundle_vec_with_capacity(plan.projected_column_ids.len())?;
+    for column_id in &plan.projected_column_ids {
+        projected.push(
             columns
                 .iter()
                 .find(|column| column.id == *column_id)
-                .cloned()
                 .ok_or(ArcadiaTioError::ocb_corrupt_file(
                     "OCB selected column not found",
-                ))
-        })
-        .collect()
+                ))?,
+        );
+    }
+    Ok(projected)
 }
 
 fn validate_reusable_buffer_pool(
@@ -4932,21 +5101,126 @@ fn project_fixed_binary_reusable_batch(
 
 fn max_row_count_for_plan(metadata: &OcbMetadataV1, plan: &ColumnBundleReadPlan) -> Result<usize> {
     let mut max_rows = 0usize;
-    for row_group_id in &plan.row_group_ids {
-        let row_group = metadata
-            .row_group_index
-            .row_groups
-            .iter()
-            .find(|row_group| row_group.row_group_id == *row_group_id)
-            .ok_or(ArcadiaTioError::ocb_invalid_input(
-                "OCB reusable buffer plan references an unknown row group",
-            ))?;
+    for row_group in selected_row_groups_for_plan(metadata, plan)? {
         let row_count = usize::try_from(row_group.row_count).map_err(|_| {
             ArcadiaTioError::ocb_invalid_input("OCB reusable buffer row count does not fit usize")
         })?;
         max_rows = max_rows.max(row_count);
     }
     Ok(max_rows)
+}
+
+fn validate_reusable_pool_allocation_resource_limits(
+    metadata: &OcbMetadataV1,
+    columns: &[&BundleColumn],
+    row_capacity: usize,
+    slot_count: usize,
+    allow_nulls: bool,
+) -> Result<()> {
+    let row_capacity = u64::try_from(row_capacity).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "OCB reusable buffer row capacity does not fit resource accounting",
+        )
+    })?;
+    let mut slot_bytes = 0u64;
+    for column in columns {
+        let value_width = match column.physical_type {
+            ColumnPhysicalType::I32 | ColumnPhysicalType::F32 => 4u64,
+            ColumnPhysicalType::I64 | ColumnPhysicalType::F64 => 8u64,
+            ColumnPhysicalType::FixedBinary { width: 0 } => {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB reusable fixed-binary column has zero width",
+                ));
+            }
+            ColumnPhysicalType::FixedBinary { width } => u64::from(width),
+        };
+        slot_bytes = slot_bytes
+            .checked_add(row_capacity.checked_mul(value_width).ok_or(
+                ArcadiaTioError::ocb_invalid_input(
+                    "OCB reusable buffer value allocation accounting overflows",
+                ),
+            )?)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB reusable buffer slot accounting overflows",
+            ))?;
+        if allow_nulls {
+            slot_bytes = slot_bytes.checked_add(row_capacity.div_ceil(8)).ok_or(
+                ArcadiaTioError::ocb_invalid_input(
+                    "OCB reusable validity allocation accounting overflows",
+                ),
+            )?;
+        }
+    }
+    if slot_bytes > metadata.resource_limits.max_projected_row_group_bytes() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB reusable buffer slot exceeds projected row-group resource limit",
+        ));
+    }
+    let slot_count = u64::try_from(slot_count).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "OCB reusable buffer slot count does not fit resource accounting",
+        )
+    })?;
+    let total_bytes =
+        slot_bytes
+            .checked_mul(slot_count)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB reusable buffer pool accounting overflows",
+            ))?;
+    if total_bytes
+        > metadata
+            .resource_limits
+            .max_owned_decoded_materialized_bytes()
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB reusable buffer pool exceeds decoded materialization resource limit",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fixed_binary_projection_resource_limits(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+    projection: &FixedBinaryRecordProjection,
+    row_capacity: usize,
+) -> Result<()> {
+    let field_widths = projection.fields.iter().try_fold(0u64, |total, field| {
+        total.checked_add(field.field_type.byte_width() as u64)
+    });
+    let field_widths = field_widths.ok_or(ArcadiaTioError::ocb_invalid_input(
+        "OCB fixed-binary projection field-width accounting overflows",
+    ))?;
+    let buffer_bytes = u64::try_from(row_capacity)
+        .ok()
+        .and_then(|rows| rows.checked_mul(field_widths))
+        .ok_or(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection buffer accounting overflows",
+        ))?;
+    if buffer_bytes
+        > metadata
+            .resource_limits
+            .max_owned_decoded_materialized_bytes()
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB fixed-binary projection buffer exceeds decoded materialization resource limit",
+        ));
+    }
+    for footprint in selected_resource_footprints_for_plan(metadata, plan)? {
+        let projected_bytes = footprint
+            .row_count
+            .checked_mul(field_widths)
+            .and_then(|bytes| bytes.checked_add(footprint.decoded_materialized_bytes))
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection row-group accounting overflows",
+            ))?;
+        if projected_bytes > metadata.resource_limits.max_projected_row_group_bytes() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary projection exceeds projected row-group resource limit",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_read_fill_options(options: ColumnBundleReadFillOptions) -> Result<()> {
@@ -5012,8 +5286,9 @@ fn planned_row_group_subset(
     plan: &ColumnBundleReadPlan,
     row_group_ids: &[u32],
 ) -> Result<Vec<u32>> {
-    let planned = plan.row_group_ids.iter().copied().collect::<BTreeSet<_>>();
-    let mut requested = BTreeSet::new();
+    let mut planned = try_column_bundle_hash_set_with_capacity(plan.row_group_ids.len())?;
+    planned.extend(plan.row_group_ids.iter().copied());
+    let mut requested = try_column_bundle_hash_set_with_capacity(row_group_ids.len())?;
     for row_group_id in row_group_ids {
         if !planned.contains(row_group_id) {
             return Err(ArcadiaTioError::ocb_invalid_input(
@@ -5026,12 +5301,14 @@ fn planned_row_group_subset(
             ));
         }
     }
-    Ok(plan
-        .row_group_ids
-        .iter()
-        .copied()
-        .filter(|row_group_id| requested.contains(row_group_id))
-        .collect())
+    let mut selected = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
+    selected.extend(
+        plan.row_group_ids
+            .iter()
+            .copied()
+            .filter(|row_group_id| requested.contains(row_group_id)),
+    );
+    Ok(selected)
 }
 
 fn public_physical_type_from_chunk(
@@ -5482,9 +5759,9 @@ fn column_chunks_for_row_group(
 fn stats_by_column_for_row_group<'a>(
     metadata: &'a OcbMetadataV1,
     row_group: &OcbRowGroupDescV1,
-) -> Result<BTreeMap<u32, &'a OcbColumnStatsV1>> {
+) -> Result<HashMap<u32, &'a OcbColumnStatsV1>> {
     let stats = stats_for_row_group(metadata, row_group.stat_begin, row_group.stat_count)?;
-    let mut stats_by_column = BTreeMap::new();
+    let mut stats_by_column = try_column_bundle_hash_map_with_capacity(stats.len())?;
     for stat in stats {
         if stat.row_group_id != row_group.row_group_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -5664,10 +5941,17 @@ pub(crate) fn attribution_from_accumulator(
     }
 }
 
-fn resolve_columns(metadata: &OcbMetadataV1) -> Result<Vec<BundleColumn>> {
-    let mut columns = Vec::with_capacity(metadata.schema.columns.len());
-    let mut seen_ids = BTreeSet::new();
-    let mut seen_names = BTreeSet::new();
+fn preflight_resolved_columns_materialized_bytes(metadata: &OcbMetadataV1) -> Result<u64> {
+    let column_count = u64::try_from(metadata.schema.columns.len())
+        .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB schema column count exceeds u64"))?;
+    let descriptor_bytes = column_count
+        .checked_mul(std::mem::size_of::<BundleColumn>() as u64)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB resolved column descriptor materialization size overflows",
+        ))?;
+    let mut seen_ids = try_column_bundle_hash_set_with_capacity(metadata.schema.columns.len())?;
+    let mut seen_names = try_column_bundle_hash_set_with_capacity(metadata.schema.columns.len())?;
+    let mut cloned_name_bytes = 0u64;
     for column in &metadata.schema.columns {
         if !seen_ids.insert(column.column_id) {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -5680,16 +5964,42 @@ fn resolve_columns(metadata: &OcbMetadataV1) -> Result<Vec<BundleColumn>> {
             .get(column.name_string_id as usize)
             .ok_or(ArcadiaTioError::ocb_corrupt_file(
                 "OCB column name string id is out of range",
-            ))?
-            .clone();
-        if !seen_names.insert(name.clone()) {
+            ))?;
+        if !seen_names.insert(name.as_str()) {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB schema has duplicate column names",
             ));
         }
+        column_physical_type_from_desc(column)?;
+        let name_bytes = u64::try_from(name.len())
+            .map_err(|_| ArcadiaTioError::ocb_corrupt_file("OCB column name length exceeds u64"))?;
+        cloned_name_bytes =
+            cloned_name_bytes
+                .checked_add(name_bytes)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB resolved column name materialization size overflows",
+                ))?;
+    }
+    descriptor_bytes
+        .checked_add(cloned_name_bytes)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB resolved column materialization size overflows",
+        ))
+}
+
+fn resolve_columns(metadata: &OcbMetadataV1) -> Result<Vec<BundleColumn>> {
+    let mut columns = try_column_bundle_vec_with_capacity(metadata.schema.columns.len())?;
+    for column in &metadata.schema.columns {
+        let name = metadata
+            .string_table
+            .strings
+            .get(column.name_string_id as usize)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB column name string id is out of range",
+            ))?;
         columns.push(BundleColumn {
             id: column.column_id,
-            name,
+            name: clone_column_bundle_string_fallibly(name)?,
             physical_type: column_physical_type_from_desc(column)?,
             logical_kind: column.logical_kind.into(),
             dictionary_id: if column.dictionary_id == OCB_NULL_U32 {
@@ -5706,14 +6016,14 @@ fn resolve_columns(metadata: &OcbMetadataV1) -> Result<Vec<BundleColumn>> {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedColumnFill {
+struct ResolvedColumnFill<'a> {
     buffer_index: usize,
-    column: BundleColumn,
+    column: &'a BundleColumn,
     chunk: OcbColumnChunkDescV1,
 }
 
 fn read_row_group_into(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -5740,7 +6050,7 @@ fn read_row_group_into(
         row_group.chunk_desc_begin,
         row_group.chunk_desc_count,
     )?;
-    let mut chunk_by_column = BTreeMap::new();
+    let mut chunk_by_column = try_column_bundle_hash_map_with_capacity(chunks.len())?;
     for chunk in chunks {
         if chunk.row_group_id != row_group.row_group_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -5754,16 +6064,15 @@ fn read_row_group_into(
         }
     }
 
-    let by_id = columns
-        .iter()
-        .map(|column| (column.id, column))
-        .collect::<BTreeMap<_, _>>();
-    let by_name = columns
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen_columns = BTreeSet::new();
-    let mut resolved = Vec::with_capacity(buffers.len());
+    let mut by_id = try_column_bundle_hash_map_with_capacity(columns.len())?;
+    by_id.extend(columns.iter().map(|column| (column.id, column)));
+    let mut by_name = try_column_bundle_hash_map_with_capacity(columns.len())?;
+    by_name.extend(columns.iter().map(|column| (column.name.as_str(), column)));
+    let mut seen_columns = try_column_bundle_hash_set_with_capacity(buffers.len())?;
+    let mut resolved = Vec::new();
+    resolved
+        .try_reserve_exact(buffers.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
     for (buffer_index, buffer) in buffers.iter().enumerate() {
         let Some(column) = resolve_fill_column(buffer, &by_id, &by_name)? else {
             return Err(ArcadiaTioError::ocb_invalid_input(
@@ -5826,15 +6135,27 @@ fn read_row_group_into(
         }
         resolved.push(ResolvedColumnFill {
             buffer_index,
-            column: column.clone(),
+            column,
             chunk,
         });
     }
 
-    let mut reports = Vec::with_capacity(resolved.len());
+    let mut selected_column_ids = Vec::new();
+    selected_column_ids
+        .try_reserve_exact(resolved.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    selected_column_ids.extend(resolved.iter().map(|target| target.column.id));
+    let footprint =
+        selected_resource_footprint_for_row_group_desc(metadata, &row_group, &selected_column_ids)?;
+    validate_footprint_totals(footprint, metadata.resource_limits)?;
+
+    let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(resolved.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
     for target in resolved {
         let report = fill_column_buffer(
-            path,
+            source,
             metadata,
             row_count,
             &target,
@@ -5851,7 +6172,7 @@ fn read_row_group_into(
 }
 
 fn read_row_group_into_reusable(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -5859,12 +6180,12 @@ fn read_row_group_into_reusable(
 ) -> Result<ColumnBundleReadFillReport> {
     let row_count = row_count_for_row_group(metadata, row_group_id)?;
     reusable.prepare_for_rows(row_count)?;
-    let mut fill_buffers = reusable.fill_buffers();
-    read_row_group_into(path, metadata, columns, row_group_id, &mut fill_buffers)
+    let mut fill_buffers = reusable.fill_buffers()?;
+    read_row_group_into(source, metadata, columns, row_group_id, &mut fill_buffers)
 }
 
 fn read_row_group_into_reusable_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -5872,8 +6193,8 @@ fn read_row_group_into_reusable_with_attribution(
 ) -> Result<(ColumnBundleReadFillReport, ReadAttributionAccumulator)> {
     let row_count = row_count_for_row_group(metadata, row_group_id)?;
     reusable.prepare_for_rows(row_count)?;
-    let mut fill_buffers = reusable.fill_buffers();
-    read_row_group_into_with_attribution(path, metadata, columns, row_group_id, &mut fill_buffers)
+    let mut fill_buffers = reusable.fill_buffers()?;
+    read_row_group_into_with_attribution(source, metadata, columns, row_group_id, &mut fill_buffers)
 }
 
 fn row_count_for_row_group(metadata: &OcbMetadataV1, row_group_id: u32) -> Result<usize> {
@@ -5891,7 +6212,7 @@ fn row_count_for_row_group(metadata: &OcbMetadataV1, row_group_id: u32) -> Resul
 }
 
 fn read_row_group_into_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -5919,7 +6240,7 @@ fn read_row_group_into_with_attribution(
         row_group.chunk_desc_begin,
         row_group.chunk_desc_count,
     )?;
-    let mut chunk_by_column = BTreeMap::new();
+    let mut chunk_by_column = try_column_bundle_hash_map_with_capacity(chunks.len())?;
     for chunk in chunks {
         if chunk.row_group_id != row_group.row_group_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -5933,16 +6254,15 @@ fn read_row_group_into_with_attribution(
         }
     }
 
-    let by_id = columns
-        .iter()
-        .map(|column| (column.id, column))
-        .collect::<BTreeMap<_, _>>();
-    let by_name = columns
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen_columns = BTreeSet::new();
-    let mut resolved = Vec::with_capacity(buffers.len());
+    let mut by_id = try_column_bundle_hash_map_with_capacity(columns.len())?;
+    by_id.extend(columns.iter().map(|column| (column.id, column)));
+    let mut by_name = try_column_bundle_hash_map_with_capacity(columns.len())?;
+    by_name.extend(columns.iter().map(|column| (column.name.as_str(), column)));
+    let mut seen_columns = try_column_bundle_hash_set_with_capacity(buffers.len())?;
+    let mut resolved = Vec::new();
+    resolved
+        .try_reserve_exact(buffers.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
     for (buffer_index, buffer) in buffers.iter().enumerate() {
         let Some(column) = resolve_fill_column(buffer, &by_id, &by_name)? else {
             return Err(ArcadiaTioError::ocb_invalid_input(
@@ -6005,16 +6325,28 @@ fn read_row_group_into_with_attribution(
         }
         resolved.push(ResolvedColumnFill {
             buffer_index,
-            column: column.clone(),
+            column,
             chunk,
         });
     }
 
-    let mut reports = Vec::with_capacity(resolved.len());
+    let mut selected_column_ids = Vec::new();
+    selected_column_ids
+        .try_reserve_exact(resolved.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    selected_column_ids.extend(resolved.iter().map(|target| target.column.id));
+    let footprint =
+        selected_resource_footprint_for_row_group_desc(metadata, &row_group, &selected_column_ids)?;
+    validate_footprint_totals(footprint, metadata.resource_limits)?;
+
+    let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(resolved.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
     let mut attribution = ReadAttributionAccumulator::default();
     for target in resolved {
         let report = fill_column_buffer_with_attribution(
-            path,
+            source,
             metadata,
             row_count,
             &target,
@@ -6039,8 +6371,8 @@ fn read_row_group_into_with_attribution(
 
 fn resolve_fill_column<'a>(
     buffer: &ColumnBundleColumnFillBuffer<'_>,
-    by_id: &BTreeMap<u32, &'a BundleColumn>,
-    by_name: &BTreeMap<&str, &'a BundleColumn>,
+    by_id: &HashMap<u32, &'a BundleColumn>,
+    by_name: &HashMap<&str, &'a BundleColumn>,
 ) -> Result<Option<&'a BundleColumn>> {
     let by_name_column = match buffer.column_name {
         Some(name) => Some(*by_name.get(name).ok_or(ArcadiaTioError::ocb_invalid_input(
@@ -6064,18 +6396,40 @@ fn resolve_fill_column<'a>(
 }
 
 fn fill_column_buffer(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     row_count: usize,
-    target: &ResolvedColumnFill,
+    target: &ResolvedColumnFill<'_>,
     buffer: &mut ColumnBundleColumnFillBuffer<'_>,
 ) -> Result<ColumnBundleColumnFillReport> {
-    let object = read_column_chunk(path, metadata.file_len, target.chunk.value_ref)?;
-    let payload = validate_and_decode_chunk_object(&object, &target.column, &target.chunk)?;
-    fill_primitive_values(&payload, row_count, &mut buffer.values)?;
+    if let Some(out) =
+        uncompressed_fixed_binary_direct_output(row_count, target, &mut buffer.values)?
+    {
+        read_uncompressed_fixed_binary_chunk_from_source_into_with_resource_limits(
+            source,
+            metadata.file_len,
+            &target.chunk,
+            out,
+            metadata.resource_limits,
+        )?;
+    } else {
+        let object = read_column_chunk_from_source_with_resource_limits(
+            source,
+            metadata.file_len,
+            &target.chunk,
+            metadata.resource_limits,
+        )?;
+        let payload = validate_and_decode_chunk_object(
+            object,
+            target.column,
+            &target.chunk,
+            metadata.resource_limits,
+        )?;
+        fill_primitive_values(&payload, row_count, &mut buffer.values)?;
+    }
     let mut validity_filled = false;
     if !target.chunk.validity_ref.is_null() {
-        let validity = read_validity_bitmap(path, metadata, &target.chunk)?.ok_or(
+        let validity = read_validity_bitmap(source, metadata, &target.chunk)?.ok_or(
             ArcadiaTioError::ocb_corrupt_file("OCB validity bitmap is missing after validation"),
         )?;
         let validity_bytes =
@@ -6096,28 +6450,59 @@ fn fill_column_buffer(
 }
 
 fn fill_column_buffer_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     row_count: usize,
-    target: &ResolvedColumnFill,
+    target: &ResolvedColumnFill<'_>,
     buffer: &mut ColumnBundleColumnFillBuffer<'_>,
     attribution: &mut ReadAttributionAccumulator,
 ) -> Result<ColumnBundleColumnFillReport> {
-    let object = read_column_chunk_attributed(path, metadata.file_len, &target.chunk, attribution)?;
-    let (payload, decompression) =
-        validate_and_decode_chunk_object_attributed(&object, &target.column, &target.chunk)?;
-    attribution.decompression += decompression;
-    let decode_started = Instant::now();
-    fill_primitive_values(&payload, row_count, &mut buffer.values)?;
-    record_value_materialization_time(
-        attribution,
-        target.column.physical_type,
-        decode_started.elapsed(),
-    );
+    if let Some(out) =
+        uncompressed_fixed_binary_direct_output(row_count, target, &mut buffer.values)?
+    {
+        let mut object_attr = OcbReadObjectAttribution::default();
+        read_uncompressed_fixed_binary_chunk_from_source_into_with_attribution_and_resource_limits(
+            source,
+            metadata.file_len,
+            &target.chunk,
+            out,
+            &mut object_attr,
+            metadata.resource_limits,
+        )?;
+        attribution.add_object(object_attr);
+        attribution.compressed_bytes = attribution
+            .compressed_bytes
+            .saturating_add(target.chunk.uncompressed_bytes);
+        attribution.uncompressed_bytes = attribution
+            .uncompressed_bytes
+            .saturating_add(target.chunk.uncompressed_bytes);
+    } else {
+        let object = read_column_chunk_attributed(
+            source,
+            metadata.file_len,
+            &target.chunk,
+            attribution,
+            metadata.resource_limits,
+        )?;
+        let (payload, decompression) = validate_and_decode_chunk_object_attributed(
+            object,
+            target.column,
+            &target.chunk,
+            metadata.resource_limits,
+        )?;
+        attribution.decompression += decompression;
+        let decode_started = Instant::now();
+        fill_primitive_values(&payload, row_count, &mut buffer.values)?;
+        record_value_materialization_time(
+            attribution,
+            target.column.physical_type,
+            decode_started.elapsed(),
+        );
+    }
     let mut validity_filled = false;
     if !target.chunk.validity_ref.is_null() {
         let validity =
-            read_validity_bitmap_with_attribution(path, metadata, &target.chunk, attribution)?
+            read_validity_bitmap_with_attribution(source, metadata, &target.chunk, attribution)?
                 .ok_or(ArcadiaTioError::ocb_corrupt_file(
                     "OCB validity bitmap is missing after validation",
                 ))?;
@@ -6136,6 +6521,46 @@ fn fill_column_buffer_with_attribution(
         rows_filled: row_count,
         validity_filled,
     })
+}
+
+fn uncompressed_fixed_binary_direct_output<'a>(
+    row_count: usize,
+    target: &ResolvedColumnFill<'_>,
+    values: &'a mut PrimitiveColumnValuesMut<'_>,
+) -> Result<Option<&'a mut [u8]>> {
+    if target.chunk.codec != OcbChunkCodecV1::None
+        || target.chunk.physical_type != OcbPhysicalTypeV1::FixedBinary
+    {
+        return Ok(None);
+    }
+    let ColumnPhysicalType::FixedBinary {
+        width: column_width,
+    } = target.column.physical_type
+    else {
+        return Ok(None);
+    };
+    let PrimitiveColumnValuesMut::FixedBinary {
+        width: buffer_width,
+        bytes,
+    } = values
+    else {
+        return Ok(None);
+    };
+    if *buffer_width != column_width {
+        return Ok(None);
+    }
+    let expected_bytes =
+        row_count
+            .checked_mul(column_width as usize)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB fixed-binary fill byte count overflows",
+            ))?;
+    if target.chunk.uncompressed_bytes != expected_bytes as u64 {
+        // Preserve the established corruption/error ordering for malformed
+        // descriptor-to-schema lengths by using the full object decoder.
+        return Ok(None);
+    }
+    Ok(Some(&mut bytes[..expected_bytes]))
 }
 
 fn fill_primitive_values(
@@ -6253,8 +6678,467 @@ fn fill_f64_values(payload: &[u8], row_count: usize, out: &mut [f64]) -> Result<
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SelectedResourceFootprint {
+    compressed_bytes: u64,
+    decoded_materialized_bytes: u64,
+    row_count: u64,
+}
+
+fn selected_resource_footprint_for_row_group(
+    metadata: &OcbMetadataV1,
+    row_group_id: u32,
+    selected_column_ids: &[u32],
+) -> Result<SelectedResourceFootprint> {
+    let row_group = metadata
+        .row_group_index
+        .row_groups
+        .iter()
+        .find(|row_group| row_group.row_group_id == row_group_id)
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB resource accounting row group not found",
+        ))?;
+    selected_resource_footprint_for_row_group_desc(metadata, row_group, selected_column_ids)
+}
+
+fn selected_resource_footprint_for_row_group_desc(
+    metadata: &OcbMetadataV1,
+    row_group: &OcbRowGroupDescV1,
+    selected_column_ids: &[u32],
+) -> Result<SelectedResourceFootprint> {
+    let chunks = chunks_for_row_group(
+        metadata,
+        row_group.chunk_desc_begin,
+        row_group.chunk_desc_count,
+    )?;
+    let object_overhead = u64::from(OCB_COLUMN_CHUNK_V1_HEADER_LEN) + 4;
+    for column_id in selected_column_ids {
+        let chunk = chunks
+            .iter()
+            .find(|chunk| chunk.column_id == *column_id)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB resource accounting selected chunk is missing",
+            ))?;
+        chunk
+            .value_ref
+            .validate(OcbBodyKindV1::ColumnChunk, metadata.file_len)?;
+        chunk.value_ref.length.checked_sub(object_overhead).ok_or(
+            ArcadiaTioError::ocb_corrupt_file(
+                "OCB resource accounting column chunk object is too short",
+            ),
+        )?;
+        if !chunk.validity_ref.is_null() {
+            chunk
+                .validity_ref
+                .validate(OcbBodyKindV1::ValidityBitmap, metadata.file_len)?;
+            if chunk.validity_ref.length != chunk.row_count.div_ceil(8) {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB validity bitmap length does not match row count",
+                ));
+            }
+        }
+    }
+    let mut footprint = SelectedResourceFootprint {
+        row_count: row_group.row_count,
+        ..SelectedResourceFootprint::default()
+    };
+    for column_id in selected_column_ids {
+        let chunk = chunks
+            .iter()
+            .find(|chunk| chunk.column_id == *column_id)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB resource accounting selected chunk is missing",
+            ))?;
+        chunk
+            .value_ref
+            .validate(OcbBodyKindV1::ColumnChunk, metadata.file_len)?;
+        let encoded_bytes = chunk.value_ref.length.checked_sub(object_overhead).ok_or(
+            ArcadiaTioError::ocb_corrupt_file(
+                "OCB resource accounting column chunk object is too short",
+            ),
+        )?;
+        if chunk.value_ref.length > metadata.resource_limits.max_encoded_object_bytes() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB encoded object exceeds resource limit",
+            ));
+        }
+        if encoded_bytes > metadata.resource_limits.max_compressed_chunk_bytes() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB encoded column chunk payload exceeds resource limit",
+            ));
+        }
+        if chunk.uncompressed_bytes > metadata.resource_limits.max_decompressed_chunk_bytes() {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB decoded column chunk payload exceeds resource limit",
+            ));
+        }
+        footprint.compressed_bytes = footprint
+            .compressed_bytes
+            .checked_add(encoded_bytes)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB selected compressed byte accounting overflows",
+            ))?;
+        footprint.decoded_materialized_bytes = footprint
+            .decoded_materialized_bytes
+            .checked_add(chunk.uncompressed_bytes)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB selected decoded byte accounting overflows",
+            ))?;
+
+        if !chunk.validity_ref.is_null() {
+            chunk
+                .validity_ref
+                .validate(OcbBodyKindV1::ValidityBitmap, metadata.file_len)?;
+            let validity_bytes = chunk.row_count.div_ceil(8);
+            if chunk.validity_ref.length != validity_bytes {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB validity bitmap length does not match row count",
+                ));
+            }
+            if chunk.validity_ref.length > metadata.resource_limits.max_encoded_object_bytes() {
+                return Err(ArcadiaTioError::ocb_invalid_input(
+                    "OCB encoded object exceeds resource limit",
+                ));
+            }
+            footprint.compressed_bytes = footprint
+                .compressed_bytes
+                .checked_add(validity_bytes)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB selected compressed byte accounting overflows",
+                ))?;
+            footprint.decoded_materialized_bytes = footprint
+                .decoded_materialized_bytes
+                .checked_add(validity_bytes)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB selected decoded byte accounting overflows",
+                ))?;
+        }
+    }
+    if footprint.decoded_materialized_bytes
+        > metadata.resource_limits.max_projected_row_group_bytes()
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB projected decoded row group exceeds resource limit",
+        ));
+    }
+    Ok(footprint)
+}
+
+fn selected_resource_footprints_for_plan(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+) -> Result<Vec<SelectedResourceFootprint>> {
+    let row_groups = selected_row_groups_for_plan(metadata, plan)?;
+    let mut footprints = Vec::new();
+    footprints
+        .try_reserve_exact(row_groups.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    for row_group in row_groups {
+        footprints.push(selected_resource_footprint_for_row_group_desc(
+            metadata,
+            row_group,
+            &plan.projected_column_ids,
+        )?);
+    }
+    Ok(footprints)
+}
+
+fn selected_row_groups_for_plan<'a>(
+    metadata: &'a OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+) -> Result<Vec<&'a OcbRowGroupDescV1>> {
+    let mut requested_ids = Vec::new();
+    requested_ids
+        .try_reserve_exact(plan.row_group_ids.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    requested_ids.extend_from_slice(&plan.row_group_ids);
+    requested_ids.sort_unstable();
+    if requested_ids.windows(2).any(|ids| ids[0] == ids[1]) {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB read plan contains duplicate row group ids",
+        ));
+    }
+
+    let mut indexed = Vec::new();
+    indexed
+        .try_reserve_exact(requested_ids.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    for row_group in &metadata.row_group_index.row_groups {
+        if requested_ids.binary_search(&row_group.row_group_id).is_ok() {
+            indexed.push((row_group.row_group_id, row_group));
+        }
+    }
+    if indexed.len() != requested_ids.len() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB read plan references an unknown row group id",
+        ));
+    }
+    indexed.sort_unstable_by_key(|(row_group_id, _)| *row_group_id);
+
+    let mut ordered = Vec::new();
+    ordered
+        .try_reserve_exact(plan.row_group_ids.len())
+        .map_err(|_| resource_accounting_allocation_error())?;
+    for row_group_id in &plan.row_group_ids {
+        let index = indexed
+            .binary_search_by_key(row_group_id, |(candidate, _)| *candidate)
+            .map_err(|_| {
+                ArcadiaTioError::ocb_invalid_input(
+                    "OCB read plan references an unknown row group id",
+                )
+            })?;
+        ordered.push(indexed[index].1);
+    }
+    Ok(ordered)
+}
+
+fn resource_accounting_allocation_error() -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(
+        std::io::ErrorKind::OutOfMemory,
+        "OCB resource accounting allocation failed within resource limit",
+    ))
+}
+
+fn column_bundle_allocation_error() -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(
+        std::io::ErrorKind::OutOfMemory,
+        "OCB column-bundle allocation failed within resource limit",
+    ))
+}
+
+fn try_column_bundle_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| column_bundle_allocation_error())?;
+    Ok(values)
+}
+
+fn try_column_bundle_hash_map_with_capacity<K: Eq + std::hash::Hash, V>(
+    capacity: usize,
+) -> Result<HashMap<K, V>> {
+    let mut values = HashMap::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| column_bundle_allocation_error())?;
+    Ok(values)
+}
+
+fn try_column_bundle_hash_set_with_capacity<T: Eq + std::hash::Hash>(
+    capacity: usize,
+) -> Result<HashSet<T>> {
+    let mut values = HashSet::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| column_bundle_allocation_error())?;
+    Ok(values)
+}
+
+fn zeroed_vec_fallibly<T: Clone + Default>(len: usize) -> Result<Vec<T>> {
+    let mut values = try_column_bundle_vec_with_capacity(len)?;
+    values.resize(len, T::default());
+    Ok(values)
+}
+
+fn resize_vec_fallibly<T: Clone>(values: &mut Vec<T>, len: usize, value: T) -> Result<()> {
+    if len > values.len() {
+        values
+            .try_reserve_exact(len - values.len())
+            .map_err(|_| column_bundle_allocation_error())?;
+    }
+    values.resize(len, value);
+    Ok(())
+}
+
+fn clone_column_bundle_string_fallibly(value: &str) -> Result<String> {
+    let mut copy = String::new();
+    copy.try_reserve_exact(value.len())
+        .map_err(|_| column_bundle_allocation_error())?;
+    copy.push_str(value);
+    Ok(copy)
+}
+
+fn clone_column_bundle_u32s_fallibly(values: &[u32]) -> Result<Vec<u32>> {
+    let mut copy = try_column_bundle_vec_with_capacity(values.len())?;
+    copy.extend_from_slice(values);
+    Ok(copy)
+}
+
+fn validate_footprint_totals(
+    footprint: SelectedResourceFootprint,
+    resource_limits: OcbResourceLimits,
+) -> Result<()> {
+    if footprint.compressed_bytes > resource_limits.max_owned_selected_compressed_bytes() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB selected compressed bytes exceed resource limit",
+        ));
+    }
+    if footprint.decoded_materialized_bytes > resource_limits.max_owned_decoded_materialized_bytes()
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "OCB decoded and materialized bytes exceed resource limit",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_owned_plan_resource_limits(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+) -> Result<()> {
+    let mut total = SelectedResourceFootprint::default();
+    for footprint in selected_resource_footprints_for_plan(metadata, plan)? {
+        total.compressed_bytes = total
+            .compressed_bytes
+            .checked_add(footprint.compressed_bytes)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB owned compressed byte accounting overflows",
+            ))?;
+        total.decoded_materialized_bytes = total
+            .decoded_materialized_bytes
+            .checked_add(footprint.decoded_materialized_bytes)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB owned decoded byte accounting overflows",
+            ))?;
+    }
+    validate_footprint_totals(total, metadata.resource_limits)
+}
+
+fn validate_in_flight_plan_resource_limits(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+    max_in_flight_row_groups: usize,
+) -> Result<()> {
+    if plan.row_group_ids.is_empty() {
+        return Ok(());
+    }
+    let reservation_count = max_in_flight_row_groups
+        .max(1)
+        .min(plan.row_group_ids.len());
+    let mut footprints = selected_resource_footprints_for_plan(metadata, plan)?;
+    footprints.sort_unstable_by(|left, right| right.compressed_bytes.cmp(&left.compressed_bytes));
+    let compressed_bytes = footprints
+        .iter()
+        .take(reservation_count)
+        .try_fold(0u64, |total, footprint| {
+            total.checked_add(footprint.compressed_bytes)
+        })
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB in-flight compressed byte accounting overflows",
+        ))?;
+    footprints.sort_unstable_by(|left, right| {
+        right
+            .decoded_materialized_bytes
+            .cmp(&left.decoded_materialized_bytes)
+    });
+    let decoded_materialized_bytes = footprints
+        .iter()
+        .take(reservation_count)
+        .try_fold(0u64, |total, footprint| {
+            total.checked_add(footprint.decoded_materialized_bytes)
+        })
+        .ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB in-flight decoded byte accounting overflows",
+        ))?;
+    validate_footprint_totals(
+        SelectedResourceFootprint {
+            compressed_bytes,
+            decoded_materialized_bytes,
+            row_count: 0,
+        },
+        metadata.resource_limits,
+    )
+}
+
+fn validate_contiguous_in_flight_plan_resource_limits(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+    max_in_flight_row_groups: usize,
+) -> Result<()> {
+    let wave_size = max_in_flight_row_groups.max(1);
+    let footprints = selected_resource_footprints_for_plan(metadata, plan)?;
+    for wave in footprints.chunks(wave_size) {
+        let total = wave.iter().try_fold(
+            SelectedResourceFootprint::default(),
+            |mut total, footprint| {
+                total.compressed_bytes = total
+                    .compressed_bytes
+                    .checked_add(footprint.compressed_bytes)?;
+                total.decoded_materialized_bytes = total
+                    .decoded_materialized_bytes
+                    .checked_add(footprint.decoded_materialized_bytes)?;
+                Some(total)
+            },
+        );
+        let total = total.ok_or(ArcadiaTioError::ocb_corrupt_file(
+            "OCB in-flight resource accounting overflows",
+        ))?;
+        validate_footprint_totals(total, metadata.resource_limits)?;
+    }
+    Ok(())
+}
+
+fn validate_sliding_in_flight_plan_resource_limits(
+    metadata: &OcbMetadataV1,
+    plan: &ColumnBundleReadPlan,
+    max_in_flight_row_groups: usize,
+) -> Result<()> {
+    let footprints = selected_resource_footprints_for_plan(metadata, plan)?;
+    validate_sliding_resource_footprints(
+        &footprints,
+        max_in_flight_row_groups,
+        metadata.resource_limits,
+    )
+}
+
+fn validate_sliding_resource_footprints(
+    footprints: &[SelectedResourceFootprint],
+    max_in_flight_row_groups: usize,
+    resource_limits: OcbResourceLimits,
+) -> Result<()> {
+    if footprints.is_empty() {
+        return Ok(());
+    }
+    let window_size = max_in_flight_row_groups.max(1).min(footprints.len());
+    let mut total = footprints[..window_size].iter().try_fold(
+        SelectedResourceFootprint::default(),
+        |mut total, footprint| {
+            total.compressed_bytes = total
+                .compressed_bytes
+                .checked_add(footprint.compressed_bytes)?;
+            total.decoded_materialized_bytes = total
+                .decoded_materialized_bytes
+                .checked_add(footprint.decoded_materialized_bytes)?;
+            Some(total)
+        },
+    );
+    let mut total = total.take().ok_or(ArcadiaTioError::ocb_corrupt_file(
+        "OCB sliding in-flight resource accounting overflows",
+    ))?;
+    validate_footprint_totals(total, resource_limits)?;
+    for next in window_size..footprints.len() {
+        let previous = footprints[next - window_size];
+        total.compressed_bytes = total
+            .compressed_bytes
+            .checked_sub(previous.compressed_bytes)
+            .and_then(|bytes| bytes.checked_add(footprints[next].compressed_bytes))
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB sliding compressed byte accounting is inconsistent",
+            ))?;
+        total.decoded_materialized_bytes = total
+            .decoded_materialized_bytes
+            .checked_sub(previous.decoded_materialized_bytes)
+            .and_then(|bytes| bytes.checked_add(footprints[next].decoded_materialized_bytes))
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB sliding decoded byte accounting is inconsistent",
+            ))?;
+        validate_footprint_totals(total, resource_limits)?;
+    }
+    Ok(())
+}
+
 fn read_row_group(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -6271,7 +7155,7 @@ fn read_row_group(
         row_group.chunk_desc_begin,
         row_group.chunk_desc_count,
     )?;
-    let mut chunk_by_column = BTreeMap::new();
+    let mut chunk_by_column = try_column_bundle_hash_map_with_capacity(chunks.len())?;
     for chunk in chunks {
         if chunk.row_group_id != row_group.row_group_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -6285,7 +7169,7 @@ fn read_row_group(
         }
     }
 
-    let mut arrays = Vec::with_capacity(selected_column_ids.len());
+    let mut arrays = try_column_bundle_vec_with_capacity(selected_column_ids.len())?;
     for column_id in selected_column_ids {
         let column = columns
             .iter()
@@ -6299,7 +7183,7 @@ fn read_row_group(
                 "OCB row group is missing a selected column chunk",
             ))?;
         arrays.push(read_column_array(
-            path,
+            source,
             metadata,
             column,
             chunk,
@@ -6316,7 +7200,7 @@ fn read_row_group(
 }
 
 fn read_row_group_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     columns: &[BundleColumn],
     row_group_id: u32,
@@ -6334,7 +7218,7 @@ fn read_row_group_with_attribution(
         row_group.chunk_desc_begin,
         row_group.chunk_desc_count,
     )?;
-    let mut chunk_by_column = BTreeMap::new();
+    let mut chunk_by_column = try_column_bundle_hash_map_with_capacity(chunks.len())?;
     for chunk in chunks {
         if chunk.row_group_id != row_group.row_group_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -6348,7 +7232,7 @@ fn read_row_group_with_attribution(
         }
     }
 
-    let mut arrays = Vec::with_capacity(selected_column_ids.len());
+    let mut arrays = try_column_bundle_vec_with_capacity(selected_column_ids.len())?;
     let mut attribution = ReadAttributionAccumulator::default();
     for column_id in selected_column_ids {
         let column = columns
@@ -6362,8 +7246,13 @@ fn read_row_group_with_attribution(
             .ok_or(ArcadiaTioError::ocb_corrupt_file(
                 "OCB row group is missing a selected column chunk",
             ))?;
-        let (array, column_attr) =
-            read_column_array_with_attribution(path, metadata, column, chunk, row_group.row_count)?;
+        let (array, column_attr) = read_column_array_with_attribution(
+            source,
+            metadata,
+            column,
+            chunk,
+            row_group.row_count,
+        )?;
         attribution.add(column_attr);
         arrays.push(array);
     }
@@ -6406,7 +7295,7 @@ fn chunks_for_row_group(
 }
 
 fn read_column_array(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     column: &BundleColumn,
     chunk: &OcbColumnChunkDescV1,
@@ -6427,22 +7316,28 @@ fn read_column_array(
             "OCB chunk row_count does not match row group",
         ));
     }
-    let object = read_column_chunk(path, metadata.file_len, chunk.value_ref)?;
-    let payload = validate_and_decode_chunk_object(&object, column, chunk)?;
-    let validity = read_validity_bitmap(path, metadata, chunk)?;
+    let object = read_column_chunk_from_source_with_resource_limits(
+        source,
+        metadata.file_len,
+        chunk,
+        metadata.resource_limits,
+    )?;
+    let payload =
+        validate_and_decode_chunk_object(object, column, chunk, metadata.resource_limits)?;
+    let validity = read_validity_bitmap(source, metadata, chunk)?;
     Ok(ColumnArray {
         column_id: column.id,
-        name: column.name.clone(),
+        name: clone_column_bundle_string_fallibly(&column.name)?,
         physical_type: column.physical_type,
         logical_kind: column.logical_kind,
         dictionary_id: column.dictionary_id,
-        values: decode_primitive_values(column.physical_type, &payload)?,
+        values: decode_primitive_values(column.physical_type, payload)?,
         validity,
     })
 }
 
 fn read_column_array_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     column: &BundleColumn,
     chunk: &OcbColumnChunkDescV1,
@@ -6465,13 +7360,24 @@ fn read_column_array_with_attribution(
     }
 
     let mut attribution = ReadAttributionAccumulator::default();
-    let object = read_column_chunk_attributed(path, metadata.file_len, chunk, &mut attribution)?;
-    let (payload, decompression) =
-        validate_and_decode_chunk_object_attributed(&object, column, chunk)?;
+    let object = read_column_chunk_attributed(
+        source,
+        metadata.file_len,
+        chunk,
+        &mut attribution,
+        metadata.resource_limits,
+    )?;
+    let (payload, decompression) = validate_and_decode_chunk_object_attributed(
+        object,
+        column,
+        chunk,
+        metadata.resource_limits,
+    )?;
     attribution.decompression += decompression;
-    let validity = read_validity_bitmap_with_attribution(path, metadata, chunk, &mut attribution)?;
+    let validity =
+        read_validity_bitmap_with_attribution(source, metadata, chunk, &mut attribution)?;
     let decode_started = Instant::now();
-    let values = decode_primitive_values(column.physical_type, &payload)?;
+    let values = decode_primitive_values(column.physical_type, payload)?;
     record_value_materialization_time(
         &mut attribution,
         column.physical_type,
@@ -6480,7 +7386,7 @@ fn read_column_array_with_attribution(
     Ok((
         ColumnArray {
             column_id: column.id,
-            name: column.name.clone(),
+            name: clone_column_bundle_string_fallibly(&column.name)?,
             physical_type: column.physical_type,
             logical_kind: column.logical_kind,
             dictionary_id: column.dictionary_id,
@@ -6492,22 +7398,21 @@ fn read_column_array_with_attribution(
 }
 
 fn read_column_chunk_attributed(
-    path: &Path,
+    source: &OcbReadSource,
     file_len: u64,
     chunk: &OcbColumnChunkDescV1,
     attribution: &mut ReadAttributionAccumulator,
+    resource_limits: OcbResourceLimits,
 ) -> Result<OcbColumnChunkObjectV1> {
-    let mut file = std::fs::File::open(path)?;
     let mut object_attr = OcbReadObjectAttribution::default();
-    let bytes = read_object_bytes_with_attribution(
-        &mut file,
+    let object = read_column_chunk_from_source_with_attribution_and_resource_limits(
+        source,
         file_len,
-        chunk.value_ref,
-        OcbBodyKindV1::ColumnChunk,
+        chunk,
         &mut object_attr,
+        resource_limits,
     )?;
     attribution.add_object(object_attr);
-    let object = OcbColumnChunkObjectV1::read_from(std::io::Cursor::new(bytes))?;
     attribution.compressed_bytes = attribution
         .compressed_bytes
         .saturating_add(object.payload.len() as u64);
@@ -6518,7 +7423,7 @@ fn read_column_chunk_attributed(
 }
 
 fn read_validity_bitmap(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     chunk: &OcbColumnChunkDescV1,
 ) -> Result<Option<ValidityBitmap>> {
@@ -6526,12 +7431,13 @@ fn read_validity_bitmap(
         return Ok(None);
     }
     let expected_bytes = chunk.row_count.div_ceil(8);
-    let mut file = std::fs::File::open(path)?;
-    let bytes = read_object_bytes(
+    let mut file = source.cursor();
+    let bytes = read_object_bytes_with_resource_limits(
         &mut file,
         metadata.file_len,
         chunk.validity_ref,
         OcbBodyKindV1::ValidityBitmap,
+        metadata.resource_limits,
     )?;
     if bytes.len() as u64 != expected_bytes {
         return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -6545,7 +7451,7 @@ fn read_validity_bitmap(
 }
 
 fn read_validity_bitmap_with_attribution(
-    path: &Path,
+    source: &OcbReadSource,
     metadata: &OcbMetadataV1,
     chunk: &OcbColumnChunkDescV1,
     attribution: &mut ReadAttributionAccumulator,
@@ -6554,14 +7460,15 @@ fn read_validity_bitmap_with_attribution(
         return Ok(None);
     }
     let expected_bytes = chunk.row_count.div_ceil(8);
-    let mut file = std::fs::File::open(path)?;
+    let mut file = source.cursor();
     let mut object_attr = OcbReadObjectAttribution::default();
-    let bytes = read_object_bytes_with_attribution(
+    let bytes = read_object_bytes_with_attribution_and_resource_limits(
         &mut file,
         metadata.file_len,
         chunk.validity_ref,
         OcbBodyKindV1::ValidityBitmap,
         &mut object_attr,
+        metadata.resource_limits,
     )?;
     attribution.add_object(object_attr);
     if bytes.len() as u64 != expected_bytes {
@@ -6576,9 +7483,10 @@ fn read_validity_bitmap_with_attribution(
 }
 
 fn validate_and_decode_chunk_object(
-    object: &OcbColumnChunkObjectV1,
+    object: OcbColumnChunkObjectV1,
     column: &BundleColumn,
     chunk: &OcbColumnChunkDescV1,
+    resource_limits: OcbResourceLimits,
 ) -> Result<Vec<u8>> {
     if object.row_group_id != chunk.row_group_id || object.column_id != chunk.column_id {
         return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -6600,7 +7508,15 @@ fn validate_and_decode_chunk_object(
             "OCB column chunk object row_count does not match descriptor",
         ));
     }
-    let payload = object.decode_payload()?;
+    if object.uncompressed_bytes != chunk.uncompressed_bytes {
+        return Err(ArcadiaTioError::ocb_corrupt_file(
+            "OCB column chunk object byte length does not match descriptor",
+        ));
+    }
+    let payload = object.into_decoded_payload_with_limits(
+        resource_limits.max_compressed_chunk_bytes(),
+        resource_limits.max_decompressed_chunk_bytes(),
+    )?;
     if payload.len() as u64 != chunk.uncompressed_bytes {
         return Err(ArcadiaTioError::ocb_corrupt_file(
             "OCB column chunk object byte length does not match descriptor",
@@ -6610,9 +7526,10 @@ fn validate_and_decode_chunk_object(
 }
 
 fn validate_and_decode_chunk_object_attributed(
-    object: &OcbColumnChunkObjectV1,
+    object: OcbColumnChunkObjectV1,
     column: &BundleColumn,
     chunk: &OcbColumnChunkDescV1,
+    resource_limits: OcbResourceLimits,
 ) -> Result<(Vec<u8>, Duration)> {
     if object.row_group_id != chunk.row_group_id || object.column_id != chunk.column_id {
         return Err(ArcadiaTioError::ocb_corrupt_file(
@@ -6634,9 +7551,18 @@ fn validate_and_decode_chunk_object_attributed(
             "OCB column chunk object row_count does not match descriptor",
         ));
     }
+    if object.uncompressed_bytes != chunk.uncompressed_bytes {
+        return Err(ArcadiaTioError::ocb_corrupt_file(
+            "OCB column chunk object byte length does not match descriptor",
+        ));
+    }
     let decode_started = Instant::now();
-    let payload = object.decode_payload()?;
-    let decompression = if object.codec == OcbChunkCodecV1::Zstd {
+    let codec = object.codec;
+    let payload = object.into_decoded_payload_with_limits(
+        resource_limits.max_compressed_chunk_bytes(),
+        resource_limits.max_decompressed_chunk_bytes(),
+    )?;
+    let decompression = if codec == OcbChunkCodecV1::Zstd {
         decode_started.elapsed()
     } else {
         Duration::ZERO
@@ -6651,7 +7577,7 @@ fn validate_and_decode_chunk_object_attributed(
 
 fn decode_primitive_values(
     physical_type: ColumnPhysicalType,
-    payload: &[u8],
+    payload: Vec<u8>,
 ) -> Result<PrimitiveColumnValues> {
     match physical_type {
         ColumnPhysicalType::I32 => {
@@ -6661,10 +7587,9 @@ fn decode_primitive_values(
                 ));
             }
             Ok(PrimitiveColumnValues::I32(
-                payload
-                    .chunks_exact(4)
-                    .map(|chunk| i32::from_le_bytes(chunk.try_into().expect("chunk length")))
-                    .collect(),
+                decode_primitive_chunks_fallibly(&payload, 4, |chunk| {
+                    i32::from_le_bytes(chunk.try_into().expect("chunk length"))
+                })?,
             ))
         }
         ColumnPhysicalType::I64 => {
@@ -6674,10 +7599,9 @@ fn decode_primitive_values(
                 ));
             }
             Ok(PrimitiveColumnValues::I64(
-                payload
-                    .chunks_exact(8)
-                    .map(|chunk| i64::from_le_bytes(chunk.try_into().expect("chunk length")))
-                    .collect(),
+                decode_primitive_chunks_fallibly(&payload, 8, |chunk| {
+                    i64::from_le_bytes(chunk.try_into().expect("chunk length"))
+                })?,
             ))
         }
         ColumnPhysicalType::F32 => {
@@ -6687,10 +7611,9 @@ fn decode_primitive_values(
                 ));
             }
             Ok(PrimitiveColumnValues::F32(
-                payload
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk length")))
-                    .collect(),
+                decode_primitive_chunks_fallibly(&payload, 4, |chunk| {
+                    f32::from_le_bytes(chunk.try_into().expect("chunk length"))
+                })?,
             ))
         }
         ColumnPhysicalType::F64 => {
@@ -6700,10 +7623,9 @@ fn decode_primitive_values(
                 ));
             }
             Ok(PrimitiveColumnValues::F64(
-                payload
-                    .chunks_exact(8)
-                    .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("chunk length")))
-                    .collect(),
+                decode_primitive_chunks_fallibly(&payload, 8, |chunk| {
+                    f64::from_le_bytes(chunk.try_into().expect("chunk length"))
+                })?,
             ))
         }
         ColumnPhysicalType::FixedBinary { width } => {
@@ -6719,16 +7641,39 @@ fn decode_primitive_values(
             }
             Ok(PrimitiveColumnValues::FixedBinary {
                 width,
-                bytes: payload.to_vec(),
+                bytes: payload,
             })
         }
     }
 }
 
+fn decode_primitive_chunks_fallibly<T>(
+    payload: &[u8],
+    width: usize,
+    mut decode: impl FnMut(&[u8]) -> T,
+) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(payload.len() / width)
+        .map_err(|_| decoded_values_allocation_error())?;
+    for chunk in payload.chunks_exact(width) {
+        values.push(decode(chunk));
+    }
+    Ok(values)
+}
+
+fn decoded_values_allocation_error() -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(
+        std::io::ErrorKind::OutOfMemory,
+        "OCB decoded-value allocation failed within resource limit",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::{Cursor, Write};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
 
     use super::*;
     use crate::format::{
@@ -6741,6 +7686,7 @@ mod tests {
         OcbRowGroupDescV1, OcbRowGroupIndexV1, OcbRowGroupOrderingProofV1, OcbSchemaV1,
         OcbStatScalarV1, OcbStringTableV1, crc32c,
     };
+    use crate::read::uncompressed_fixed_binary_direct_fill_count_for_test;
 
     #[test]
     fn column_bundle_opens_one_file_and_parallel_reads_projected_batches() {
@@ -6788,6 +7734,700 @@ mod tests {
         cleanup(&path);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn opened_handle_reads_original_identity_after_atomic_path_replacement() {
+        let path = fixture_path("column_bundle_bound_file_identity");
+        let replacement = fixture_path("column_bundle_replacement_identity");
+        cleanup(&path);
+        cleanup(&replacement);
+        write_fixture_with_options(
+            &path,
+            FixtureOptions {
+                nullable_column_id: Some(0),
+                validity_ref_column_id: Some(0),
+                rows_per_group: Some(3),
+                ..FixtureOptions::default()
+            },
+        );
+        write_fixture_with_options(
+            &replacement,
+            FixtureOptions {
+                nullable_column_id: Some(0),
+                validity_ref_column_id: Some(0),
+                rows_per_group: Some(4),
+                ..FixtureOptions::default()
+            },
+        );
+
+        let opened = ColumnBundleFile::open(&path).expect("open original OCB identity");
+        let opened_clone = opened.clone();
+        assert_eq!(opened.row_count(), 6);
+        fs::rename(&replacement, &path).expect("atomically replace the OCB pathname");
+
+        let batches = opened_clone
+            .read_batches(ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::parallel(2),
+            })
+            .expect("opened handle must continue reading the original identity");
+        assert_eq!(batches.len(), 2);
+        assert_eq!(
+            batches[0].columns[0].values,
+            PrimitiveColumnValues::I32(vec![10, 10, 10])
+        );
+        let validity = batches[0].columns[0]
+            .validity
+            .as_ref()
+            .expect("original validity bitmap remains bound");
+        assert_eq!(validity.row_count, 3);
+        assert_eq!(validity.bytes, vec![0b0000_0101]);
+
+        let reopened = ColumnBundleFile::open(&path).expect("reopen replacement OCB identity");
+        assert_eq!(reopened.row_count(), 8);
+        drop(reopened);
+        drop(opened_clone);
+        drop(opened);
+        cleanup(&path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cloned_parallel_projected_nullable_reads_keep_descriptor_count_bounded() {
+        use std::os::unix::fs::MetadataExt;
+
+        let path = fixture_path("column_bundle_descriptor_pressure");
+        cleanup(&path);
+        write_fixture_with_options(
+            &path,
+            FixtureOptions {
+                nullable_column_id: Some(0),
+                validity_ref_column_id: Some(0),
+                rows_per_group: Some(64),
+                ..FixtureOptions::default()
+            },
+        );
+        let identity = fs::metadata(&path).expect("stat descriptor fixture");
+        let matching_descriptors = || {
+            fs::read_dir("/proc/self/fd")
+                .expect("read Linux descriptor directory")
+                .filter_map(std::result::Result::ok)
+                .filter_map(|entry| fs::metadata(entry.path()).ok())
+                .filter(|metadata| {
+                    metadata.dev() == identity.dev() && metadata.ino() == identity.ino()
+                })
+                .count()
+        };
+        let baseline = matching_descriptors();
+
+        let bundle = ColumnBundleFile::open(&path).expect("open descriptor fixture");
+        let clones = (0..16).map(|_| bundle.clone()).collect::<Vec<_>>();
+        assert_eq!(matching_descriptors(), baseline + 1);
+        for clone in &clones {
+            let batches = clone
+                .read_batches(ColumnBundleReadRequest {
+                    projection: ColumnProjection::names([
+                        "partition_key",
+                        "order_key",
+                        "category_code",
+                    ]),
+                    predicates: Vec::new(),
+                    options: ColumnBundleReadOptions::parallel(4),
+                })
+                .expect("parallel projected nullable read");
+            assert_eq!(batches.len(), 2);
+            assert_eq!(batches[0].columns.len(), 3);
+            assert_eq!(
+                batches[0].columns[0]
+                    .validity
+                    .as_ref()
+                    .expect("nullable projection validity")
+                    .row_count,
+                64
+            );
+        }
+        assert_eq!(matching_descriptors(), baseline + 1);
+
+        drop(clones);
+        assert_eq!(matching_descriptors(), baseline + 1);
+        drop(bundle);
+        assert_eq!(matching_descriptors(), baseline);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn column_bundle_resource_limits_cover_owned_and_streaming_reads() {
+        let path = fixture_path("column_bundle_resource_limits");
+        write_fixture_with_options(
+            &path,
+            FixtureOptions {
+                rows_per_group: Some(1_024),
+                ..FixtureOptions::default()
+            },
+        );
+
+        let default_bundle = ColumnBundleFile::open(&path).expect("open with Policy A");
+        assert_eq!(
+            default_bundle.resource_limits(),
+            OcbResourceLimits::policy_a()
+        );
+        let default_plan = default_bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan fixture read");
+        let footprints = default_plan
+            .row_group_ids
+            .iter()
+            .map(|row_group_id| {
+                selected_resource_footprint_for_row_group(
+                    &default_bundle.metadata,
+                    *row_group_id,
+                    &default_plan.projected_column_ids,
+                )
+                .expect("resource footprint")
+            })
+            .collect::<Vec<_>>();
+        let max_row_decoded = footprints
+            .iter()
+            .map(|footprint| footprint.decoded_materialized_bytes)
+            .max()
+            .expect("fixture row group");
+        let max_row_compressed = footprints
+            .iter()
+            .map(|footprint| footprint.compressed_bytes)
+            .max()
+            .expect("fixture row group");
+        let total_compressed = footprints
+            .iter()
+            .map(|footprint| footprint.compressed_bytes)
+            .sum::<u64>();
+        let total_decoded = footprints
+            .iter()
+            .map(|footprint| footprint.decoded_materialized_bytes)
+            .sum::<u64>();
+        let open_auxiliary_encoded_bytes = default_bundle.metadata.open_auxiliary_encoded_bytes;
+        let open_metadata_materialized_bytes = default_bundle.open_metadata_materialized_bytes;
+        assert!(total_compressed > open_auxiliary_encoded_bytes);
+        assert!(total_decoded > open_metadata_materialized_bytes);
+        let exact_open_limits = OcbResourceLimits::policy_a()
+            .with_max_owned_selected_compressed_bytes(open_auxiliary_encoded_bytes)
+            .expect("exact open auxiliary-object limit")
+            .with_max_owned_decoded_materialized_bytes(open_metadata_materialized_bytes)
+            .expect("exact open metadata limit");
+        let exact_open_bundle =
+            ColumnBundleFile::open_with_resource_limits(&path, exact_open_limits)
+                .expect("open at exact independent open limits");
+        assert_eq!(
+            exact_open_bundle.metadata.open_auxiliary_encoded_bytes,
+            open_auxiliary_encoded_bytes
+        );
+        assert_eq!(
+            exact_open_bundle.open_metadata_materialized_bytes,
+            open_metadata_materialized_bytes
+        );
+        let auxiliary_open_err = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact_open_limits
+                .with_max_owned_selected_compressed_bytes(open_auxiliary_encoded_bytes - 1)
+                .expect("open auxiliary-object limit+1 policy"),
+        )
+        .expect_err("open auxiliary-object limit+1 must fail independently");
+        assert_eq!(
+            auxiliary_open_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        let metadata_open_err = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact_open_limits
+                .with_max_owned_decoded_materialized_bytes(open_metadata_materialized_bytes - 1)
+                .expect("open metadata limit+1 policy"),
+        )
+        .expect_err("open metadata limit+1 must fail independently");
+        assert_eq!(
+            metadata_open_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        let single_column_decoded = selected_resource_footprint_for_row_group(
+            &default_bundle.metadata,
+            default_plan.row_group_ids[0],
+            &[0],
+        )
+        .expect("single-column resource footprint")
+        .decoded_materialized_bytes;
+        let object_overhead = u64::from(OCB_COLUMN_CHUNK_V1_HEADER_LEN) + 4;
+        let max_chunk_compressed = default_bundle
+            .metadata
+            .row_group_index
+            .column_chunks
+            .iter()
+            .map(|chunk| chunk.value_ref.length - object_overhead)
+            .max()
+            .expect("fixture chunk");
+        let max_chunk_decoded = default_bundle
+            .metadata
+            .row_group_index
+            .column_chunks
+            .iter()
+            .map(|chunk| chunk.uncompressed_bytes)
+            .max()
+            .expect("fixture chunk");
+        let mut max_encoded_object = OCB_ROOT_V1_LEN as u64;
+        for reference in [
+            default_bundle.metadata.root.schema_ref,
+            default_bundle.metadata.root.dictionary_index_ref,
+            default_bundle.metadata.root.row_group_index_ref,
+            default_bundle.metadata.root.ordering_proof_ref,
+            default_bundle.metadata.root.debug_json_ref,
+            default_bundle.metadata.schema.string_table_ref,
+        ] {
+            if !reference.is_null() {
+                max_encoded_object = max_encoded_object.max(reference.length);
+            }
+        }
+        if let Some(index) = &default_bundle.metadata.dictionary_index {
+            for dictionary in &index.dictionaries {
+                max_encoded_object = max_encoded_object.max(dictionary.values_ref.length);
+            }
+        }
+        for row_group in &default_bundle.metadata.row_group_index.row_groups {
+            for reference in [row_group.first_key_tuple_ref, row_group.last_key_tuple_ref] {
+                if !reference.is_null() {
+                    max_encoded_object = max_encoded_object.max(reference.length);
+                }
+            }
+        }
+        for chunk in &default_bundle.metadata.row_group_index.column_chunks {
+            max_encoded_object = max_encoded_object.max(chunk.value_ref.length);
+            if !chunk.validity_ref.is_null() {
+                max_encoded_object = max_encoded_object.max(chunk.validity_ref.length);
+            }
+        }
+
+        let exact = OcbResourceLimits::new(
+            max_encoded_object,
+            max_chunk_compressed,
+            max_chunk_decoded,
+            max_row_decoded,
+            total_compressed,
+            total_decoded,
+        )
+        .expect("exact fixture limits");
+        let exact_bundle = ColumnBundleFile::open_with_options_and_resource_limits(
+            &path,
+            ColumnBundleOpenOptions::default(),
+            exact,
+        )
+        .expect("open with exact limits");
+        assert_eq!(exact_bundle.resource_limits(), exact);
+        let exact_plan = exact_bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan exact read");
+        assert_eq!(
+            exact_bundle
+                .read_plan_batches(&exact_plan)
+                .expect("read at exact limits")
+                .batches
+                .len(),
+            2
+        );
+        exact_bundle
+            .dictionary_values(0)
+            .expect("dictionary cold path honors exact custom limits");
+        let first_row_count =
+            usize::try_from(default_bundle.metadata.row_group_index.row_groups[0].row_count)
+                .expect("fixture row count fits usize");
+        let mut exact_fill_values = vec![0i32; first_row_count];
+        exact_bundle
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("partition_key"),
+                    column_id: Some(0),
+                    values: PrimitiveColumnValuesMut::I32(&mut exact_fill_values),
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect("direct fill honors exact custom limits");
+        let fill_limited = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_projected_row_group_bytes(single_column_decoded - 1)
+                .expect("direct-fill limit+1 policy"),
+        )
+        .expect("direct-fill budget is projection-specific");
+        let mut limited_fill_values = vec![0i32; first_row_count];
+        let fill_err = fill_limited
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("partition_key"),
+                    column_id: Some(0),
+                    values: PrimitiveColumnValuesMut::I32(&mut limited_fill_values),
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect_err("direct-fill limit+1 must fail before payload I/O");
+        assert_eq!(
+            fill_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(
+            exact_bundle
+                .read_plan_batches_with_attribution(&exact_plan)
+                .expect("attributed read at exact limits")
+                .outcome
+                .batches
+                .len(),
+            2
+        );
+
+        let object_err = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_encoded_object_bytes(max_encoded_object - 1)
+                .expect("encoded-object limit+1 policy"),
+        )
+        .expect_err("encoded object limit+1 must fail at open");
+        assert_eq!(
+            object_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        let compressed_err = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_compressed_chunk_bytes(max_chunk_compressed - 1)
+                .expect("compressed limit+1 policy"),
+        )
+        .expect_err("compressed limit+1 must fail at open");
+        assert_eq!(
+            compressed_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        let decoded_err = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_decompressed_chunk_bytes(max_chunk_decoded - 1)
+                .expect("decoded limit+1 policy"),
+        )
+        .expect_err("decoded limit+1 must fail at open");
+        assert_eq!(
+            decoded_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        let row_limited = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_projected_row_group_bytes(max_row_decoded - 1)
+                .expect("row limit+1 policy"),
+        )
+        .expect("row budget is projection-specific");
+        let row_plan = row_limited
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan row-limited read");
+        let row_err = row_limited
+            .read_plan_batches(&row_plan)
+            .expect_err("projected row limit+1 must fail before reads");
+        assert_eq!(
+            row_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        let compressed_owned_bundle = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_owned_selected_compressed_bytes(total_compressed - 1)
+                .expect("owned compressed limit+1 policy"),
+        )
+        .expect("owned compressed budget is request-specific");
+        let compressed_owned_plan = compressed_owned_bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan compressed-owned-limited read");
+        let compressed_owned_err = compressed_owned_bundle
+            .read_plan_batches(&compressed_owned_plan)
+            .expect_err("owned compressed limit+1 must fail");
+        assert_eq!(
+            compressed_owned_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        let decoded_owned_bundle = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact
+                .with_max_owned_decoded_materialized_bytes(total_decoded - 1)
+                .expect("owned decoded limit+1 policy"),
+        )
+        .expect("owned decoded budget is request-specific");
+        let decoded_owned_plan = decoded_owned_bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan decoded-owned-limited read");
+        let decoded_owned_err = decoded_owned_bundle
+            .read_plan_batches(&decoded_owned_plan)
+            .expect_err("owned decoded limit+1 must fail");
+        assert_eq!(
+            decoded_owned_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        let streaming_limits = exact
+            .with_max_owned_selected_compressed_bytes(max_row_compressed)
+            .expect("streaming compressed budget")
+            .with_max_owned_decoded_materialized_bytes(max_row_decoded)
+            .expect("streaming decoded budget");
+        let streaming_bundle = ColumnBundleFile::open_with_resource_limits(&path, streaming_limits)
+            .expect("open streaming limits");
+        assert_eq!(streaming_bundle.resource_limits(), streaming_limits);
+        let streaming_plan = streaming_bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::All,
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan streaming read");
+        let owned_err = streaming_bundle
+            .read_plan_batches(&streaming_plan)
+            .expect_err("owned lifetime total must fail");
+        assert_eq!(
+            owned_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        assert_eq!(
+            streaming_bundle
+                .read_plan_row_groups(&streaming_plan, &[streaming_plan.row_group_ids[0]])
+                .expect("one-row-group subset fits streaming budget")
+                .batches
+                .len(),
+            1
+        );
+        let mut visited = 0usize;
+        let report = streaming_bundle
+            .visit_plan_batches(
+                &streaming_plan,
+                ColumnBundleReadCursorOptions {
+                    max_in_flight_row_groups: 1,
+                    ..ColumnBundleReadCursorOptions::default()
+                },
+                |_| {
+                    visited += 1;
+                    Ok(ColumnBundleVisitControl::Continue)
+                },
+            )
+            .expect("streaming path charges one simultaneous row group");
+        assert_eq!(visited, 2);
+        assert_eq!(report.batches_yielded, 2);
+        assert_eq!(
+            streaming_bundle
+                .reusable_buffer_pool_for_plan(&streaming_plan, 1, false)
+                .expect("one reusable slot fits one-row-group budget")
+                .len(),
+            1
+        );
+        let pool_err = streaming_bundle
+            .reusable_buffer_pool_for_plan(&streaming_plan, 2, false)
+            .expect_err("two reusable slots must exceed one-row-group budget");
+        assert_eq!(
+            pool_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        let huge_pool_err = streaming_bundle
+            .reusable_buffer_pool_for_plan(&streaming_plan, usize::MAX, false)
+            .expect_err("unbounded reusable slot request must fail before allocation");
+        assert_eq!(
+            huge_pool_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn sliding_in_flight_accounting_matches_ordered_scheduler_windows() {
+        let limits = OcbResourceLimits::new(64, 64, 64, 64, 8, 8).expect("window limits");
+        let footprints = [
+            SelectedResourceFootprint {
+                compressed_bytes: 8,
+                decoded_materialized_bytes: 8,
+                row_count: 1,
+            },
+            SelectedResourceFootprint::default(),
+            SelectedResourceFootprint::default(),
+            SelectedResourceFootprint {
+                compressed_bytes: 8,
+                decoded_materialized_bytes: 8,
+                row_count: 1,
+            },
+        ];
+        validate_sliding_resource_footprints(&footprints, 2, limits)
+            .expect("every ordered two-row window fits");
+        let err = validate_sliding_resource_footprints(&footprints, 4, limits)
+            .expect_err("four-row window exceeds aggregate limits");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::InvalidInput));
+    }
+
+    #[test]
+    fn resource_accounting_includes_selected_validity_bytes() {
+        let path = fixture_path("column_bundle_resource_validity");
+        write_fixture_with_options(
+            &path,
+            FixtureOptions {
+                nullable_column_id: Some(0),
+                validity_ref_column_id: Some(0),
+                rows_per_group: Some(1_024),
+                ..FixtureOptions::default()
+            },
+        );
+        let bundle = ColumnBundleFile::open(&path).expect("open nullable fixture");
+        let plan = bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .expect("plan nullable projection");
+        let footprints = selected_resource_footprints_for_plan(&bundle.metadata, &plan)
+            .expect("nullable footprints");
+        for (row_group_id, footprint) in plan.row_group_ids.iter().zip(footprints.iter()) {
+            let chunk = bundle
+                .metadata
+                .row_group_index
+                .column_chunks
+                .iter()
+                .find(|chunk| chunk.row_group_id == *row_group_id && chunk.column_id == 0)
+                .expect("nullable selected chunk");
+            let encoded_payload =
+                chunk.value_ref.length - (u64::from(OCB_COLUMN_CHUNK_V1_HEADER_LEN) + 4);
+            assert_eq!(
+                footprint.compressed_bytes,
+                encoded_payload + chunk.validity_ref.length
+            );
+            assert_eq!(
+                footprint.decoded_materialized_bytes,
+                chunk.uncompressed_bytes + chunk.validity_ref.length
+            );
+        }
+        let max_row = footprints
+            .iter()
+            .map(|footprint| footprint.decoded_materialized_bytes)
+            .max()
+            .unwrap();
+        let total_compressed = footprints
+            .iter()
+            .map(|footprint| footprint.compressed_bytes)
+            .sum();
+        let total_decoded = footprints
+            .iter()
+            .map(|footprint| footprint.decoded_materialized_bytes)
+            .sum();
+        let limits = OcbResourceLimits::policy_a()
+            .with_max_projected_row_group_bytes(max_row)
+            .unwrap()
+            .with_max_owned_selected_compressed_bytes(total_compressed)
+            .unwrap()
+            .with_max_owned_decoded_materialized_bytes(total_decoded)
+            .unwrap();
+        let exact = ColumnBundleFile::open_with_resource_limits(&path, limits)
+            .expect("open exact validity policy");
+        let exact_plan = exact
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::serial(),
+            })
+            .unwrap();
+        assert_eq!(
+            exact.read_plan_batches(&exact_plan).unwrap().batches.len(),
+            2
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn v1_and_v2_full_payload_validate_zstd_payloads() {
+        for (fixture_name, rewrite_as_v2) in [
+            ("column_bundle_v1_full_payload_zstd", false),
+            ("column_bundle_v2_full_payload_zstd", true),
+        ] {
+            let path = fixture_path(fixture_name);
+            write_summary_fixture(&path);
+            if rewrite_as_v2 {
+                rewrite_fixture_as_v2_with_dual_roots(&path);
+            }
+
+            ColumnBundleFile::open_with_options_and_resource_limits(
+                &path,
+                ColumnBundleOpenOptions {
+                    validation: ColumnBundleOpenValidation::FullPayload,
+                },
+                OcbResourceLimits::policy_a(),
+            )
+            .expect("valid zstd fixture must pass FullPayload validation");
+            let bundle = ColumnBundleFile::open(&path).expect("open fixture metadata graph");
+            let zstd_chunk = bundle
+                .metadata
+                .row_group_index
+                .column_chunks
+                .iter()
+                .find(|chunk| chunk.codec == OcbChunkCodecV1::Zstd)
+                .expect("zstd fixture chunk");
+            let payload_offset =
+                zstd_chunk.value_ref.offset + u64::from(OCB_COLUMN_CHUNK_V1_HEADER_LEN);
+            drop(bundle);
+
+            let mut file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("open fixture for corruption");
+            file.seek(SeekFrom::Start(payload_offset))
+                .expect("seek zstd payload");
+            let mut byte = [0u8; 1];
+            std::io::Read::read_exact(&mut file, &mut byte).expect("read zstd payload byte");
+            file.seek(SeekFrom::Start(payload_offset))
+                .expect("seek zstd payload again");
+            file.write_all(&[byte[0] ^ 0x5a])
+                .expect("corrupt zstd payload byte");
+            drop(file);
+
+            ColumnBundleFile::open(&path).expect("metadata graph does not read payload bodies");
+            let err = ColumnBundleFile::open_with_options_and_resource_limits(
+                &path,
+                ColumnBundleOpenOptions {
+                    validation: ColumnBundleOpenValidation::FullPayload,
+                },
+                OcbResourceLimits::policy_a(),
+            )
+            .expect_err("FullPayload must validate zstd payload bytes");
+            assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::CorruptFile));
+
+            cleanup(&path);
+        }
+    }
+
     #[test]
     fn column_bundle_opens_v2_latest_root_slot() {
         let path = fixture_path("column_bundle_v2_latest_root");
@@ -6820,6 +8460,56 @@ mod tests {
     }
 
     #[test]
+    fn v2_fallback_propagates_policy_and_unsupported_errors() {
+        let corrupt_path = fixture_path("column_bundle_v2_corrupt_latest_fallback");
+        write_fixture(&corrupt_path);
+        rewrite_fixture_as_v2_with_latest_case(&corrupt_path, V2LatestFixtureCase::Corrupt);
+        let fallback = ColumnBundleFile::open(&corrupt_path)
+            .expect("corrupt latest candidate must fall back to valid older root");
+        assert_eq!(fallback.metadata.root_generation, 1);
+        cleanup(&corrupt_path);
+
+        let policy_path = fixture_path("column_bundle_v2_policy_no_fallback");
+        write_fixture(&policy_path);
+        rewrite_fixture_as_v2_with_latest_case(
+            &policy_path,
+            V2LatestFixtureCase::DebugObject(4096),
+        );
+        let exact = OcbResourceLimits::policy_a()
+            .with_max_encoded_object_bytes(4096)
+            .expect("exact debug-object limit");
+        let latest = ColumnBundleFile::open_with_resource_limits(&policy_path, exact)
+            .expect("exact debug-object limit must select latest root");
+        assert_eq!(latest.metadata.root_generation, 2);
+        let policy_err = ColumnBundleFile::open_with_resource_limits(
+            &policy_path,
+            exact
+                .with_max_encoded_object_bytes(4095)
+                .expect("debug-object limit+1 policy"),
+        )
+        .expect_err("policy failure must not fall back to an older root");
+        assert_eq!(
+            policy_err.ocb_failure_cause(),
+            Some(OcbFailureCause::InvalidInput)
+        );
+        cleanup(&policy_path);
+
+        let unsupported_path = fixture_path("column_bundle_v2_unsupported_no_fallback");
+        write_fixture(&unsupported_path);
+        rewrite_fixture_as_v2_with_latest_case(
+            &unsupported_path,
+            V2LatestFixtureCase::UnsupportedVersion,
+        );
+        let unsupported_err = ColumnBundleFile::open(&unsupported_path)
+            .expect_err("unsupported latest root must not fall back");
+        assert_eq!(
+            unsupported_err.ocb_failure_cause(),
+            Some(OcbFailureCause::UnsupportedFormat)
+        );
+        cleanup(&unsupported_path);
+    }
+
+    #[test]
     fn column_bundle_decodes_dictionary_values_on_cold_path() {
         let path = fixture_path("column_bundle_dictionary_values");
         write_fixture(&path);
@@ -6834,6 +8524,94 @@ mod tests {
             DictionaryValues::Utf8(vec!["alpha".into(), "beta".into()])
         );
 
+        let dictionary_materialized_bytes = 2 * std::mem::size_of::<Vec<u8>>() as u64
+            + (b"alpha".len() + b"beta".len()) as u64
+            + 2 * std::mem::size_of::<String>() as u64
+            + "category_dictionary".len() as u64;
+        let mut exact_bundle = bundle.clone();
+        exact_bundle.resource_limits = exact_bundle
+            .resource_limits
+            .with_max_owned_decoded_materialized_bytes(dictionary_materialized_bytes)
+            .expect("exact dictionary materialization limit");
+        exact_bundle
+            .dictionary_values(0)
+            .expect("dictionary cold path fits exact materialization limit");
+        let mut limited_bundle = bundle;
+        limited_bundle.resource_limits = limited_bundle
+            .resource_limits
+            .with_max_owned_decoded_materialized_bytes(dictionary_materialized_bytes - 1)
+            .expect("dictionary materialization limit+1 policy");
+        let err = limited_bundle
+            .dictionary_values(0)
+            .expect_err("dictionary cold path limit+1 must fail");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::InvalidInput));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn fixed_projection_resource_limits_charge_repeated_fields() {
+        let path = fixture_path("column_bundle_fixed_projection_resource_limits");
+        write_summary_fixture(&path);
+        let default_bundle = ColumnBundleFile::open(&path).expect("open summary fixture");
+        let request = ColumnBundleReadRequest {
+            projection: ColumnProjection::names(["partition_key", "payload"]),
+            predicates: Vec::new(),
+            options: ColumnBundleReadOptions::serial(),
+        };
+        let default_plan = default_bundle
+            .plan_read(&request)
+            .expect("plan summary fixture");
+        let base_row_bytes =
+            selected_resource_footprints_for_plan(&default_bundle.metadata, &default_plan)
+                .expect("base projection footprints")
+                .into_iter()
+                .map(|footprint| footprint.decoded_materialized_bytes)
+                .max()
+                .expect("summary row group");
+        let row_capacity = max_row_count_for_plan(&default_bundle.metadata, &default_plan)
+            .expect("summary row capacity") as u64;
+        let repeated_fields = 4u64;
+        let projection = FixedBinaryRecordProjection::by_column_name("payload", 2).fields(
+            (0..repeated_fields)
+                .map(|index| {
+                    FixedBinaryProjectedField::new(0, FixedBinaryFieldType::U8)
+                        .with_name(format!("duplicate_{index}"))
+                })
+                .collect::<Vec<_>>(),
+        );
+        let exact_projected_bytes = base_row_bytes + row_capacity * repeated_fields;
+        let exact_limits = OcbResourceLimits::policy_a()
+            .with_max_projected_row_group_bytes(exact_projected_bytes)
+            .expect("exact fixed-projection policy");
+        let exact_bundle = ColumnBundleFile::open_with_resource_limits(&path, exact_limits)
+            .expect("open exact fixed-projection policy");
+        let exact_plan = exact_bundle
+            .plan_read(&request)
+            .expect("plan exact projection");
+        assert_eq!(
+            exact_bundle
+                .fixed_binary_projection_buffer_for_plan(&exact_plan, &projection)
+                .expect("exact repeated-field projection")
+                .fields
+                .len(),
+            repeated_fields as usize
+        );
+
+        let limited_bundle = ColumnBundleFile::open_with_resource_limits(
+            &path,
+            exact_limits
+                .with_max_projected_row_group_bytes(exact_projected_bytes - 1)
+                .expect("fixed-projection limit+1 policy"),
+        )
+        .expect("fixed-projection budget is request-specific");
+        let limited_plan = limited_bundle
+            .plan_read(&request)
+            .expect("plan limited projection");
+        let err = limited_bundle
+            .fixed_binary_projection_buffer_for_plan(&limited_plan, &projection)
+            .expect_err("repeated-field materialization limit+1 must fail");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::InvalidInput));
         cleanup(&path);
     }
 
@@ -7936,6 +9714,180 @@ mod tests {
     }
 
     #[test]
+    fn uncompressed_fixed_binary_fill_reads_directly_and_preserves_crc_error_order() {
+        let path = fixture_path("column_bundle_direct_fixed_binary_fill");
+        write_summary_fixture_with_codec(&path, OcbChunkCodecV1::None);
+        let bundle = ColumnBundleFile::open(&path).expect("open uncompressed fixture");
+        let chunk = *bundle
+            .metadata
+            .row_group_index
+            .column_chunks
+            .iter()
+            .find(|chunk| chunk.row_group_id == 0 && chunk.column_id == 1)
+            .expect("fixed-binary chunk");
+
+        let direct_before = uncompressed_fixed_binary_direct_fill_count_for_test();
+        let mut payload = [0u8; 6];
+        bundle
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("payload"),
+                    column_id: Some(1),
+                    values: PrimitiveColumnValuesMut::FixedBinary {
+                        width: 2,
+                        bytes: &mut payload,
+                    },
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect("direct fixed-binary fill");
+        assert_eq!(&payload, b"aabbcc");
+        assert_eq!(
+            uncompressed_fixed_binary_direct_fill_count_for_test(),
+            direct_before + 1
+        );
+
+        let attributed_before = uncompressed_fixed_binary_direct_fill_count_for_test();
+        let mut attributed_payload = [0u8; 6];
+        let (_, attribution) = read_row_group_into_with_attribution(
+            bundle.read_source(),
+            &bundle.metadata,
+            &bundle.columns,
+            0,
+            &mut [ColumnBundleColumnFillBuffer {
+                column_name: Some("payload"),
+                column_id: Some(1),
+                values: PrimitiveColumnValuesMut::FixedBinary {
+                    width: 2,
+                    bytes: &mut attributed_payload,
+                },
+                validity_bytes: None,
+                allow_nulls: false,
+            }],
+        )
+        .expect("attributed direct fixed-binary fill");
+        assert_eq!(&attributed_payload, b"aabbcc");
+        assert_eq!(
+            uncompressed_fixed_binary_direct_fill_count_for_test(),
+            attributed_before + 1
+        );
+        assert_eq!(attribution.bytes_read, chunk.value_ref.length);
+        assert_eq!(attribution.compressed_bytes, 6);
+        assert_eq!(attribution.uncompressed_bytes, 6);
+        assert_eq!(attribution.copy_materialization, Duration::ZERO);
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open direct-fill fixture for header corruption");
+        file.seek(SeekFrom::Start(chunk.value_ref.offset + 24))
+            .expect("seek chunk column id");
+        file.write_all(&99u32.to_le_bytes())
+            .expect("corrupt chunk column id");
+        drop(file);
+        let mut rejected = [0u8; 6];
+        let err = bundle
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("payload"),
+                    column_id: Some(1),
+                    values: PrimitiveColumnValuesMut::FixedBinary {
+                        width: 2,
+                        bytes: &mut rejected,
+                    },
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect_err("structural header mismatch must reject before CRC checks");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::CorruptFile));
+        assert!(err.to_string().contains("object does not match descriptor"));
+        cleanup(&path);
+
+        let crc_path = fixture_path("column_bundle_direct_fixed_binary_crc");
+        write_summary_fixture_with_codec(&crc_path, OcbChunkCodecV1::None);
+        let mut crc_bundle =
+            ColumnBundleFile::open(&crc_path).expect("open direct-fill CRC fixture");
+        let chunk_index = crc_bundle
+            .metadata
+            .row_group_index
+            .column_chunks
+            .iter()
+            .position(|chunk| chunk.row_group_id == 0 && chunk.column_id == 1)
+            .expect("fixed-binary CRC chunk");
+        let crc_chunk = crc_bundle.metadata.row_group_index.column_chunks[chunk_index];
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&crc_path)
+            .expect("open direct-fill fixture for payload corruption");
+        let payload_offset = crc_chunk.value_ref.offset + u64::from(OCB_COLUMN_CHUNK_V1_HEADER_LEN);
+        file.seek(SeekFrom::Start(payload_offset))
+            .expect("seek direct-fill payload");
+        let mut first_byte = [0u8; 1];
+        std::io::Read::read_exact(&mut file, &mut first_byte)
+            .expect("read direct-fill payload byte");
+        file.seek(SeekFrom::Start(payload_offset))
+            .expect("seek direct-fill payload again");
+        file.write_all(&[first_byte[0] ^ 0x5a])
+            .expect("corrupt direct-fill payload");
+        drop(file);
+
+        let mut rejected = [0u8; 6];
+        let err = crc_bundle
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("payload"),
+                    column_id: Some(1),
+                    values: PrimitiveColumnValuesMut::FixedBinary {
+                        width: 2,
+                        bytes: &mut rejected,
+                    },
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect_err("body-reference checksum must reject corrupted direct payload");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::CorruptFile));
+        assert!(err.to_string().contains("body reference checksum mismatch"));
+
+        let file_bytes = fs::read(&crc_path).expect("read corrupted chunk object");
+        let object_start = crc_chunk.value_ref.offset as usize;
+        let object_end = object_start + crc_chunk.value_ref.length as usize;
+        Arc::make_mut(&mut crc_bundle.metadata)
+            .row_group_index
+            .column_chunks[chunk_index]
+            .value_ref
+            .checksum = crc32c(&file_bytes[object_start..object_end]);
+        let err = crc_bundle
+            .read_row_group_into(
+                0,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("payload"),
+                    column_id: Some(1),
+                    values: PrimitiveColumnValuesMut::FixedBinary {
+                        width: 2,
+                        bytes: &mut rejected,
+                    },
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect_err("embedded chunk CRC must reject after body checksum passes");
+        assert_eq!(err.ocb_failure_cause(), Some(OcbFailureCause::CorruptFile));
+        assert!(err.to_string().contains("column chunk crc mismatch"));
+        cleanup(&crc_path);
+    }
+
+    #[test]
     fn column_bundle_read_row_group_into_rejects_bad_buffers() {
         let path = fixture_path("column_bundle_read_row_group_into_bad_buffers");
         write_fixture(&path);
@@ -8238,14 +10190,8 @@ mod tests {
                 ..FixtureOptions::default()
             },
         );
-        let bundle = ColumnBundleFile::open(&path).expect("open OCB fixture");
-        let err = bundle
-            .read_batches(ColumnBundleReadRequest {
-                projection: ColumnProjection::names(["partition_key"]),
-                predicates: Vec::new(),
-                options: ColumnBundleReadOptions::serial(),
-            })
-            .expect_err("non-null validity rejected");
+        let err = ColumnBundleFile::open(&path)
+            .expect_err("metadata graph must reject non-null validity on non-null column");
         assert_eq!(
             err.ocb_failure_cause(),
             Some(crate::OcbFailureCause::CorruptFile)
@@ -8264,19 +10210,13 @@ mod tests {
                 ..FixtureOptions::default()
             },
         );
-        let bundle = ColumnBundleFile::open(&path).expect("open OCB fixture");
-        let err = bundle
-            .read_batches(ColumnBundleReadRequest {
-                projection: ColumnProjection::names(["partition_key"]),
-                predicates: Vec::new(),
-                options: ColumnBundleReadOptions::serial(),
-            })
-            .expect_err("wrong row group chunks");
+        let err = ColumnBundleFile::open(&path)
+            .expect_err("metadata graph must reject wrong row-group chunk range");
         assert_eq!(
             err.ocb_failure_cause(),
             Some(crate::OcbFailureCause::CorruptFile)
         );
-        assert!(err.to_string().contains("different row group"));
+        assert!(err.to_string().contains("row-group chunk descriptor"));
         cleanup(&path);
     }
 
@@ -8295,6 +10235,14 @@ mod tests {
         nullable_column_id: Option<u32>,
         validity_ref_column_id: Option<u32>,
         row_group0_chunk_desc_begin: Option<u64>,
+        rows_per_group: Option<usize>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum V2LatestFixtureCase {
+        Corrupt,
+        DebugObject(usize),
+        UnsupportedVersion,
     }
 
     fn write_fixture(path: &Path) {
@@ -8346,6 +10294,71 @@ mod tests {
         fs::write(path, file_bytes).expect("write v2 fixture bytes");
     }
 
+    fn rewrite_fixture_as_v2_with_latest_case(path: &Path, case: V2LatestFixtureCase) {
+        let mut file_bytes = fs::read(path).expect("read v1 fixture bytes");
+        let bootstrap = OcbBootstrapPageV1::read_from(Cursor::new(file_bytes.as_slice()))
+            .expect("read v1 bootstrap");
+        let root_start = bootstrap.root_ref.offset as usize;
+        let root_end = root_start + bootstrap.root_ref.length as usize;
+        let base_root = OcbRootV1::read_from(Cursor::new(&file_bytes[root_start..root_end]))
+            .expect("read v1 root");
+
+        let older_root = root_v2_from_v1(&base_root, 1, 0, OcbBodyRefV2::NULL);
+        let older_root_ref = append_encoded_object(&mut file_bytes, OcbBodyKindV1::Root, |buf| {
+            older_root.write_to(buf)
+        });
+        let mut latest_root = root_v2_from_v1(&base_root, 2, 1, older_root_ref);
+        match case {
+            V2LatestFixtureCase::Corrupt => latest_root.row_count = 999,
+            V2LatestFixtureCase::DebugObject(len) => {
+                latest_root.debug_json_ref = append_raw_object(
+                    &mut file_bytes,
+                    OcbBodyKindV1::DebugJsonMetadata,
+                    vec![b'x'; len],
+                );
+            }
+            V2LatestFixtureCase::UnsupportedVersion => {}
+        }
+        let latest_root_ref = if matches!(case, V2LatestFixtureCase::UnsupportedVersion) {
+            let mut object = Vec::new();
+            latest_root
+                .write_to(&mut object)
+                .expect("encode latest root");
+            object[8..10].copy_from_slice(&99u16.to_le_bytes());
+            let checksum_offset = object.len() - 4;
+            object[checksum_offset..].fill(0);
+            let checksum = crc32c(&object);
+            object[checksum_offset..].copy_from_slice(&checksum.to_le_bytes());
+            append_raw_object(&mut file_bytes, OcbBodyKindV1::Root, object)
+        } else {
+            append_encoded_object(&mut file_bytes, OcbBodyKindV1::Root, |buf| {
+                latest_root.write_to(buf)
+            })
+        };
+
+        let bootstrap = OcbBootstrapPageV2::new(
+            [78u8; 16],
+            [
+                OcbRootSlotV2::new(
+                    0,
+                    1,
+                    older_root_ref,
+                    0,
+                    OcbBodyRefV2::NULL,
+                    OcbBodyRefV2::NULL,
+                ),
+                OcbRootSlotV2::new(1, 2, latest_root_ref, 1, older_root_ref, OcbBodyRefV2::NULL),
+            ],
+        )
+        .expect("build v2 bootstrap");
+        let mut bootstrap_bytes = Vec::new();
+        bootstrap
+            .write_to(&mut bootstrap_bytes)
+            .expect("write v2 bootstrap");
+        file_bytes[..OCB_BOOTSTRAP_PAGE_V1_LEN].copy_from_slice(&bootstrap_bytes);
+        fs::write(path, file_bytes).expect("write v2 fallback fixture bytes");
+    }
+
     fn root_v2_from_v1(
         root: &OcbRootV1,
         generation: u64,
@@ -8384,6 +10397,10 @@ mod tests {
     }
 
     fn write_summary_fixture(path: &Path) {
+        write_summary_fixture_with_codec(path, OcbChunkCodecV1::Zstd);
+    }
+
+    fn write_summary_fixture_with_codec(path: &Path, fixed_binary_codec: OcbChunkCodecV1) {
         let mut file_bytes = vec![0u8; OCB_BOOTSTRAP_PAGE_V1_LEN];
 
         let rg0_partition =
@@ -8394,7 +10411,7 @@ mod tests {
             1,
             2,
             &[b"aa".as_slice(), b"bb".as_slice(), b"cc".as_slice()],
-            OcbChunkCodecV1::Zstd,
+            fixed_binary_codec,
         );
         let rg1_partition =
             append_chunk(&mut file_bytes, 1, 0, OcbPhysicalTypeV1::I32, &[11, 11, 11]);
@@ -8404,7 +10421,7 @@ mod tests {
             1,
             2,
             &[b"dd".as_slice(), b"ee".as_slice(), b"ff".as_slice()],
-            OcbChunkCodecV1::Zstd,
+            fixed_binary_codec,
         );
 
         let string_table = OcbStringTableV1 {
@@ -8471,7 +10488,7 @@ mod tests {
                     0,
                     1,
                     OcbPhysicalTypeV1::FixedBinary,
-                    OcbChunkCodecV1::Zstd,
+                    fixed_binary_codec,
                     rg0_payload,
                     3,
                     6,
@@ -8481,7 +10498,7 @@ mod tests {
                     1,
                     1,
                     OcbPhysicalTypeV1::FixedBinary,
-                    OcbChunkCodecV1::Zstd,
+                    fixed_binary_codec,
                     rg1_payload,
                     3,
                     6,
@@ -8554,15 +10571,57 @@ mod tests {
 
     fn write_fixture_with_options(path: &Path, options: FixtureOptions) {
         let mut file_bytes = vec![0u8; OCB_BOOTSTRAP_PAGE_V1_LEN];
+        let rows_per_group = options.rows_per_group.unwrap_or(3);
+        assert!(rows_per_group > 0, "fixture row groups must be non-empty");
+        let row_count = u64::try_from(rows_per_group).expect("fixture row count fits u64");
+        let total_row_count = row_count
+            .checked_mul(2)
+            .expect("fixture total row count does not overflow");
+        let rg0_partition_values = vec![10; rows_per_group];
+        let rg0_order_values = (0..rows_per_group)
+            .map(|index| 100 + i64::try_from(index).expect("fixture index fits i64"))
+            .collect::<Vec<_>>();
+        let rg0_category_values = (0..rows_per_group)
+            .map(|index| [1, 1, 2][index % 3])
+            .collect::<Vec<_>>();
+        let rg1_partition_values = vec![11; rows_per_group];
+        let rg1_order_values = (0..rows_per_group)
+            .map(|index| 200 + i64::try_from(index).expect("fixture index fits i64"))
+            .collect::<Vec<_>>();
+        let rg1_category_values = (0..rows_per_group)
+            .map(|index| [1, 2, 2][index % 3])
+            .collect::<Vec<_>>();
 
-        let rg0_partition =
-            append_chunk(&mut file_bytes, 0, 0, OcbPhysicalTypeV1::I32, &[10, 10, 10]);
-        let rg0_order = append_chunk_i64(&mut file_bytes, 0, 1, &[100, 101, 102]);
-        let rg0_category = append_chunk(&mut file_bytes, 0, 2, OcbPhysicalTypeV1::I32, &[1, 1, 2]);
-        let rg1_partition =
-            append_chunk(&mut file_bytes, 1, 0, OcbPhysicalTypeV1::I32, &[11, 11, 11]);
-        let rg1_order = append_chunk_i64(&mut file_bytes, 1, 1, &[200, 201, 202]);
-        let rg1_category = append_chunk(&mut file_bytes, 1, 2, OcbPhysicalTypeV1::I32, &[1, 2, 2]);
+        let rg0_partition = append_chunk(
+            &mut file_bytes,
+            0,
+            0,
+            OcbPhysicalTypeV1::I32,
+            &rg0_partition_values,
+        );
+        let rg0_order = append_chunk_i64(&mut file_bytes, 0, 1, &rg0_order_values);
+        let rg0_category = append_chunk(
+            &mut file_bytes,
+            0,
+            2,
+            OcbPhysicalTypeV1::I32,
+            &rg0_category_values,
+        );
+        let rg1_partition = append_chunk(
+            &mut file_bytes,
+            1,
+            0,
+            OcbPhysicalTypeV1::I32,
+            &rg1_partition_values,
+        );
+        let rg1_order = append_chunk_i64(&mut file_bytes, 1, 1, &rg1_order_values);
+        let rg1_category = append_chunk(
+            &mut file_bytes,
+            1,
+            2,
+            OcbPhysicalTypeV1::I32,
+            &rg1_category_values,
+        );
 
         let dictionary_values = OcbDictionaryValuesV1 {
             version: 1,
@@ -8651,11 +10710,11 @@ mod tests {
             });
 
         let forced_validity_ref = if options.validity_ref_column_id.is_some() {
-            append_raw_object(
-                &mut file_bytes,
-                OcbBodyKindV1::ValidityBitmap,
-                vec![0b0000_0101],
-            )
+            let mut validity = vec![0u8; rows_per_group.div_ceil(8)];
+            for row in (0..rows_per_group).step_by(2) {
+                validity[row / 8] |= 1 << (row % 8);
+            }
+            append_raw_object(&mut file_bytes, OcbBodyKindV1::ValidityBitmap, validity)
         } else {
             OcbBodyRefV2::NULL
         };
@@ -8675,7 +10734,7 @@ mod tests {
                     row_group_id: 0,
                     flags: 0,
                     base_row: 0,
-                    row_count: 3,
+                    row_count,
                     chunk_desc_begin: options.row_group0_chunk_desc_begin.unwrap_or(0),
                     chunk_desc_count: 3,
                     stat_begin: 0,
@@ -8686,8 +10745,8 @@ mod tests {
                 OcbRowGroupDescV1 {
                     row_group_id: 1,
                     flags: 0,
-                    base_row: 3,
-                    row_count: 3,
+                    base_row: row_count,
+                    row_count,
                     chunk_desc_begin: 3,
                     chunk_desc_count: 3,
                     stat_begin: 2,
@@ -8703,7 +10762,7 @@ mod tests {
                     OcbPhysicalTypeV1::I32,
                     rg0_partition,
                     validity_ref_for(0, 0),
-                    3,
+                    row_count,
                 ),
                 chunk_desc_with_validity(
                     0,
@@ -8711,7 +10770,7 @@ mod tests {
                     OcbPhysicalTypeV1::I64,
                     rg0_order,
                     validity_ref_for(0, 1),
-                    3,
+                    row_count,
                 ),
                 chunk_desc_with_validity(
                     0,
@@ -8719,17 +10778,31 @@ mod tests {
                     OcbPhysicalTypeV1::I32,
                     rg0_category,
                     validity_ref_for(0, 2),
-                    3,
+                    row_count,
                 ),
-                chunk_desc(1, 0, OcbPhysicalTypeV1::I32, rg1_partition, 3),
-                chunk_desc(1, 1, OcbPhysicalTypeV1::I64, rg1_order, 3),
-                chunk_desc(1, 2, OcbPhysicalTypeV1::I32, rg1_category, 3),
+                chunk_desc(1, 0, OcbPhysicalTypeV1::I32, rg1_partition, row_count),
+                chunk_desc(1, 1, OcbPhysicalTypeV1::I64, rg1_order, row_count),
+                chunk_desc(1, 2, OcbPhysicalTypeV1::I32, rg1_category, row_count),
             ],
             stats: vec![
                 stats_i32(0, 0, 10, 10),
-                stats_i64(0, 1, 100, 102),
+                stats_i64(
+                    0,
+                    1,
+                    100,
+                    *rg0_order_values
+                        .last()
+                        .expect("fixture row group is non-empty"),
+                ),
                 stats_i32(1, 0, 11, 11),
-                stats_i64(1, 1, 200, 202),
+                stats_i64(
+                    1,
+                    1,
+                    200,
+                    *rg1_order_values
+                        .last()
+                        .expect("fixture row group is non-empty"),
+                ),
             ],
             crc32c: 0,
         };
@@ -8766,7 +10839,7 @@ mod tests {
         let root = OcbRootV1 {
             version: 1,
             flags: 0,
-            row_count: 6,
+            row_count: total_row_count,
             column_count: 3,
             row_group_count: 2,
             dictionary_count: 1,

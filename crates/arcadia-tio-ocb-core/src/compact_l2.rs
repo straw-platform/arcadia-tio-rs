@@ -450,9 +450,19 @@ impl<'a> CompactL2PhysicalV2BatchView<'a> {
                     "compact-L2 physical-v2 reconstructed payload length overflows",
                 )
             })?;
-        out.reserve(additional);
         let start = out.len();
-        out.resize(start + additional, 0);
+        let end = start.checked_add(additional).ok_or_else(|| {
+            compact_l2_v2_batch_error(
+                "compact-L2 physical-v2 reconstructed payload length overflows",
+            )
+        })?;
+        out.try_reserve_exact(additional).map_err(|_| {
+            ArcadiaTioError::Io(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "compact-L2 reconstructed payload allocation failed within resource limit",
+            ))
+        })?;
+        out.resize(end, 0);
         for row in 0..self.row_count {
             let base = start + row * COMPACT_L2_FIXED_BINARY_RECORD_WIDTH_V1 as usize;
             self.write_fixed_binary_v1_payload_unchecked(

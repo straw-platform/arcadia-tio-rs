@@ -3,7 +3,7 @@
 //! These helpers keep the OCB file reader generic but provide a small
 //! compact-L2 scheduling layer for channel-sharded physical-v2 artifacts.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -24,12 +24,15 @@ use crate::compact_l2::{
     COMPACT_L2_RECORD_KIND_COLUMN_NAME, COMPACT_L2_SOURCE_ORDINAL_COLUMN_NAME,
     CompactL2PhysicalV2BatchView,
 };
-use crate::manifest::{ChannelShardedManifestV1, resolve_manifest_relative_artifact_path};
+use crate::manifest::{
+    ChannelShardedManifestV1, ManifestArtifactResolver, resolve_manifest_relative_artifact_path,
+};
 use crate::parallel_prepare::{
     ColumnBundleParallelPrepareContext, ColumnBundleParallelPrepareOptions,
     ColumnBundleParallelPrepareReport,
 };
-use crate::{ArcadiaTioError, OcbErrorKind, Result};
+use crate::read::OcbReadSource;
+use crate::{ArcadiaTioError, OcbErrorKind, OcbResourceLimits, Result};
 
 /// Default channel worker count for compact-L2 physical-v2 reads.
 pub const COMPACT_L2_PHYSICAL_V2_DEFAULT_CHANNEL_WORKERS: usize = 8;
@@ -66,6 +69,44 @@ impl CompactL2PhysicalV2ChannelReadInput {
     }
 
     /// Set explicit file-local row group ids.
+    pub fn with_row_group_ids(mut self, row_group_ids: Vec<u32>) -> Self {
+        self.row_group_ids = Some(row_group_ids);
+        self
+    }
+}
+
+/// One manifest-derived compact-L2 channel whose artifact identity is already
+/// bound to a checked file handle.
+///
+/// Instances are created by
+/// [`compact_l2_physical_v2_bound_inputs_from_manifest`]. The diagnostic path
+/// is intentionally private and is never used for later I/O.
+#[derive(Debug, Clone)]
+pub struct CompactL2PhysicalV2ManifestReadInput {
+    channel_id: u32,
+    source: Arc<OcbReadSource>,
+    row_group_ids: Option<Vec<u32>>,
+    expected_rows: Option<u64>,
+}
+
+impl CompactL2PhysicalV2ManifestReadInput {
+    /// Return the source ChannelID declared by the manifest.
+    pub const fn channel_id(&self) -> u32 {
+        self.channel_id
+    }
+
+    /// Return the expected full-channel row count declared by the manifest.
+    pub const fn expected_rows(&self) -> Option<u64> {
+        self.expected_rows
+    }
+
+    /// Return explicit file-local row-group ids, if selected.
+    pub fn row_group_ids(&self) -> Option<&[u32]> {
+        self.row_group_ids.as_deref()
+    }
+
+    /// Select explicit file-local row-group ids while retaining the same bound
+    /// artifact identity.
     pub fn with_row_group_ids(mut self, row_group_ids: Vec<u32>) -> Self {
         self.row_group_ids = Some(row_group_ids);
         self
@@ -272,6 +313,40 @@ pub fn compact_l2_physical_v2_inputs_from_manifest(
         .collect()
 }
 
+/// Bind physical-v2 channel artifacts from a channel-sharded manifest to
+/// checked file handles.
+///
+/// The returned inputs retain each accepted file identity. Later path changes
+/// cannot redirect bound prepare or read operations. Use this helper instead of
+/// [`compact_l2_physical_v2_inputs_from_manifest`] when the manifest is a trust
+/// boundary; the older helper remains path-based for 0.3.x source compatibility.
+pub fn compact_l2_physical_v2_bound_inputs_from_manifest(
+    manifest_path: impl AsRef<Path>,
+    manifest: &ChannelShardedManifestV1,
+) -> Result<Vec<CompactL2PhysicalV2ManifestReadInput>> {
+    if manifest.artifact_format != COMPACT_L2_PHYSICAL_V2_ARTIFACT_FORMAT {
+        return Err(ArcadiaTioError::ocb_diagnostic(
+            OcbErrorKind::InvalidManifest,
+            "compact-L2 physical-v2 reader requires a physical-v2 manifest",
+        ));
+    }
+    manifest.validate()?;
+    let resolver = ManifestArtifactResolver::new(manifest_path.as_ref())?;
+    let mut inputs = Vec::new();
+    inputs
+        .try_reserve_exact(manifest.channels().len())
+        .map_err(|_| parallel_read_allocation_error())?;
+    for channel in manifest.channels() {
+        inputs.push(CompactL2PhysicalV2ManifestReadInput {
+            channel_id: channel.channel_id,
+            source: Arc::new(resolver.open_artifact(&channel.relative_path)?),
+            row_group_ids: None,
+            expected_rows: Some(channel.row_count),
+        });
+    }
+    Ok(inputs)
+}
+
 /// Read and prepare one compact-L2 physical-v2 channel on a fixed worker set,
 /// then release owned results in selected-plan row-group order.
 ///
@@ -282,14 +357,129 @@ pub fn compact_l2_physical_v2_inputs_from_manifest(
 /// fail-closed consumer must stage ordered callback output locally and publish
 /// replay-visible state only after a terminally completed `Ok` report; it must
 /// discard the stage on failure or `Stop` because callback side effects cannot
-/// be rolled back by TIO.
+/// be rolled back by TIO. This compatibility entry point uses
+/// [`OcbResourceLimits::policy_a`].
 pub fn parallel_prepare_compact_l2_physical_v2_channel<T, Prepare, Commit>(
     input: CompactL2PhysicalV2ChannelReadInput,
     options: CompactL2PhysicalV2ParallelPrepareOptions,
     prepare: Prepare,
+    ordered_commit: Commit,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
+where
+    T: Send + 'static,
+    Prepare: for<'a> Fn(
+            CompactL2PhysicalV2ParallelPrepareContext,
+            CompactL2PhysicalV2BatchView<'a>,
+        ) -> Result<T>
+        + Sync,
+    Commit: FnMut(CompactL2PhysicalV2ParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    parallel_prepare_compact_l2_physical_v2_channel_with_resource_limits(
+        input,
+        options,
+        OcbResourceLimits::policy_a(),
+        prepare,
+        ordered_commit,
+    )
+}
+
+/// Read and prepare one compact-L2 physical-v2 channel using an explicit OCB
+/// resource policy, then release owned results in selected-plan row-group
+/// order.
+///
+/// This has the same sequencing and fail-closed publication contract as
+/// [`parallel_prepare_compact_l2_physical_v2_channel`]. The supplied limits are
+/// applied while opening metadata and throughout every planned row-group read.
+pub fn parallel_prepare_compact_l2_physical_v2_channel_with_resource_limits<T, Prepare, Commit>(
+    input: CompactL2PhysicalV2ChannelReadInput,
+    options: CompactL2PhysicalV2ParallelPrepareOptions,
+    resource_limits: OcbResourceLimits,
+    prepare: Prepare,
+    ordered_commit: Commit,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
+where
+    T: Send + 'static,
+    Prepare: for<'a> Fn(
+            CompactL2PhysicalV2ParallelPrepareContext,
+            CompactL2PhysicalV2BatchView<'a>,
+        ) -> Result<T>
+        + Sync,
+    Commit: FnMut(CompactL2PhysicalV2ParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    parallel_prepare_compact_l2_physical_v2_input_with_resource_limits(
+        input,
+        options,
+        resource_limits,
+        prepare,
+        ordered_commit,
+    )
+}
+
+/// Prepare one handle-bound manifest channel with Policy A resource limits.
+pub fn parallel_prepare_compact_l2_physical_v2_bound_channel<T, Prepare, Commit>(
+    input: CompactL2PhysicalV2ManifestReadInput,
+    options: CompactL2PhysicalV2ParallelPrepareOptions,
+    prepare: Prepare,
+    ordered_commit: Commit,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
+where
+    T: Send + 'static,
+    Prepare: for<'a> Fn(
+            CompactL2PhysicalV2ParallelPrepareContext,
+            CompactL2PhysicalV2BatchView<'a>,
+        ) -> Result<T>
+        + Sync,
+    Commit: FnMut(CompactL2PhysicalV2ParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    parallel_prepare_compact_l2_physical_v2_bound_channel_with_resource_limits(
+        input,
+        options,
+        OcbResourceLimits::policy_a(),
+        prepare,
+        ordered_commit,
+    )
+}
+
+/// Prepare one handle-bound manifest channel with explicit finite resource
+/// limits while retaining its checked artifact identity.
+pub fn parallel_prepare_compact_l2_physical_v2_bound_channel_with_resource_limits<
+    T,
+    Prepare,
+    Commit,
+>(
+    input: CompactL2PhysicalV2ManifestReadInput,
+    options: CompactL2PhysicalV2ParallelPrepareOptions,
+    resource_limits: OcbResourceLimits,
+    prepare: Prepare,
+    ordered_commit: Commit,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
+where
+    T: Send + 'static,
+    Prepare: for<'a> Fn(
+            CompactL2PhysicalV2ParallelPrepareContext,
+            CompactL2PhysicalV2BatchView<'a>,
+        ) -> Result<T>
+        + Sync,
+    Commit: FnMut(CompactL2PhysicalV2ParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    parallel_prepare_compact_l2_physical_v2_input_with_resource_limits(
+        input,
+        options,
+        resource_limits,
+        prepare,
+        ordered_commit,
+    )
+}
+
+fn parallel_prepare_compact_l2_physical_v2_input_with_resource_limits<I, T, Prepare, Commit>(
+    input: I,
+    options: CompactL2PhysicalV2ParallelPrepareOptions,
+    resource_limits: OcbResourceLimits,
+    prepare: Prepare,
     mut ordered_commit: Commit,
 ) -> Result<CompactL2PhysicalV2ParallelPrepareReport>
 where
+    I: Into<NormalizedCompactL2PhysicalV2ChannelReadInput>,
     T: Send + 'static,
     Prepare: for<'a> Fn(
             CompactL2PhysicalV2ParallelPrepareContext,
@@ -306,7 +496,7 @@ where
             "compact-L2 physical-v2 parallel-prepare ChannelID does not fit i32",
         )
     })?;
-    let file = ColumnBundleFile::open(&input.path)?;
+    let file = input.open_file(resource_limits)?;
     let full_channel_selection = input.row_group_ids.is_none();
     if let Some(expected_rows) = input
         .expected_rows
@@ -392,13 +582,98 @@ where
 /// callback order is intentionally not a stable API contract. Return
 /// [`ColumnBundleVisitControl::Stop`] to request best-effort early stop; workers
 /// already reading a row-group wave may still yield in-flight batches before the
-/// function returns.
+/// function returns. This compatibility entry point uses
+/// [`OcbResourceLimits::policy_a`].
 pub fn read_compact_l2_physical_v2_channels<F>(
     inputs: impl IntoIterator<Item = CompactL2PhysicalV2ChannelReadInput>,
     options: CompactL2PhysicalV2ParallelReadOptions,
     visitor: F,
 ) -> Result<CompactL2PhysicalV2ParallelReadReport>
 where
+    F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
+{
+    read_compact_l2_physical_v2_channels_with_resource_limits(
+        inputs,
+        options,
+        OcbResourceLimits::policy_a(),
+        visitor,
+    )
+}
+
+/// Read compact-L2 physical-v2 channel artifacts with bounded channel-level
+/// parallelism and an explicit operation-wide OCB resource policy.
+///
+/// The supplied per-object, per-chunk, and projected-row-group limits apply to
+/// every opened channel file. The two aggregate selected-compressed and
+/// decoded-materialized budgets apply across simultaneously active channel
+/// workers: each fixed worker slot receives the same conservative floor share,
+/// and the per-file row-group preflight rejects a wave that exceeds that share
+/// before payload reads begin. Any division remainder remains unassigned so
+/// acceptance does not depend on which worker dequeues a channel. A visitor
+/// that retains or copies callback-owned data is responsible for accounting for
+/// that additional caller-owned lifetime.
+pub fn read_compact_l2_physical_v2_channels_with_resource_limits<F>(
+    inputs: impl IntoIterator<Item = CompactL2PhysicalV2ChannelReadInput>,
+    options: CompactL2PhysicalV2ParallelReadOptions,
+    resource_limits: OcbResourceLimits,
+    visitor: F,
+) -> Result<CompactL2PhysicalV2ParallelReadReport>
+where
+    F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
+{
+    read_compact_l2_physical_v2_inputs_with_resource_limits(
+        inputs,
+        options,
+        resource_limits,
+        visitor,
+    )
+}
+
+/// Read handle-bound physical-v2 manifest channels with Policy A resource
+/// limits and bounded channel-level parallelism.
+pub fn read_compact_l2_physical_v2_bound_channels<F>(
+    inputs: impl IntoIterator<Item = CompactL2PhysicalV2ManifestReadInput>,
+    options: CompactL2PhysicalV2ParallelReadOptions,
+    visitor: F,
+) -> Result<CompactL2PhysicalV2ParallelReadReport>
+where
+    F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
+{
+    read_compact_l2_physical_v2_bound_channels_with_resource_limits(
+        inputs,
+        options,
+        OcbResourceLimits::policy_a(),
+        visitor,
+    )
+}
+
+/// Read handle-bound physical-v2 manifest channels with an explicit
+/// operation-wide OCB resource policy.
+pub fn read_compact_l2_physical_v2_bound_channels_with_resource_limits<F>(
+    inputs: impl IntoIterator<Item = CompactL2PhysicalV2ManifestReadInput>,
+    options: CompactL2PhysicalV2ParallelReadOptions,
+    resource_limits: OcbResourceLimits,
+    visitor: F,
+) -> Result<CompactL2PhysicalV2ParallelReadReport>
+where
+    F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
+{
+    read_compact_l2_physical_v2_inputs_with_resource_limits(
+        inputs,
+        options,
+        resource_limits,
+        visitor,
+    )
+}
+
+fn read_compact_l2_physical_v2_inputs_with_resource_limits<I, F>(
+    inputs: impl IntoIterator<Item = I>,
+    options: CompactL2PhysicalV2ParallelReadOptions,
+    resource_limits: OcbResourceLimits,
+    visitor: F,
+) -> Result<CompactL2PhysicalV2ParallelReadReport>
+where
+    I: Into<NormalizedCompactL2PhysicalV2ChannelReadInput>,
     F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
 {
     options.validate()?;
@@ -409,9 +684,17 @@ where
     let visitor = Arc::new(visitor);
     let stop = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel::<Result<CompactL2PhysicalV2ChannelReadReport>>();
-    let mut handles = Vec::with_capacity(effective_channel_workers);
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(effective_channel_workers)
+        .map_err(|_| parallel_read_allocation_error())?;
 
-    for _ in 0..effective_channel_workers {
+    for worker_index in 0..effective_channel_workers {
+        let worker_resource_limits = channel_worker_resource_limits(
+            resource_limits,
+            worker_index,
+            effective_channel_workers,
+        )?;
         let queue = Arc::clone(&queue);
         let visitor = Arc::clone(&visitor);
         let stop = Arc::clone(&stop);
@@ -431,6 +714,7 @@ where
                 let result = read_physical_v2_channel(
                     input,
                     options,
+                    worker_resource_limits,
                     Arc::clone(&visitor),
                     Arc::clone(&stop),
                 );
@@ -445,7 +729,10 @@ where
     }
     drop(sender);
 
-    let mut reports = Vec::with_capacity(channel_count);
+    let mut reports = Vec::new();
+    reports
+        .try_reserve_exact(channel_count)
+        .map_err(|_| parallel_read_allocation_error())?;
     let mut first_error = None;
     for result in receiver {
         match result {
@@ -494,25 +781,111 @@ where
     })
 }
 
-fn normalize_inputs(
-    inputs: impl IntoIterator<Item = CompactL2PhysicalV2ChannelReadInput>,
-) -> Result<Vec<CompactL2PhysicalV2ChannelReadInput>> {
-    let mut inputs = inputs.into_iter().collect::<Vec<_>>();
-    if inputs.is_empty() {
+fn channel_worker_resource_limits(
+    resource_limits: OcbResourceLimits,
+    worker_index: usize,
+    worker_count: usize,
+) -> Result<OcbResourceLimits> {
+    let compressed_share = channel_worker_resource_share(
+        resource_limits.max_owned_selected_compressed_bytes(),
+        worker_index,
+        worker_count,
+    )?;
+    let decoded_share = channel_worker_resource_share(
+        resource_limits.max_owned_decoded_materialized_bytes(),
+        worker_index,
+        worker_count,
+    )?;
+    resource_limits
+        .with_max_owned_selected_compressed_bytes(compressed_share)?
+        .with_max_owned_decoded_materialized_bytes(decoded_share)
+}
+
+fn channel_worker_resource_share(
+    total: u64,
+    worker_index: usize,
+    worker_count: usize,
+) -> Result<u64> {
+    if worker_count == 0 || worker_index >= worker_count {
         return Err(ArcadiaTioError::ocb_invalid_input(
-            "compact-L2 physical-v2 reader requires at least one channel input",
+            "compact-L2 physical-v2 resource accounting has an invalid worker slot",
         ));
     }
-    let mut seen = BTreeSet::new();
-    for input in &inputs {
+    let worker_count = u64::try_from(worker_count).map_err(|_| {
+        ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 physical-v2 worker count does not fit resource accounting",
+        )
+    })?;
+    Ok(total / worker_count)
+}
+
+#[derive(Debug, Clone)]
+enum CompactL2PhysicalV2FileAuthority {
+    Path(PathBuf),
+    Bound(Arc<OcbReadSource>),
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedCompactL2PhysicalV2ChannelReadInput {
+    channel_id: u32,
+    authority: CompactL2PhysicalV2FileAuthority,
+    row_group_ids: Option<Vec<u32>>,
+    expected_rows: Option<u64>,
+}
+
+impl NormalizedCompactL2PhysicalV2ChannelReadInput {
+    fn open_file(&self, resource_limits: OcbResourceLimits) -> Result<ColumnBundleFile> {
+        match &self.authority {
+            CompactL2PhysicalV2FileAuthority::Path(path) => {
+                ColumnBundleFile::open_with_resource_limits(path, resource_limits)
+            }
+            CompactL2PhysicalV2FileAuthority::Bound(source) => {
+                ColumnBundleFile::open_from_source_with_resource_limits(
+                    Arc::clone(source),
+                    resource_limits,
+                )
+            }
+        }
+    }
+}
+
+impl From<CompactL2PhysicalV2ChannelReadInput> for NormalizedCompactL2PhysicalV2ChannelReadInput {
+    fn from(input: CompactL2PhysicalV2ChannelReadInput) -> Self {
+        Self {
+            channel_id: input.channel_id,
+            authority: CompactL2PhysicalV2FileAuthority::Path(input.path),
+            row_group_ids: input.row_group_ids,
+            expected_rows: input.expected_rows,
+        }
+    }
+}
+
+impl From<CompactL2PhysicalV2ManifestReadInput> for NormalizedCompactL2PhysicalV2ChannelReadInput {
+    fn from(input: CompactL2PhysicalV2ManifestReadInput) -> Self {
+        Self {
+            channel_id: input.channel_id,
+            authority: CompactL2PhysicalV2FileAuthority::Bound(input.source),
+            row_group_ids: input.row_group_ids,
+            expected_rows: input.expected_rows,
+        }
+    }
+}
+
+fn normalize_inputs<I>(
+    inputs: impl IntoIterator<Item = I>,
+) -> Result<Vec<NormalizedCompactL2PhysicalV2ChannelReadInput>>
+where
+    I: Into<NormalizedCompactL2PhysicalV2ChannelReadInput>,
+{
+    let mut normalized = Vec::new();
+    for input in inputs {
+        let input = input.into();
+        normalized
+            .try_reserve(1)
+            .map_err(|_| parallel_read_allocation_error())?;
         if input.channel_id == 0 {
             return Err(ArcadiaTioError::ocb_invalid_input(
                 "compact-L2 physical-v2 channel input has invalid ChannelID",
-            ));
-        }
-        if !seen.insert(input.channel_id) {
-            return Err(ArcadiaTioError::ocb_invalid_input(
-                "compact-L2 physical-v2 channel inputs contain duplicate ChannelID",
             ));
         }
         if let Some(row_group_ids) = &input.row_group_ids {
@@ -522,21 +895,43 @@ fn normalize_inputs(
                 ));
             }
         }
+        normalized.push(input);
     }
-    inputs.sort_by_key(|input| input.channel_id);
-    Ok(inputs)
+    if normalized.is_empty() {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 physical-v2 reader requires at least one channel input",
+        ));
+    }
+    normalized.sort_by_key(|input| input.channel_id);
+    if normalized
+        .windows(2)
+        .any(|inputs| inputs[0].channel_id == inputs[1].channel_id)
+    {
+        return Err(ArcadiaTioError::ocb_invalid_input(
+            "compact-L2 physical-v2 channel inputs contain duplicate ChannelID",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn parallel_read_allocation_error() -> ArcadiaTioError {
+    ArcadiaTioError::Io(std::io::Error::new(
+        std::io::ErrorKind::OutOfMemory,
+        "compact-L2 physical-v2 reader allocation failed within resource limit",
+    ))
 }
 
 fn read_physical_v2_channel<F>(
-    input: CompactL2PhysicalV2ChannelReadInput,
+    input: NormalizedCompactL2PhysicalV2ChannelReadInput,
     options: CompactL2PhysicalV2ParallelReadOptions,
+    resource_limits: OcbResourceLimits,
     visitor: Arc<F>,
     stop: Arc<AtomicBool>,
 ) -> Result<CompactL2PhysicalV2ChannelReadReport>
 where
     F: Fn(CompactL2PhysicalV2ReadBatch) -> Result<ColumnBundleVisitControl> + Send + Sync + 'static,
 {
-    let file = ColumnBundleFile::open(&input.path)?;
+    let file = input.open_file(resource_limits)?;
     let request = ColumnBundleReadRequest {
         projection: compact_l2_physical_v2_projection(),
         predicates: Vec::new(),
@@ -678,6 +1073,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     use crate::column_bundle::PrimitiveColumnValues;
     use crate::compact_l2::{
@@ -710,6 +1106,79 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_manifest_prepare_and_read_ignore_later_path_replacement() {
+        let root = fixture_root("bound_manifest_path_replacement");
+        let artifact = root.join("channels/2011/l2_mutations.physical-v2.ocb");
+        let replacement = root.join("channels/2011/replacement.physical-v2.ocb");
+        let original_records = (0..4)
+            .map(|offset| {
+                compact_l2_record(20260705, 2011, offset + 1, COMPACT_L2_RECORD_KIND_ORDER)
+            })
+            .collect::<Vec<_>>();
+        let replacement_records = (0..4)
+            .map(|offset| {
+                compact_l2_record(20260705, 2999, offset + 1, COMPACT_L2_RECORD_KIND_ORDER)
+            })
+            .collect::<Vec<_>>();
+        write_compact_l2_physical_v2_fixture(&artifact, &original_records);
+        write_compact_l2_physical_v2_fixture(&replacement, &replacement_records);
+        let manifest_path = root.join("manifest.json");
+        write_physical_v2_manifest(&manifest_path, 2011, original_records.len() as u64);
+        let manifest =
+            ChannelShardedManifestV1::from_path(&manifest_path).expect("parse physical manifest");
+        let inputs = compact_l2_physical_v2_bound_inputs_from_manifest(&manifest_path, &manifest)
+            .expect("bind manifest inputs");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].channel_id(), 2011);
+
+        fs::rename(&replacement, &artifact).expect("atomically replace manifest artifact");
+
+        let mut prepared_channel_ids = Vec::new();
+        parallel_prepare_compact_l2_physical_v2_bound_channel(
+            inputs[0].clone(),
+            CompactL2PhysicalV2ParallelPrepareOptions::default(),
+            |_, view| Ok(view.channel_id.to_vec()),
+            |_, channel_ids| {
+                prepared_channel_ids.extend(channel_ids);
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect("bound parallel prepare stays on original artifact");
+        assert!(
+            prepared_channel_ids
+                .iter()
+                .all(|channel_id| *channel_id == 2011)
+        );
+
+        let observed_channel_ids = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_visitor = Arc::clone(&observed_channel_ids);
+        let report = read_compact_l2_physical_v2_bound_channels(
+            inputs,
+            CompactL2PhysicalV2ParallelReadOptions::default(),
+            move |batch| {
+                let view = CompactL2PhysicalV2BatchView::from_column_batch(&batch.batch)?;
+                observed_for_visitor
+                    .lock()
+                    .expect("observed channel lock")
+                    .extend_from_slice(view.channel_id);
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect("bound channel read stays on original artifact");
+        assert_eq!(report.rows_yielded, 4);
+        assert!(
+            observed_channel_ids
+                .lock()
+                .expect("observed channel lock")
+                .iter()
+                .all(|channel_id| *channel_id == 2011)
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -748,6 +1217,69 @@ mod tests {
             |_| Ok(ColumnBundleVisitControl::Continue),
         )
         .expect_err("duplicate channel id must fail");
+        assert_eq!(err.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn channel_worker_limits_partition_operation_wide_aggregate_budgets() {
+        let limits = OcbResourceLimits::new(100, 90, 80, 70, 11, 17).expect("resource limits");
+        let worker_limits = (0..3)
+            .map(|worker_index| channel_worker_resource_limits(limits, worker_index, 3).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            worker_limits
+                .iter()
+                .map(|limits| limits.max_owned_selected_compressed_bytes())
+                .collect::<Vec<_>>(),
+            vec![3, 3, 3]
+        );
+        assert_eq!(
+            worker_limits
+                .iter()
+                .map(|limits| limits.max_owned_decoded_materialized_bytes())
+                .collect::<Vec<_>>(),
+            vec![5, 5, 5]
+        );
+        assert!(worker_limits.iter().all(|worker_limits| {
+            worker_limits.max_encoded_object_bytes() == limits.max_encoded_object_bytes()
+                && worker_limits.max_compressed_chunk_bytes() == limits.max_compressed_chunk_bytes()
+                && worker_limits.max_decompressed_chunk_bytes()
+                    == limits.max_decompressed_chunk_bytes()
+                && worker_limits.max_projected_row_group_bytes()
+                    == limits.max_projected_row_group_bytes()
+        }));
+
+        let err = channel_worker_resource_limits(limits, 3, 3)
+            .expect_err("out-of-range worker slot must fail");
+        assert_eq!(err.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn explicit_resource_limits_reach_prepare_and_channel_read_paths() {
+        let root = fixture_root("parallel_read_explicit_resource_limits");
+        let inputs = write_channel_fixtures(&root, &[1], 2);
+        let limits = OcbResourceLimits::policy_a()
+            .with_max_projected_row_group_bytes(0)
+            .unwrap();
+
+        let err = read_compact_l2_physical_v2_channels_with_resource_limits(
+            inputs.clone(),
+            CompactL2PhysicalV2ParallelReadOptions::default(),
+            limits,
+            |_| Ok(ColumnBundleVisitControl::Continue),
+        )
+        .expect_err("channel read must enforce the explicit projected row-group limit");
+        assert_eq!(err.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
+
+        let err = parallel_prepare_compact_l2_physical_v2_channel_with_resource_limits(
+            inputs.into_iter().next().unwrap(),
+            CompactL2PhysicalV2ParallelPrepareOptions::default(),
+            limits,
+            |_, _| Ok(()),
+            |_, _| Ok(ColumnBundleVisitControl::Continue),
+        )
+        .expect_err("parallel prepare must enforce the explicit projected row-group limit");
         assert_eq!(err.code(), crate::ArcadiaTioErrorCode::InvalidArgument);
     }
 
@@ -954,6 +1486,30 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create fixture root");
         root
+    }
+
+    fn write_physical_v2_manifest(path: &Path, channel_id: u32, rows: u64) {
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "trading_day": 20260705,
+            "artifact_format": COMPACT_L2_PHYSICAL_V2_ARTIFACT_FORMAT,
+            "selection_scope": "contiguous-prefix",
+            "channel_indivisible": true,
+            "counts": {"channels": 1, "row_count": rows},
+            "channels": [{
+                "channel_id": channel_id,
+                "relative_path": format!("channels/{channel_id}/l2_mutations.physical-v2.ocb"),
+                "row_count": rows,
+                "row_group_count": rows.div_ceil(2),
+                "first_biz_index": 1,
+                "last_biz_index": rows
+            }]
+        });
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&manifest).expect("encode manifest"),
+        )
+        .expect("write physical-v2 manifest");
     }
 
     fn write_channel_fixtures(

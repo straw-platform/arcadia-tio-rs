@@ -1,11 +1,27 @@
+use std::path::Path;
+
 use arcadia_tio_ocb_core::{
     ArcadiaTioError, ColumnBatch, ColumnBundleFile, ColumnBundleParallelPrepareContext,
     ColumnBundleParallelPrepareOptions, ColumnBundleParallelPrepareReport, ColumnBundleReadPlan,
     ColumnBundleVisitControl, CompactL2PhysicalV2ChannelReadInput,
-    CompactL2PhysicalV2ParallelPrepareContext, CompactL2PhysicalV2ParallelPrepareOptions,
-    CompactL2PhysicalV2ParallelPrepareReport, PrimitiveColumnValues, Result,
+    CompactL2PhysicalV2ManifestReadInput, CompactL2PhysicalV2ParallelPrepareContext,
+    CompactL2PhysicalV2ParallelPrepareOptions, CompactL2PhysicalV2ParallelPrepareReport,
+    OcbResourceLimits, PrimitiveColumnValues, Result,
+    parallel_prepare_compact_l2_physical_v2_bound_channel,
     parallel_prepare_compact_l2_physical_v2_channel,
 };
+
+fn open_with_resource_limits(path: &Path) -> Result<ColumnBundleFile> {
+    ColumnBundleFile::open_with_resource_limits(path, OcbResourceLimits::policy_a())
+}
+
+fn open_with_options_and_resource_limits(path: &Path) -> Result<ColumnBundleFile> {
+    ColumnBundleFile::open_with_options_and_resource_limits(
+        path,
+        arcadia_tio_ocb_core::ColumnBundleOpenOptions::default(),
+        OcbResourceLimits::policy_a(),
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedPreparedRowGroup {
@@ -139,6 +155,31 @@ fn call_physical_v2_from_an_external_consumer(
     )
 }
 
+fn call_bound_physical_v2_from_an_external_consumer(
+    input: CompactL2PhysicalV2ManifestReadInput,
+    staged: &mut Vec<OwnedPreparedRowGroup>,
+) -> Result<CompactL2PhysicalV2ParallelPrepareReport> {
+    parallel_prepare_compact_l2_physical_v2_bound_channel(
+        input,
+        CompactL2PhysicalV2ParallelPrepareOptions {
+            workers: 2,
+            max_in_flight_row_groups: 2,
+            validate_checksums: true,
+        },
+        |context, view| {
+            Ok(OwnedPreparedRowGroup {
+                selected_ordinal: context.row_group.selected_row_group_ordinal,
+                row_group_id: context.row_group.row_group_id,
+                values: view.biz_index.to_vec(),
+            })
+        },
+        |_, prepared| {
+            staged.push(prepared);
+            Ok(ColumnBundleVisitControl::Continue)
+        },
+    )
+}
+
 fn assert_send_static<T: Send + 'static>() {}
 
 #[test]
@@ -154,6 +195,22 @@ fn public_parallel_prepare_contract_compiles_for_an_external_consumer() {
     // gate without relying on private fixture-writing helpers.
     let _call = call_from_an_external_consumer;
     let _physical_v2_call = call_physical_v2_from_an_external_consumer;
+    let _bound_physical_v2_call = call_bound_physical_v2_from_an_external_consumer;
     let _publish = publish_only_after_terminal_success;
     let _report_contract = read_stable_public_report_contract;
+    let _resource_limited_open = open_with_resource_limits;
+    let _resource_limited_options_open = open_with_options_and_resource_limits;
+    let _resource_limits_getter: fn(&ColumnBundleFile) -> OcbResourceLimits =
+        ColumnBundleFile::resource_limits;
+
+    let limits = OcbResourceLimits::policy_a();
+    assert_eq!(limits.max_encoded_object_bytes(), 1_073_741_824);
+    assert_eq!(limits.max_compressed_chunk_bytes(), 536_870_912);
+    assert_eq!(limits.max_decompressed_chunk_bytes(), 536_870_912);
+    assert_eq!(limits.max_projected_row_group_bytes(), 1_073_741_824);
+    assert_eq!(limits.max_owned_selected_compressed_bytes(), 8_589_934_592);
+    assert_eq!(
+        limits.max_owned_decoded_materialized_bytes(),
+        17_179_869_184
+    );
 }

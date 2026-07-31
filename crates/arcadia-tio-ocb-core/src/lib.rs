@@ -18,14 +18,18 @@ mod manifest;
 mod parallel_prepare;
 mod parallel_read;
 mod read;
+mod resource_limits;
 
 pub use crate::certification::{
     CertificationOptions, CertificationReport, ChannelCertificationReport,
     CompactL2PhysicalV2CertificationOptions, CompactL2PhysicalV2CertificationReport,
     CompactL2PhysicalV2ChannelCertificationReport, CompactL2PhysicalV2ManifestCertificationOptions,
     CompactL2PhysicalV2ManifestCertificationReport, SafeCertificationSummary,
-    certify_channel_sharded_artifact_v1, certify_compact_l2_physical_v2_artifact,
+    certify_channel_sharded_artifact_v1, certify_channel_sharded_artifact_v1_with_resource_limits,
+    certify_compact_l2_physical_v2_artifact,
+    certify_compact_l2_physical_v2_artifact_with_resource_limits,
     certify_compact_l2_physical_v2_manifest,
+    certify_compact_l2_physical_v2_manifest_with_resource_limits,
 };
 pub use crate::column_bundle::{
     BundleColumn, BundleDictionaryDescriptor, BundleDictionaryValues, BundleNullOrder,
@@ -91,9 +95,18 @@ pub use crate::parallel_prepare::{
 };
 pub use crate::parallel_read::{
     COMPACT_L2_PHYSICAL_V2_DEFAULT_CHANNEL_WORKERS, CompactL2PhysicalV2ChannelReadInput,
-    CompactL2PhysicalV2ChannelReadReport, CompactL2PhysicalV2ParallelPrepareContext,
-    CompactL2PhysicalV2ParallelPrepareOptions, CompactL2PhysicalV2ParallelPrepareReport,
-    CompactL2PhysicalV2ParallelReadOptions, CompactL2PhysicalV2ParallelReadReport,
-    CompactL2PhysicalV2ReadBatch, compact_l2_physical_v2_inputs_from_manifest,
-    parallel_prepare_compact_l2_physical_v2_channel, read_compact_l2_physical_v2_channels,
+    CompactL2PhysicalV2ChannelReadReport, CompactL2PhysicalV2ManifestReadInput,
+    CompactL2PhysicalV2ParallelPrepareContext, CompactL2PhysicalV2ParallelPrepareOptions,
+    CompactL2PhysicalV2ParallelPrepareReport, CompactL2PhysicalV2ParallelReadOptions,
+    CompactL2PhysicalV2ParallelReadReport, CompactL2PhysicalV2ReadBatch,
+    compact_l2_physical_v2_bound_inputs_from_manifest, compact_l2_physical_v2_inputs_from_manifest,
+    parallel_prepare_compact_l2_physical_v2_bound_channel,
+    parallel_prepare_compact_l2_physical_v2_bound_channel_with_resource_limits,
+    parallel_prepare_compact_l2_physical_v2_channel,
+    parallel_prepare_compact_l2_physical_v2_channel_with_resource_limits,
+    read_compact_l2_physical_v2_bound_channels,
+    read_compact_l2_physical_v2_bound_channels_with_resource_limits,
+    read_compact_l2_physical_v2_channels,
+    read_compact_l2_physical_v2_channels_with_resource_limits,
 };
+pub use crate::resource_limits::OcbResourceLimits;

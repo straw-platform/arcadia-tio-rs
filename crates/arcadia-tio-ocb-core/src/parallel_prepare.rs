@@ -403,7 +403,7 @@ pub(crate) fn execute_parallel_prepare<T, Read, Prepare, Commit>(
 where
     T: Send + 'static,
     Read: Fn(u32) -> Result<(ColumnBatch, ReadAttributionAccumulator)> + Sync,
-    Prepare: Fn(ColumnBundleParallelPrepareContext, &ColumnBatch) -> Result<T> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
     Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
 {
     let started_workers = base_report
@@ -440,7 +440,7 @@ fn execute_parallel_prepare_with_runtime<T, Read, Prepare, Commit, BeforePublish
 where
     T: Send + 'static,
     Read: Fn(u32) -> Result<(ColumnBatch, ReadAttributionAccumulator)> + Sync,
-    Prepare: Fn(ColumnBundleParallelPrepareContext, &ColumnBatch) -> Result<T> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
     Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
     BeforePublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
     AfterPublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
@@ -680,7 +680,7 @@ fn worker_loop<T, Read, Prepare, BeforePublish, AfterPublish>(
 where
     T: Send + 'static,
     Read: Fn(u32) -> Result<(ColumnBatch, ReadAttributionAccumulator)> + Sync,
-    Prepare: Fn(ColumnBundleParallelPrepareContext, &ColumnBatch) -> Result<T> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
     BeforePublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
     AfterPublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
 {
@@ -715,7 +715,7 @@ where
             decoded_rows = batch.row_count;
             report.attribution.add(attribution);
             let prepare_started = Instant::now();
-            let prepared = prepare(context, &batch);
+            let prepared = prepare(context, batch);
             report.caller_prepare += prepare_started.elapsed();
             before_publish(context);
             prepared
@@ -961,6 +961,44 @@ mod tests {
             },
             ReadAttributionAccumulator::default(),
         ))
+    }
+
+    #[test]
+    fn owned_prepare_moves_batch_allocations_to_ordered_commit() {
+        let decoded_values_ptr = Arc::new(AtomicUsize::new(0));
+        let read_ptr = Arc::clone(&decoded_values_ptr);
+        let commit_ptr = Arc::clone(&decoded_values_ptr);
+        let outcome = execute_parallel_prepare(
+            tasks(1),
+            report(1, 1),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: 1,
+            },
+            move |row_group_id| {
+                let batch = ColumnBatch {
+                    row_group_id,
+                    base_row: 0,
+                    row_count: 2,
+                    columns: Vec::with_capacity(1),
+                };
+                read_ptr.store(batch.columns.as_ptr() as usize, Ordering::Release);
+                Ok((batch, ReadAttributionAccumulator::default()))
+            },
+            |_, batch| Ok(batch),
+            move |_, batch| {
+                assert_eq!(
+                    batch.columns.as_ptr() as usize,
+                    commit_ptr.load(Ordering::Acquire),
+                    "the decoded column allocation must move through preparation"
+                );
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect("owned parallel prepare");
+
+        assert!(outcome.ordered_terminal_completed);
+        assert_eq!(outcome.row_groups_ordered_committed, 1);
     }
 
     #[test]
