@@ -2,6 +2,8 @@
 
 //! OCB/v2 metadata and object readers.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
@@ -34,20 +36,45 @@ pub(crate) struct OcbReadObjectAttribution {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OcbMetadataV1 {
-    pub(crate) root: OcbRootV1,
-    pub(crate) string_table: OcbStringTableV1,
-    pub(crate) schema: OcbSchemaV1,
-    pub(crate) dictionary_index: Option<OcbDictionaryIndexV1>,
-    pub(crate) row_group_index: OcbRowGroupIndexV1,
-    pub(crate) ordering_proof: Option<OcbOrderingProofV1>,
-    pub(crate) file_len: u64,
-    pub(crate) appendable: bool,
-    pub(crate) root_generation: u64,
-    pub(crate) previous_root_generation: Option<u64>,
-    pub(crate) resource_limits: OcbResourceLimits,
-    pub(crate) open_metadata_materialized_bytes: u64,
-    pub(crate) open_auxiliary_encoded_bytes: u64,
+pub struct OcbMetadataV1 {
+    pub root: OcbRootV1,
+    pub string_table: OcbStringTableV1,
+    pub schema: OcbSchemaV1,
+    pub dictionary_index: Option<OcbDictionaryIndexV1>,
+    pub row_group_index: OcbRowGroupIndexV1,
+    pub row_group_positions_by_id: HashMap<u32, usize>,
+    pub ordering_proof: Option<OcbOrderingProofV1>,
+    pub file_len: u64,
+    pub appendable: bool,
+    pub root_generation: u64,
+    pub previous_root_generation: Option<u64>,
+    pub resource_limits: OcbResourceLimits,
+    pub open_metadata_materialized_bytes: u64,
+    pub open_auxiliary_encoded_bytes: u64,
+}
+
+impl OcbMetadataV1 {
+    pub(crate) fn row_group_by_id(&self, row_group_id: u32) -> Option<&OcbRowGroupDescV1> {
+        #[cfg(test)]
+        ROW_GROUP_INDEX_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+        let position = *self.row_group_positions_by_id.get(&row_group_id)?;
+        self.row_group_index.row_groups.get(position)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static ROW_GROUP_INDEX_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_row_group_index_lookup_count_for_test() {
+    ROW_GROUP_INDEX_LOOKUP_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn row_group_index_lookup_count_for_test() -> usize {
+    ROW_GROUP_INDEX_LOOKUP_COUNT.with(Cell::get)
 }
 
 #[derive(Debug)]
@@ -57,22 +84,22 @@ struct OcbRootCandidateV2 {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OcbMaintenanceAnalysisV2 {
-    pub(crate) file_len: u64,
-    pub(crate) selected_slot_id: u16,
-    pub(crate) selected_root_generation: u64,
-    pub(crate) previous_root_generation: Option<u64>,
-    pub(crate) selected_root_end_offset: u64,
-    pub(crate) selected_snapshot_end_offset: u64,
-    pub(crate) metadata: OcbMetadataV1,
-    pub(crate) rejected_candidates: Vec<OcbRootCandidateDiagnosticV2>,
+pub struct OcbMaintenanceAnalysisV2 {
+    pub file_len: u64,
+    pub selected_slot_id: u16,
+    pub selected_root_generation: u64,
+    pub previous_root_generation: Option<u64>,
+    pub selected_root_end_offset: u64,
+    pub selected_snapshot_end_offset: u64,
+    pub metadata: OcbMetadataV1,
+    pub rejected_candidates: Vec<OcbRootCandidateDiagnosticV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbRootCandidateDiagnosticV2 {
-    pub(crate) slot_id: Option<u16>,
-    pub(crate) generation: Option<u64>,
-    pub(crate) message: String,
+pub struct OcbRootCandidateDiagnosticV2 {
+    pub slot_id: Option<u16>,
+    pub generation: Option<u64>,
+    pub message: String,
 }
 
 fn read_exact_ocb<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<()> {
@@ -86,7 +113,7 @@ fn read_exact_ocb<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OcbOpenValidationMode {
+pub enum OcbOpenValidationMode {
     MetadataGraph,
     FullPayload,
 }
@@ -199,7 +226,7 @@ impl Seek for OcbReadCursor<'_> {
     }
 }
 
-pub(crate) fn read_metadata(path: &Path) -> Result<OcbMetadataV1> {
+pub fn read_metadata(path: &Path) -> Result<OcbMetadataV1> {
     let source = OcbReadSource::open(path)?;
     read_metadata_from_source_with_validation_and_resource_limits(
         &source,
@@ -277,7 +304,7 @@ fn read_metadata_v1(
             "OCB v1 root column chunk count overflows",
         ))?;
     let mut auxiliary_objects = OcbOpenAuxiliaryObjectCache::new(resource_limits);
-    validate_metadata_graph(
+    let row_group_positions_by_id = validate_metadata_graph(
         file,
         &metadata,
         root_column_chunk_count,
@@ -287,6 +314,7 @@ fn read_metadata_v1(
         &mut auxiliary_objects,
         &mut metadata_budget,
     )?;
+    metadata.row_group_positions_by_id = row_group_positions_by_id;
     metadata.open_metadata_materialized_bytes = metadata_budget.charged_bytes();
     metadata.open_auxiliary_encoded_bytes = auxiliary_objects.total_unique_bytes;
     Ok(metadata)
@@ -302,7 +330,7 @@ fn read_metadata_v2(
     select_v2_metadata(file, file_len, &bootstrap, validation, resource_limits)
 }
 
-pub(crate) fn analyze_v2_maintenance(
+pub fn analyze_v2_maintenance(
     path: &Path,
     validation: OcbOpenValidationMode,
 ) -> Result<OcbMaintenanceAnalysisV2> {
@@ -729,6 +757,7 @@ fn read_metadata_objects_with_resource_limits(
         schema,
         dictionary_index,
         row_group_index,
+        row_group_positions_by_id: HashMap::new(),
         ordering_proof,
         file_len,
         appendable: false,
@@ -740,7 +769,7 @@ fn read_metadata_objects_with_resource_limits(
     })
 }
 
-pub(crate) fn read_metadata_objects_v2(
+pub fn read_metadata_objects_v2(
     file: &mut (impl Read + Seek),
     file_len: u64,
     root: &OcbRootV2,
@@ -790,7 +819,7 @@ fn read_metadata_objects_v2_with_resource_limits(
     Ok(metadata)
 }
 
-pub(crate) fn selected_snapshot_referenced_end(
+pub fn selected_snapshot_referenced_end(
     slot: &OcbRootSlotV2,
     root: &OcbRootV2,
     metadata: &OcbMetadataV1,
@@ -1009,7 +1038,7 @@ pub(crate) fn read_column_chunk_from_source_with_resource_limits(
     read_column_chunk_from_reader_with_resource_limits(&mut file, file_len, chunk, resource_limits)
 }
 
-pub(crate) fn read_column_chunk_from_reader_with_resource_limits(
+pub fn read_column_chunk_from_reader_with_resource_limits(
     file: &mut (impl Read + Seek),
     file_len: u64,
     chunk: &OcbColumnChunkDescV1,
@@ -1177,7 +1206,7 @@ pub(crate) fn validate_v2_root_referenced_objects(
     Ok(())
 }
 
-pub(crate) fn validate_v2_root_referenced_metadata(
+pub fn validate_v2_root_referenced_metadata(
     file: &mut (impl Read + Seek),
     file_len: u64,
     root: &OcbRootV2,
@@ -1217,7 +1246,7 @@ fn validate_v2_root_referenced_objects_with_scope(
         resource_limits,
         &mut metadata_budget,
     )?;
-    validate_v2_metadata_graph(
+    let row_group_positions_by_id = validate_v2_metadata_graph(
         file,
         &metadata,
         root,
@@ -1226,6 +1255,7 @@ fn validate_v2_root_referenced_objects_with_scope(
         auxiliary_objects,
         &mut metadata_budget,
     )?;
+    metadata.row_group_positions_by_id = row_group_positions_by_id;
 
     validate_optional_object(
         file,
@@ -1269,7 +1299,7 @@ fn validate_v2_metadata_graph(
     resource_limits: OcbResourceLimits,
     auxiliary_objects: &mut OcbOpenAuxiliaryObjectCache,
     metadata_budget: &mut MetadataMaterializationBudget,
-) -> Result<()> {
+) -> Result<HashMap<u32, usize>> {
     validate_v2_root_semantics(root, metadata)?;
     validate_metadata_graph(
         file,
@@ -1292,7 +1322,7 @@ fn validate_metadata_graph(
     v2_root: Option<&OcbRootV2>,
     auxiliary_objects: &mut OcbOpenAuxiliaryObjectCache,
     metadata_budget: &mut MetadataMaterializationBudget,
-) -> Result<()> {
+) -> Result<HashMap<u32, usize>> {
     validate_root_counts(metadata, root_column_chunk_count)?;
     let columns_by_id = validate_schema_graph(metadata)?;
     auxiliary_objects.preflight(metadata, v2_root)?;
@@ -1303,7 +1333,7 @@ fn validate_metadata_graph(
         auxiliary_objects,
         metadata_budget,
     )?;
-    validate_row_group_graph(
+    let row_group_positions_by_id = validate_row_group_graph(
         file,
         metadata,
         &columns_by_id,
@@ -1311,7 +1341,13 @@ fn validate_metadata_graph(
         resource_limits,
         auxiliary_objects,
     )?;
-    validate_ordering_graph(file, metadata, &columns_by_id, auxiliary_objects)?;
+    validate_ordering_graph(
+        file,
+        metadata,
+        &columns_by_id,
+        &row_group_positions_by_id,
+        auxiliary_objects,
+    )?;
     if let Some(root) = v2_root {
         for reference in [
             root.first_key_tuple_ref,
@@ -1322,7 +1358,7 @@ fn validate_metadata_graph(
             auxiliary_objects.validate_key_tuple(file, metadata.file_len, reference)?;
         }
     }
-    Ok(())
+    Ok(row_group_positions_by_id)
 }
 
 /// One exact auxiliary body reference as it participates in open-time work.
@@ -1828,23 +1864,24 @@ fn validate_row_group_graph(
     validation: OcbOpenValidationMode,
     resource_limits: OcbResourceLimits,
     auxiliary_objects: &mut OcbOpenAuxiliaryObjectCache,
-) -> Result<()> {
+) -> Result<HashMap<u32, usize>> {
     let mut expected_columns = HashSet::new();
     expected_columns
         .try_reserve(columns_by_id.len())
         .map_err(|_| metadata_graph_allocation_error())?;
     expected_columns.extend(columns_by_id.keys().copied());
-    let mut seen_row_groups = HashSet::new();
-    seen_row_groups
+    let mut row_group_positions_by_id = HashMap::new();
+    row_group_positions_by_id
         .try_reserve(metadata.row_group_index.row_groups.len())
         .map_err(|_| metadata_graph_allocation_error())?;
     let mut expected_base_row = 0u64;
     let mut expected_chunk_begin = 0u64;
     let mut expected_stat_begin = 0u64;
-    for row_group in &metadata.row_group_index.row_groups {
+    for (row_group_position, row_group) in metadata.row_group_index.row_groups.iter().enumerate() {
         validate_row_group_desc(
             row_group,
-            &mut seen_row_groups,
+            row_group_position,
+            &mut row_group_positions_by_id,
             &mut expected_base_row,
             &mut expected_chunk_begin,
             &mut expected_stat_begin,
@@ -1910,17 +1947,21 @@ fn validate_row_group_graph(
             "OCB row-group stat ranges do not cover the stats table",
         ));
     }
-    Ok(())
+    Ok(row_group_positions_by_id)
 }
 
 fn validate_row_group_desc(
     row_group: &OcbRowGroupDescV1,
-    seen_row_groups: &mut HashSet<u32>,
+    row_group_position: usize,
+    row_group_positions_by_id: &mut HashMap<u32, usize>,
     expected_base_row: &mut u64,
     expected_chunk_begin: &mut u64,
     expected_stat_begin: &mut u64,
 ) -> Result<()> {
-    if !seen_row_groups.insert(row_group.row_group_id) {
+    if row_group_positions_by_id
+        .insert(row_group.row_group_id, row_group_position)
+        .is_some()
+    {
         return Err(ArcadiaTioError::ocb_corrupt_file(
             "OCB row-group index has duplicate row group ids",
         ));
@@ -2070,6 +2111,7 @@ fn validate_ordering_graph(
     file: &mut (impl Read + Seek),
     metadata: &OcbMetadataV1,
     columns_by_id: &HashMap<u32, &super::format::OcbColumnDescV1>,
+    row_group_positions_by_id: &HashMap<u32, usize>,
     auxiliary_objects: &mut OcbOpenAuxiliaryObjectCache,
 ) -> Result<()> {
     let Some(ordering_proof) = &metadata.ordering_proof else {
@@ -2101,23 +2143,12 @@ fn validate_ordering_graph(
             ));
         }
     }
-    let mut row_groups_by_id = HashMap::new();
-    row_groups_by_id
-        .try_reserve(metadata.row_group_index.row_groups.len())
-        .map_err(|_| metadata_graph_allocation_error())?;
-    row_groups_by_id.extend(
-        metadata
-            .row_group_index
-            .row_groups
-            .iter()
-            .map(|row_group| (row_group.row_group_id, row_group)),
-    );
     let mut seen_proof_row_groups = HashSet::new();
     seen_proof_row_groups
         .try_reserve(ordering_proof.row_group_proofs.len())
         .map_err(|_| metadata_graph_allocation_error())?;
     for proof in &ordering_proof.row_group_proofs {
-        if !row_groups_by_id.contains_key(&proof.row_group_id) {
+        if !row_group_positions_by_id.contains_key(&proof.row_group_id) {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB ordering proof references unknown row group",
             ));
@@ -2132,9 +2163,9 @@ fn validate_ordering_graph(
     }
     let mut expected_proof_row_groups = HashSet::new();
     expected_proof_row_groups
-        .try_reserve(row_groups_by_id.len())
+        .try_reserve(row_group_positions_by_id.len())
         .map_err(|_| metadata_graph_allocation_error())?;
-    expected_proof_row_groups.extend(row_groups_by_id.keys().copied());
+    expected_proof_row_groups.extend(row_group_positions_by_id.keys().copied());
     if seen_proof_row_groups != expected_proof_row_groups {
         return Err(ArcadiaTioError::ocb_corrupt_file(
             "OCB ordering proof row groups do not cover row-group index",
@@ -2399,7 +2430,7 @@ fn validate_optional_object(
     Ok(())
 }
 
-pub(crate) fn read_object_bytes(
+pub fn read_object_bytes(
     file: &mut (impl Read + Seek),
     file_len: u64,
     reference: OcbBodyRefV2,
@@ -2695,6 +2726,7 @@ mod tests {
                 stats: Vec::new(),
                 crc32c: 0,
             },
+            row_group_positions_by_id: HashMap::new(),
             ordering_proof: None,
             file_len: 0,
             appendable: true,
@@ -3059,6 +3091,7 @@ mod tests {
                 stats: Vec::new(),
                 crc32c: 0,
             },
+            row_group_positions_by_id: HashMap::new(),
             ordering_proof: Some(OcbOrderingProofV1 {
                 version: 1,
                 flags: 0,

@@ -8,12 +8,12 @@
 
 use crate::{ArcadiaTioError, Result};
 
-pub(crate) const OCB_POLICY_A_MAX_ENCODED_OBJECT_BYTES: u64 = 1_073_741_824;
-pub(crate) const OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES: u64 = 536_870_912;
-pub(crate) const OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES: u64 = 536_870_912;
-pub(crate) const OCB_POLICY_A_MAX_PROJECTED_ROW_GROUP_BYTES: u64 = 1_073_741_824;
-pub(crate) const OCB_POLICY_A_MAX_OWNED_SELECTED_COMPRESSED_BYTES: u64 = 8_589_934_592;
-pub(crate) const OCB_POLICY_A_MAX_OWNED_DECODED_MATERIALIZED_BYTES: u64 = 17_179_869_184;
+pub const OCB_POLICY_A_MAX_ENCODED_OBJECT_BYTES: u64 = 1_073_741_824;
+pub const OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES: u64 = 536_870_912;
+pub const OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES: u64 = 536_870_912;
+pub const OCB_POLICY_A_MAX_PROJECTED_ROW_GROUP_BYTES: u64 = 1_073_741_824;
+pub const OCB_POLICY_A_MAX_OWNED_SELECTED_COMPRESSED_BYTES: u64 = 8_589_934_592;
+pub const OCB_POLICY_A_MAX_OWNED_DECODED_MATERIALIZED_BYTES: u64 = 17_179_869_184;
 
 /// Finite byte limits applied consistently throughout one opened OCB handle.
 ///
@@ -192,36 +192,36 @@ impl Default for OcbResourceLimits {
 /// temporary stack values are not charged. A caller may construct a separate
 /// instance for any later operation that materializes metadata independently.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct MetadataMaterializationBudget {
+pub struct MetadataMaterializationBudget {
     limit_bytes: u64,
     charged_bytes: u64,
 }
 
 impl MetadataMaterializationBudget {
-    pub(crate) const fn new(limit_bytes: u64) -> Self {
+    pub const fn new(limit_bytes: u64) -> Self {
         Self {
             limit_bytes,
             charged_bytes: 0,
         }
     }
 
-    pub(crate) const fn from_limits(limits: OcbResourceLimits) -> Self {
+    pub const fn from_limits(limits: OcbResourceLimits) -> Self {
         Self::new(limits.max_owned_decoded_materialized_bytes())
     }
 
-    pub(crate) const fn limit_bytes(&self) -> u64 {
+    pub const fn limit_bytes(&self) -> u64 {
         self.limit_bytes
     }
 
-    pub(crate) const fn charged_bytes(&self) -> u64 {
+    pub const fn charged_bytes(&self) -> u64 {
         self.charged_bytes
     }
 
-    pub(crate) const fn remaining_bytes(&self) -> u64 {
+    pub const fn remaining_bytes(&self) -> u64 {
         self.limit_bytes - self.charged_bytes
     }
 
-    pub(crate) fn charge(&mut self, bytes: u64) -> Result<()> {
+    pub fn charge(&mut self, bytes: u64) -> Result<()> {
         let Some(charged_bytes) = self.charged_bytes.checked_add(bytes) else {
             return Err(ArcadiaTioError::ocb_invalid_input(
                 "OCB open metadata materialization exceeds resource limit",

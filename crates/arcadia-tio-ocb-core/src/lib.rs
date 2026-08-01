@@ -20,6 +20,41 @@ mod parallel_read;
 mod read;
 mod resource_limits;
 
+/// Unsupported implementation bridge used only by the private writer and
+/// maintenance façade in the containing workspace.
+#[doc(hidden)]
+pub mod private_adapter {
+    /// Binary format/model primitives shared with the private writer.
+    #[doc(hidden)]
+    pub mod format {
+        pub use crate::format::*;
+    }
+
+    /// Narrow selected-snapshot read helpers shared with private maintenance.
+    #[doc(hidden)]
+    pub mod read {
+        pub use crate::read::{
+            OcbMaintenanceAnalysisV2, OcbMetadataV1, OcbOpenValidationMode,
+            OcbRootCandidateDiagnosticV2, analyze_v2_maintenance,
+            read_column_chunk_from_reader_with_resource_limits, read_metadata,
+            read_metadata_objects_v2, read_object_bytes, selected_snapshot_referenced_end,
+            validate_v2_root_referenced_metadata,
+        };
+    }
+
+    /// Allocation-budget internals required by public binary-model signatures.
+    #[doc(hidden)]
+    pub mod resource_limits {
+        pub use crate::resource_limits::{
+            MetadataMaterializationBudget, OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES,
+            OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES, OCB_POLICY_A_MAX_ENCODED_OBJECT_BYTES,
+            OCB_POLICY_A_MAX_OWNED_DECODED_MATERIALIZED_BYTES,
+            OCB_POLICY_A_MAX_OWNED_SELECTED_COMPRESSED_BYTES,
+            OCB_POLICY_A_MAX_PROJECTED_ROW_GROUP_BYTES,
+        };
+    }
+}
+
 pub use crate::certification::{
     CertificationOptions, CertificationReport, ChannelCertificationReport,
     CompactL2PhysicalV2CertificationOptions, CompactL2PhysicalV2CertificationReport,
@@ -52,7 +87,8 @@ pub use crate::column_bundle::{
     FixedBinaryFieldType, FixedBinaryFieldValuesMut, FixedBinaryFieldValuesRef,
     FixedBinaryProjectedBatchView, FixedBinaryProjectedField, FixedBinaryProjectedFieldView,
     FixedBinaryProjectionReport, FixedBinaryRecordProjection, FixedBinaryRecordView,
-    OCB_CERTIFICATION_FINGERPRINT_ALGORITHM, OCB_READ_PLAN_SUBSET_DUPLICATE_ROW_GROUP_ERROR,
+    OCB_CERTIFICATION_FINGERPRINT_ALGORITHM, OCB_FALLBACK_THREAD_CAP_ONE,
+    OCB_FALLBACK_TOO_FEW_ROW_GROUPS, OCB_READ_PLAN_SUBSET_DUPLICATE_ROW_GROUP_ERROR,
     OCB_READ_PLAN_SUBSET_UNKNOWN_ROW_GROUP_ERROR, OcbErrorKind, PrimitiveColumnValues,
     PrimitiveColumnValuesMut, PrimitiveColumnValuesRef, ReusableFixedBinaryFieldValues,
     ReusablePrimitiveColumnValues, RowGroupPredicate, ValidityBitmap, ValidityBitmapRef,

@@ -3487,6 +3487,69 @@ impl ColumnBundleFile {
         Prepare: Fn(ColumnBundleParallelPrepareContext, &ColumnBatch) -> Result<T> + Sync,
         Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
     {
+        let (tasks, report) =
+            self.parallel_prepare_tasks_and_report(plan, row_group_ids, options)?;
+        execute_parallel_prepare(
+            tasks,
+            report,
+            0,
+            options,
+            |row_group_id| {
+                read_row_group_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    row_group_id,
+                    &plan.projected_column_ids,
+                )
+            },
+            move |context, batch| prepare(context, &batch),
+            ordered_commit,
+        )
+    }
+
+    /// Unsupported owned-batch adapter for the private pull-session façade.
+    #[doc(hidden)]
+    pub fn __parallel_prepare_plan_row_groups_owned_for_private_adapter<T, Prepare, Commit>(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        row_group_ids: &[u32],
+        options: ColumnBundleParallelPrepareOptions,
+        prepare: Prepare,
+        ordered_commit: Commit,
+    ) -> Result<ColumnBundleParallelPrepareReport>
+    where
+        T: Send + 'static,
+        Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
+        Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+    {
+        let (tasks, report) =
+            self.parallel_prepare_tasks_and_report(plan, row_group_ids, options)?;
+        execute_parallel_prepare(
+            tasks,
+            report,
+            0,
+            options,
+            |row_group_id| {
+                read_row_group_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    row_group_id,
+                    &plan.projected_column_ids,
+                )
+            },
+            prepare,
+            ordered_commit,
+        )
+    }
+
+    fn parallel_prepare_tasks_and_report(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        row_group_ids: &[u32],
+        options: ColumnBundleParallelPrepareOptions,
+    ) -> Result<(Vec<ParallelPrepareTaskSpec>, ColumnBundleReadReport)> {
         self.validate_read_plan(plan)?;
         let selected_row_group_ids = planned_row_group_subset(plan, row_group_ids)?;
         let report = execution_report_for_plan(plan, selected_row_group_ids.len());
@@ -3505,15 +3568,9 @@ impl ColumnBundleFile {
         for (selected_row_group_ordinal, row_group_id) in
             selected_row_group_ids.iter().copied().enumerate()
         {
-            let row_group = self
-                .metadata
-                .row_group_index
-                .row_groups
-                .iter()
-                .find(|row_group| row_group.row_group_id == row_group_id)
-                .ok_or(ArcadiaTioError::ocb_corrupt_file(
-                    "OCB parallel prepare row group not found",
-                ))?;
+            let row_group = self.metadata.row_group_by_id(row_group_id).ok_or(
+                ArcadiaTioError::ocb_corrupt_file("OCB parallel prepare row group not found"),
+            )?;
             let row_end = row_group.base_row.checked_add(row_group.row_count).ok_or(
                 ArcadiaTioError::ocb_corrupt_file("OCB parallel prepare row range overflows"),
             )?;
@@ -3525,23 +3582,18 @@ impl ColumnBundleFile {
                 row_count: row_group.row_count,
             });
         }
-        execute_parallel_prepare(
-            tasks,
-            report,
-            0,
-            options,
-            |row_group_id| {
-                read_row_group_with_attribution(
-                    &self.source,
-                    &self.metadata,
-                    &self.columns,
-                    row_group_id,
-                    &plan.projected_column_ids,
-                )
-            },
-            move |context, batch| prepare(context, &batch),
-            ordered_commit,
-        )
+        Ok((tasks, report))
+    }
+
+    /// Unsupported subset validator for the private pull-session façade.
+    #[doc(hidden)]
+    pub fn __validate_plan_row_group_subset_for_private_adapter(
+        &self,
+        plan: &ColumnBundleReadPlan,
+        row_group_ids: &[u32],
+    ) -> Result<Vec<u32>> {
+        self.validate_read_plan(plan)?;
+        planned_row_group_subset(plan, row_group_ids)
     }
 
     /// Visit an explicit row-group subset into caller-owned reusable buffers.
@@ -3768,15 +3820,9 @@ impl ColumnBundleFile {
         for (selected_row_group_ordinal, row_group_id) in
             plan.row_group_ids.iter().copied().enumerate()
         {
-            let row_group = self
-                .metadata
-                .row_group_index
-                .row_groups
-                .iter()
-                .find(|row_group| row_group.row_group_id == row_group_id)
-                .ok_or(ArcadiaTioError::ocb_corrupt_file(
-                    "OCB bounded scheduler row group not found",
-                ))?;
+            let row_group = self.metadata.row_group_by_id(row_group_id).ok_or(
+                ArcadiaTioError::ocb_corrupt_file("OCB bounded scheduler row group not found"),
+            )?;
             let row_end = row_group.base_row.checked_add(row_group.row_count).ok_or(
                 ArcadiaTioError::ocb_corrupt_file("OCB bounded scheduler row range overflows"),
             )?;
@@ -4388,20 +4434,10 @@ impl ColumnBundleFile {
             }
         }
 
-        let mut available_row_groups = try_column_bundle_hash_set_with_capacity(
-            self.metadata.row_group_index.row_groups.len(),
-        )?;
-        available_row_groups.extend(
-            self.metadata
-                .row_group_index
-                .row_groups
-                .iter()
-                .map(|row_group| row_group.row_group_id),
-        );
         let mut seen_row_groups =
             try_column_bundle_hash_set_with_capacity(plan.row_group_ids.len())?;
         for row_group_id in &plan.row_group_ids {
-            if !available_row_groups.contains(row_group_id) {
+            if self.metadata.row_group_by_id(*row_group_id).is_none() {
                 return Err(ArcadiaTioError::ocb_invalid_input(
                     "OCB read plan references an unknown row group id",
                 ));
@@ -4424,14 +4460,6 @@ impl ColumnBundleFile {
         I: IntoIterator<Item = u32>,
     {
         let row_group_count = self.metadata.row_group_index.row_groups.len();
-        let mut by_id = try_column_bundle_hash_map_with_capacity(row_group_count)?;
-        by_id.extend(
-            self.metadata
-                .row_group_index
-                .row_groups
-                .iter()
-                .map(|row_group| (row_group.row_group_id, row_group)),
-        );
         let mut summaries = try_column_bundle_vec_with_capacity(row_group_count)?;
         let mut seen = try_column_bundle_hash_set_with_capacity(row_group_count)?;
         for row_group_id in row_group_ids {
@@ -4440,13 +4468,11 @@ impl ColumnBundleFile {
                     "OCB row-group summary request contains duplicate row group ids",
                 ));
             }
-            let row_group =
-                by_id
-                    .get(&row_group_id)
-                    .copied()
-                    .ok_or(ArcadiaTioError::ocb_invalid_input(
-                        "OCB row-group summary request references an unknown row group id",
-                    ))?;
+            let row_group = self.metadata.row_group_by_id(row_group_id).ok_or(
+                ArcadiaTioError::ocb_invalid_input(
+                    "OCB row-group summary request references an unknown row group id",
+                ),
+            )?;
             summaries.push(self.build_row_group_summary(row_group, projected_column_ids)?);
         }
         Ok(summaries)
@@ -5903,14 +5929,12 @@ fn read_row_group_into(
             "OCB fill read requires at least one column buffer",
         ));
     }
-    let row_group = *metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
-        .ok_or(ArcadiaTioError::ocb_invalid_input(
-            "OCB fill read references an unknown row group",
-        ))?;
+    let row_group =
+        *metadata
+            .row_group_by_id(row_group_id)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB fill read references an unknown row group",
+            ))?;
     let row_count = usize::try_from(row_group.row_count).map_err(|_| {
         ArcadiaTioError::ocb_invalid_input("OCB fill read row count does not fit usize")
     })?;
@@ -6067,14 +6091,12 @@ fn read_row_group_into_reusable_with_attribution(
 }
 
 fn row_count_for_row_group(metadata: &OcbMetadataV1, row_group_id: u32) -> Result<usize> {
-    let row_group = metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
-        .ok_or(ArcadiaTioError::ocb_invalid_input(
-            "OCB reusable read references an unknown row group",
-        ))?;
+    let row_group =
+        metadata
+            .row_group_by_id(row_group_id)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB reusable read references an unknown row group",
+            ))?;
     usize::try_from(row_group.row_count).map_err(|_| {
         ArcadiaTioError::ocb_invalid_input("OCB reusable read row count does not fit usize")
     })
@@ -6093,14 +6115,12 @@ fn read_row_group_into_with_attribution(
             "OCB fill read requires at least one column buffer",
         ));
     }
-    let row_group = *metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
-        .ok_or(ArcadiaTioError::ocb_invalid_input(
-            "OCB fill read references an unknown row group",
-        ))?;
+    let row_group =
+        *metadata
+            .row_group_by_id(row_group_id)
+            .ok_or(ArcadiaTioError::ocb_invalid_input(
+                "OCB fill read references an unknown row group",
+            ))?;
     let row_count = usize::try_from(row_group.row_count).map_err(|_| {
         ArcadiaTioError::ocb_invalid_input("OCB fill read row count does not fit usize")
     })?;
@@ -6559,14 +6579,12 @@ fn selected_resource_footprint_for_row_group(
     row_group_id: u32,
     selected_column_ids: &[u32],
 ) -> Result<SelectedResourceFootprint> {
-    let row_group = metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
-        .ok_or(ArcadiaTioError::ocb_corrupt_file(
-            "OCB resource accounting row group not found",
-        ))?;
+    let row_group =
+        metadata
+            .row_group_by_id(row_group_id)
+            .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                "OCB resource accounting row group not found",
+            ))?;
     selected_resource_footprint_for_row_group_desc(metadata, row_group, selected_column_ids)
 }
 
@@ -6716,47 +6734,26 @@ fn selected_row_groups_for_plan<'a>(
     metadata: &'a OcbMetadataV1,
     plan: &ColumnBundleReadPlan,
 ) -> Result<Vec<&'a OcbRowGroupDescV1>> {
-    let mut requested_ids = Vec::new();
-    requested_ids
-        .try_reserve_exact(plan.row_group_ids.len())
+    let mut seen_row_group_ids = HashSet::new();
+    seen_row_group_ids
+        .try_reserve(plan.row_group_ids.len())
         .map_err(|_| resource_accounting_allocation_error())?;
-    requested_ids.extend_from_slice(&plan.row_group_ids);
-    requested_ids.sort_unstable();
-    if requested_ids.windows(2).any(|ids| ids[0] == ids[1]) {
-        return Err(ArcadiaTioError::ocb_invalid_input(
-            "OCB read plan contains duplicate row group ids",
-        ));
-    }
-
-    let mut indexed = Vec::new();
-    indexed
-        .try_reserve_exact(requested_ids.len())
-        .map_err(|_| resource_accounting_allocation_error())?;
-    for row_group in &metadata.row_group_index.row_groups {
-        if requested_ids.binary_search(&row_group.row_group_id).is_ok() {
-            indexed.push((row_group.row_group_id, row_group));
+    for row_group_id in &plan.row_group_ids {
+        if !seen_row_group_ids.insert(*row_group_id) {
+            return Err(ArcadiaTioError::ocb_invalid_input(
+                "OCB read plan contains duplicate row group ids",
+            ));
         }
     }
-    if indexed.len() != requested_ids.len() {
-        return Err(ArcadiaTioError::ocb_invalid_input(
-            "OCB read plan references an unknown row group id",
-        ));
-    }
-    indexed.sort_unstable_by_key(|(row_group_id, _)| *row_group_id);
 
     let mut ordered = Vec::new();
     ordered
         .try_reserve_exact(plan.row_group_ids.len())
         .map_err(|_| resource_accounting_allocation_error())?;
     for row_group_id in &plan.row_group_ids {
-        let index = indexed
-            .binary_search_by_key(row_group_id, |(candidate, _)| *candidate)
-            .map_err(|_| {
-                ArcadiaTioError::ocb_invalid_input(
-                    "OCB read plan references an unknown row group id",
-                )
-            })?;
-        ordered.push(indexed[index].1);
+        ordered.push(metadata.row_group_by_id(*row_group_id).ok_or(
+            ArcadiaTioError::ocb_invalid_input("OCB read plan references an unknown row group id"),
+        )?);
     }
     Ok(ordered)
 }
@@ -7014,10 +7011,7 @@ fn read_row_group(
     selected_column_ids: &[u32],
 ) -> Result<ColumnBatch> {
     let row_group = metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
+        .row_group_by_id(row_group_id)
         .ok_or(ArcadiaTioError::ocb_corrupt_file("OCB row group not found"))?;
     let chunks = chunks_for_row_group(
         metadata,
@@ -7077,10 +7071,7 @@ fn read_row_group_with_attribution(
 ) -> Result<(ColumnBatch, ReadAttributionAccumulator)> {
     let row_group_started = Instant::now();
     let row_group = metadata
-        .row_group_index
-        .row_groups
-        .iter()
-        .find(|row_group| row_group.row_group_id == row_group_id)
+        .row_group_by_id(row_group_id)
         .ok_or(ArcadiaTioError::ocb_corrupt_file("OCB row group not found"))?;
     let chunks = chunks_for_row_group(
         metadata,
@@ -7556,7 +7547,10 @@ mod tests {
         OcbRowGroupDescV1, OcbRowGroupIndexV1, OcbRowGroupOrderingProofV1, OcbSchemaV1,
         OcbStatScalarV1, OcbStringTableV1, crc32c,
     };
-    use crate::read::uncompressed_fixed_binary_direct_fill_count_for_test;
+    use crate::read::{
+        reset_row_group_index_lookup_count_for_test, row_group_index_lookup_count_for_test,
+        uncompressed_fixed_binary_direct_fill_count_for_test,
+    };
 
     #[test]
     fn column_bundle_opens_one_file_and_parallel_reads_projected_batches() {
@@ -9287,6 +9281,247 @@ mod tests {
     }
 
     #[test]
+    fn retained_row_group_index_preserves_arbitrary_ids_order_errors_and_lookup_counts() {
+        let path = fixture_path("column_bundle_retained_row_group_index");
+        write_fixture_with_options(
+            &path,
+            FixtureOptions {
+                row_group_ids: Some([41, 7]),
+                ..FixtureOptions::default()
+            },
+        );
+        let bundle = ColumnBundleFile::open(&path).expect("open arbitrary-id OCB fixture");
+        assert_eq!(bundle.metadata.row_group_positions_by_id.len(), 2);
+        assert_eq!(bundle.metadata.row_group_positions_by_id.get(&41), Some(&0));
+        assert_eq!(bundle.metadata.row_group_positions_by_id.get(&7), Some(&1));
+
+        let plan = bundle
+            .plan_read(&ColumnBundleReadRequest {
+                projection: ColumnProjection::names(["partition_key", "order_key"]),
+                predicates: Vec::new(),
+                options: ColumnBundleReadOptions::parallel(2),
+            })
+            .expect("plan arbitrary-id fixture");
+        assert_eq!(plan.row_group_ids, vec![41, 7]);
+
+        reset_row_group_index_lookup_count_for_test();
+        bundle
+            .validate_read_plan(&plan)
+            .expect("validate arbitrary-id plan");
+        assert_eq!(row_group_index_lookup_count_for_test(), 2);
+
+        reset_row_group_index_lookup_count_for_test();
+        let tasks = bundle
+            .bounded_ordered_tasks_for_plan(&plan)
+            .expect("construct arbitrary-id scheduler tasks");
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.row_group_id)
+                .collect::<Vec<_>>(),
+            vec![41, 7]
+        );
+        assert_eq!(row_group_index_lookup_count_for_test(), 2);
+
+        reset_row_group_index_lookup_count_for_test();
+        let summaries = bundle
+            .build_row_group_summaries(plan.row_group_ids.iter().copied(), None)
+            .expect("summarize arbitrary-id row groups");
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.row_group_id)
+                .collect::<Vec<_>>(),
+            vec![41, 7]
+        );
+        assert_eq!(row_group_index_lookup_count_for_test(), 2);
+
+        reset_row_group_index_lookup_count_for_test();
+        let footprints = selected_resource_footprints_for_plan(&bundle.metadata, &plan)
+            .expect("account arbitrary-id row groups");
+        assert_eq!(footprints.len(), 2);
+        assert_eq!(row_group_index_lookup_count_for_test(), 2);
+
+        reset_row_group_index_lookup_count_for_test();
+        let batch = read_row_group(
+            &bundle.source,
+            &bundle.metadata,
+            &bundle.columns,
+            41,
+            &plan.projected_column_ids,
+        )
+        .expect("materialize arbitrary-id row group");
+        assert_eq!(batch.row_group_id, 41);
+        assert_eq!(row_group_index_lookup_count_for_test(), 1);
+
+        reset_row_group_index_lookup_count_for_test();
+        let mut values = vec![0i32; 3];
+        let fill_report = bundle
+            .read_row_group_into(
+                7,
+                &mut [ColumnBundleColumnFillBuffer {
+                    column_name: Some("partition_key"),
+                    column_id: Some(0),
+                    values: PrimitiveColumnValuesMut::I32(&mut values),
+                    validity_bytes: None,
+                    allow_nulls: false,
+                }],
+                ColumnBundleReadFillOptions::default(),
+            )
+            .expect("fill arbitrary-id row group");
+        assert_eq!(fill_report.row_group_id, 7);
+        assert_eq!(values, vec![11, 11, 11]);
+        assert_eq!(row_group_index_lookup_count_for_test(), 1);
+
+        let subset = bundle
+            .read_plan_row_groups(&plan, &[7, 41])
+            .expect("restore reverse subset request to original plan order");
+        assert_eq!(
+            subset
+                .batches
+                .iter()
+                .map(|batch| batch.row_group_id)
+                .collect::<Vec<_>>(),
+            vec![41, 7]
+        );
+
+        let mut unknown_first = plan.clone();
+        unknown_first.row_group_ids = vec![99, 99];
+        let err = bundle
+            .validate_read_plan(&unknown_first)
+            .expect_err("first unknown plan id precedes its later duplicate");
+        assert!(
+            err.to_string()
+                .contains("OCB read plan references an unknown row group id")
+        );
+
+        let mut duplicate_first = plan.clone();
+        duplicate_first.row_group_ids = vec![41, 41, 99];
+        let err = bundle
+            .validate_read_plan(&duplicate_first)
+            .expect_err("earlier duplicate plan id precedes later unknown id");
+        assert!(
+            err.to_string()
+                .contains("OCB read plan contains duplicate row group ids")
+        );
+
+        let err = selected_row_groups_for_plan(&bundle.metadata, &unknown_first)
+            .expect_err("resource accounting preserves duplicate-before-unknown pre-scan");
+        assert!(
+            err.to_string()
+                .contains("OCB read plan contains duplicate row group ids")
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    #[ignore = "Phase 5A source-free release-mode remote scaling gate"]
+    fn phase5a_row_group_index_scaling_current_control() {
+        const ROW_GROUP_COUNT: usize = 16_384;
+        const SELECTED_COUNT: usize = 4_096;
+        const SAMPLES: usize = 5;
+
+        let row_group_ids = (0..ROW_GROUP_COUNT)
+            .map(|index| u32::try_from(index * 2 + 1).expect("synthetic id fits u32"))
+            .collect::<Vec<_>>();
+        let selected_ids = row_group_ids
+            .iter()
+            .rev()
+            .step_by(4)
+            .take(SELECTED_COUNT)
+            .copied()
+            .collect::<Vec<_>>();
+        let positions = row_group_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, row_group_id)| (row_group_id, position))
+            .collect::<HashMap<_, _>>();
+
+        let current = || {
+            let started = Instant::now();
+            let mut checksum = 0u64;
+            let mut lookups = 0usize;
+            for row_group_id in std::hint::black_box(&selected_ids) {
+                let position = *positions
+                    .get(row_group_id)
+                    .expect("selected id exists in retained index");
+                checksum = checksum.wrapping_add(position as u64);
+                lookups += 1;
+            }
+            (started.elapsed(), std::hint::black_box(checksum), lookups)
+        };
+        let control = || {
+            let started = Instant::now();
+            let mut checksum = 0u64;
+            let mut comparisons = 0usize;
+            for selected_id in std::hint::black_box(&selected_ids) {
+                let mut found = None;
+                for (position, candidate) in row_group_ids.iter().enumerate() {
+                    comparisons += 1;
+                    if candidate == selected_id {
+                        found = Some(position);
+                        break;
+                    }
+                }
+                checksum = checksum.wrapping_add(
+                    found.expect("selected id exists in legacy descriptor scan") as u64,
+                );
+            }
+            (
+                started.elapsed(),
+                std::hint::black_box(checksum),
+                comparisons,
+            )
+        };
+
+        let (_, warm_current_checksum, warm_lookups) = current();
+        let (_, warm_control_checksum, warm_comparisons) = control();
+        assert_eq!(warm_current_checksum, warm_control_checksum);
+        assert_eq!(warm_lookups, SELECTED_COUNT);
+        assert!(warm_comparisons >= 16_777_216);
+
+        let mut current_samples = Vec::with_capacity(SAMPLES);
+        let mut control_samples = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let (current_result, control_result) = if sample % 2 == 0 {
+                (current(), control())
+            } else {
+                let control_result = control();
+                let current_result = current();
+                (current_result, control_result)
+            };
+            assert_eq!(current_result.1, control_result.1);
+            assert_eq!(current_result.2, SELECTED_COUNT);
+            assert!(control_result.2 >= 16_777_216);
+            current_samples.push(current_result.0);
+            control_samples.push(control_result.0);
+        }
+        current_samples.sort_unstable();
+        control_samples.sort_unstable();
+        let current_median = current_samples[SAMPLES / 2];
+        let control_median = control_samples[SAMPLES / 2];
+        let current_maximum = *current_samples.last().expect("current sample");
+        assert!(
+            current_median.as_nanos().saturating_mul(4) <= control_median.as_nanos(),
+            "retained index median {current_median:?} exceeds 25% of control {control_median:?}"
+        );
+        assert!(
+            current_maximum <= Duration::from_millis(500),
+            "retained index maximum {current_maximum:?} exceeds 500 ms"
+        );
+        eprintln!(
+            "phase5a_row_group_index current_median_ns={} current_maximum_ns={} control_median_ns={} selected={} descriptors={}",
+            current_median.as_nanos(),
+            current_maximum.as_nanos(),
+            control_median.as_nanos(),
+            SELECTED_COUNT,
+            ROW_GROUP_COUNT,
+        );
+    }
+
+    #[test]
     fn column_bundle_parallel_prepare_matches_worker_counts_and_plan_order() {
         let path = fixture_path("column_bundle_parallel_prepare");
         write_fixture(&path);
@@ -10106,6 +10341,7 @@ mod tests {
         validity_ref_column_id: Option<u32>,
         row_group0_chunk_desc_begin: Option<u64>,
         rows_per_group: Option<usize>,
+        row_group_ids: Option<[u32; 2]>,
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -10441,6 +10677,7 @@ mod tests {
 
     fn write_fixture_with_options(path: &Path, options: FixtureOptions) {
         let mut file_bytes = vec![0u8; OCB_BOOTSTRAP_PAGE_V1_LEN];
+        let [row_group0_id, row_group1_id] = options.row_group_ids.unwrap_or([0, 1]);
         let rows_per_group = options.rows_per_group.unwrap_or(3);
         assert!(rows_per_group > 0, "fixture row groups must be non-empty");
         let row_count = u64::try_from(rows_per_group).expect("fixture row count fits u64");
@@ -10464,30 +10701,30 @@ mod tests {
 
         let rg0_partition = append_chunk(
             &mut file_bytes,
-            0,
+            row_group0_id,
             0,
             OcbPhysicalTypeV1::I32,
             &rg0_partition_values,
         );
-        let rg0_order = append_chunk_i64(&mut file_bytes, 0, 1, &rg0_order_values);
+        let rg0_order = append_chunk_i64(&mut file_bytes, row_group0_id, 1, &rg0_order_values);
         let rg0_category = append_chunk(
             &mut file_bytes,
-            0,
+            row_group0_id,
             2,
             OcbPhysicalTypeV1::I32,
             &rg0_category_values,
         );
         let rg1_partition = append_chunk(
             &mut file_bytes,
-            1,
+            row_group1_id,
             0,
             OcbPhysicalTypeV1::I32,
             &rg1_partition_values,
         );
-        let rg1_order = append_chunk_i64(&mut file_bytes, 1, 1, &rg1_order_values);
+        let rg1_order = append_chunk_i64(&mut file_bytes, row_group1_id, 1, &rg1_order_values);
         let rg1_category = append_chunk(
             &mut file_bytes,
-            1,
+            row_group1_id,
             2,
             OcbPhysicalTypeV1::I32,
             &rg1_category_values,
@@ -10589,7 +10826,7 @@ mod tests {
             OcbBodyRefV2::NULL
         };
         let validity_ref_for = |row_group_id: u32, column_id: u32| {
-            if row_group_id == 0 && options.validity_ref_column_id == Some(column_id) {
+            if row_group_id == row_group0_id && options.validity_ref_column_id == Some(column_id) {
                 forced_validity_ref
             } else {
                 OcbBodyRefV2::NULL
@@ -10601,7 +10838,7 @@ mod tests {
             flags: 0,
             row_groups: vec![
                 OcbRowGroupDescV1 {
-                    row_group_id: 0,
+                    row_group_id: row_group0_id,
                     flags: 0,
                     base_row: 0,
                     row_count,
@@ -10613,7 +10850,7 @@ mod tests {
                     last_key_tuple_ref: OcbBodyRefV2::NULL,
                 },
                 OcbRowGroupDescV1 {
-                    row_group_id: 1,
+                    row_group_id: row_group1_id,
                     flags: 0,
                     base_row: row_count,
                     row_count,
@@ -10627,46 +10864,64 @@ mod tests {
             ],
             column_chunks: vec![
                 chunk_desc_with_validity(
-                    0,
+                    row_group0_id,
                     0,
                     OcbPhysicalTypeV1::I32,
                     rg0_partition,
-                    validity_ref_for(0, 0),
+                    validity_ref_for(row_group0_id, 0),
                     row_count,
                 ),
                 chunk_desc_with_validity(
-                    0,
+                    row_group0_id,
                     1,
                     OcbPhysicalTypeV1::I64,
                     rg0_order,
-                    validity_ref_for(0, 1),
+                    validity_ref_for(row_group0_id, 1),
                     row_count,
                 ),
                 chunk_desc_with_validity(
-                    0,
+                    row_group0_id,
                     2,
                     OcbPhysicalTypeV1::I32,
                     rg0_category,
-                    validity_ref_for(0, 2),
+                    validity_ref_for(row_group0_id, 2),
                     row_count,
                 ),
-                chunk_desc(1, 0, OcbPhysicalTypeV1::I32, rg1_partition, row_count),
-                chunk_desc(1, 1, OcbPhysicalTypeV1::I64, rg1_order, row_count),
-                chunk_desc(1, 2, OcbPhysicalTypeV1::I32, rg1_category, row_count),
+                chunk_desc(
+                    row_group1_id,
+                    0,
+                    OcbPhysicalTypeV1::I32,
+                    rg1_partition,
+                    row_count,
+                ),
+                chunk_desc(
+                    row_group1_id,
+                    1,
+                    OcbPhysicalTypeV1::I64,
+                    rg1_order,
+                    row_count,
+                ),
+                chunk_desc(
+                    row_group1_id,
+                    2,
+                    OcbPhysicalTypeV1::I32,
+                    rg1_category,
+                    row_count,
+                ),
             ],
             stats: vec![
-                stats_i32(0, 0, 10, 10),
+                stats_i32(row_group0_id, 0, 10, 10),
                 stats_i64(
-                    0,
+                    row_group0_id,
                     1,
                     100,
                     *rg0_order_values
                         .last()
                         .expect("fixture row group is non-empty"),
                 ),
-                stats_i32(1, 0, 11, 11),
+                stats_i32(row_group1_id, 0, 11, 11),
                 stats_i64(
-                    1,
+                    row_group1_id,
                     1,
                     200,
                     *rg1_order_values
@@ -10687,13 +10942,13 @@ mod tests {
             keys: vec![ordering_key(0), ordering_key(1)],
             row_group_proofs: vec![
                 OcbRowGroupOrderingProofV1 {
-                    row_group_id: 0,
+                    row_group_id: row_group0_id,
                     flags: 1,
                     first_tuple_ref: OcbBodyRefV2::NULL,
                     last_tuple_ref: OcbBodyRefV2::NULL,
                 },
                 OcbRowGroupOrderingProofV1 {
-                    row_group_id: 1,
+                    row_group_id: row_group1_id,
                     flags: 1,
                     first_tuple_ref: OcbBodyRefV2::NULL,
                     last_tuple_ref: OcbBodyRefV2::NULL,

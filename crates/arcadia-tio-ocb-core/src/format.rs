@@ -17,24 +17,24 @@ use super::resource_limits::{
 };
 use crate::{ArcadiaTioError, Result};
 
-pub(crate) const OCB_FORMAT_MAJOR_V1: u16 = 1;
-pub(crate) const OCB_FORMAT_MINOR_V1: u16 = 0;
-pub(crate) const OCB_FORMAT_MAJOR_V2: u16 = 2;
-pub(crate) const OCB_FORMAT_MINOR_V2: u16 = 0;
-pub(crate) const OCB_BOOTSTRAP_PAGE_V1_LEN: usize = 4096;
-pub(crate) const OCB_BOOTSTRAP_PAGE_V2_LEN: usize = OCB_BOOTSTRAP_PAGE_V1_LEN;
-pub(crate) const OCB_ROOT_SLOT_V2_COUNT: usize = 2;
-pub(crate) const OCB_ROOT_SLOT_V2_LEN: usize = 160;
-pub(crate) const OCB_ROOT_SLOT_TABLE_V2_OFFSET: usize = 64;
-pub(crate) const OCB_ROOT_SLOT_TABLE_V2_LEN: usize = OCB_ROOT_SLOT_V2_COUNT * OCB_ROOT_SLOT_V2_LEN;
-pub(crate) const OCB_BODY_REF_V2_LEN: usize = 32;
-pub(crate) const OCB_COLUMN_DESC_V1_LEN: usize = 32;
-pub(crate) const OCB_ROW_GROUP_DESC_V1_LEN: usize = 120;
-pub(crate) const OCB_COLUMN_CHUNK_DESC_V1_LEN: usize = 96;
-pub(crate) const OCB_STAT_SCALAR_V1_LEN: usize = 16;
-pub(crate) const OCB_COLUMN_STATS_V1_LEN: usize = 48;
-pub(crate) const OCB_ORDERING_KEY_V1_LEN: usize = 8;
-pub(crate) const OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN: usize = 72;
+pub const OCB_FORMAT_MAJOR_V1: u16 = 1;
+pub const OCB_FORMAT_MINOR_V1: u16 = 0;
+pub const OCB_FORMAT_MAJOR_V2: u16 = 2;
+pub const OCB_FORMAT_MINOR_V2: u16 = 0;
+pub const OCB_BOOTSTRAP_PAGE_V1_LEN: usize = 4096;
+pub const OCB_BOOTSTRAP_PAGE_V2_LEN: usize = OCB_BOOTSTRAP_PAGE_V1_LEN;
+pub const OCB_ROOT_SLOT_V2_COUNT: usize = 2;
+pub const OCB_ROOT_SLOT_V2_LEN: usize = 160;
+pub const OCB_ROOT_SLOT_TABLE_V2_OFFSET: usize = 64;
+pub const OCB_ROOT_SLOT_TABLE_V2_LEN: usize = OCB_ROOT_SLOT_V2_COUNT * OCB_ROOT_SLOT_V2_LEN;
+pub const OCB_BODY_REF_V2_LEN: usize = 32;
+pub const OCB_COLUMN_DESC_V1_LEN: usize = 32;
+pub const OCB_ROW_GROUP_DESC_V1_LEN: usize = 120;
+pub const OCB_COLUMN_CHUNK_DESC_V1_LEN: usize = 96;
+pub const OCB_STAT_SCALAR_V1_LEN: usize = 16;
+pub const OCB_COLUMN_STATS_V1_LEN: usize = 48;
+pub const OCB_ORDERING_KEY_V1_LEN: usize = 8;
+pub const OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN: usize = 72;
 // The writer accepts zstd levels 1..=22; level 22 can declare a 2^27-byte
 // window even for a tiny payload. Keep that bounded compatibility floor so a
 // small custom output limit does not make writer-produced bytes unreadable.
@@ -43,36 +43,36 @@ pub(crate) const OCB_ROW_GROUP_ORDERING_PROOF_V1_LEN: usize = 72;
 const OCB_ZSTD_WRITER_COMPAT_WINDOW_LOG: u32 = 27;
 const OCB_ZSTD_PLATFORM_MAX_WINDOW_LOG: u32 = if usize::BITS <= 32 { 30 } else { 31 };
 
-pub(crate) const OCB_BOOTSTRAP_MAGIC_V1: [u8; 8] = *b"TIOOCB1\0";
-pub(crate) const OCB_BOOTSTRAP_MAGIC_V2: [u8; 8] = *b"TIOOCB2\0";
-pub(crate) const OCB_ROOT_MAGIC_V1: [u8; 8] = *b"OCBROOT1";
-pub(crate) const OCB_ROOT_MAGIC_V2: [u8; 8] = *b"OCBROOT2";
-pub(crate) const OCB_ROOT_SLOT_MAGIC_V2: [u8; 8] = *b"OCBSLT2\0";
-pub(crate) const OCB_SCHEMA_MAGIC_V1: [u8; 8] = *b"OCBSCH1\0";
-pub(crate) const OCB_STRING_TABLE_MAGIC_V1: [u8; 8] = *b"OCBSTR1\0";
-pub(crate) const OCB_DICTIONARY_INDEX_MAGIC_V1: [u8; 8] = *b"OCBDIX1\0";
-pub(crate) const OCB_DICTIONARY_VALUES_MAGIC_V1: [u8; 8] = *b"OCBDVL1\0";
-pub(crate) const OCB_ROW_GROUP_INDEX_MAGIC_V1: [u8; 8] = *b"OCBRGI1\0";
-pub(crate) const OCB_ORDERING_PROOF_MAGIC_V1: [u8; 8] = *b"OCBORD1\0";
-pub(crate) const OCB_COLUMN_CHUNK_MAGIC_V1: [u8; 8] = *b"OCBCHK1\0";
-pub(crate) const OCB_ROW_GROUP_INDEX_DELTA_MAGIC_V1: [u8; 8] = *b"OCBRGD1\0";
+pub const OCB_BOOTSTRAP_MAGIC_V1: [u8; 8] = *b"TIOOCB1\0";
+pub const OCB_BOOTSTRAP_MAGIC_V2: [u8; 8] = *b"TIOOCB2\0";
+pub const OCB_ROOT_MAGIC_V1: [u8; 8] = *b"OCBROOT1";
+pub const OCB_ROOT_MAGIC_V2: [u8; 8] = *b"OCBROOT2";
+pub const OCB_ROOT_SLOT_MAGIC_V2: [u8; 8] = *b"OCBSLT2\0";
+pub const OCB_SCHEMA_MAGIC_V1: [u8; 8] = *b"OCBSCH1\0";
+pub const OCB_STRING_TABLE_MAGIC_V1: [u8; 8] = *b"OCBSTR1\0";
+pub const OCB_DICTIONARY_INDEX_MAGIC_V1: [u8; 8] = *b"OCBDIX1\0";
+pub const OCB_DICTIONARY_VALUES_MAGIC_V1: [u8; 8] = *b"OCBDVL1\0";
+pub const OCB_ROW_GROUP_INDEX_MAGIC_V1: [u8; 8] = *b"OCBRGI1\0";
+pub const OCB_ORDERING_PROOF_MAGIC_V1: [u8; 8] = *b"OCBORD1\0";
+pub const OCB_COLUMN_CHUNK_MAGIC_V1: [u8; 8] = *b"OCBCHK1\0";
+pub const OCB_ROW_GROUP_INDEX_DELTA_MAGIC_V1: [u8; 8] = *b"OCBRGD1\0";
 
-pub(crate) const OCB_NULL_U32: u32 = u32::MAX;
+pub const OCB_NULL_U32: u32 = u32::MAX;
 
-pub(crate) const OCB_ROOT_V1_LEN: u16 = 220;
-pub(crate) const OCB_ROOT_V2_LEN: u16 = 456;
-pub(crate) const OCB_SCHEMA_V1_HEADER_LEN: u16 = 52;
-pub(crate) const OCB_STRING_TABLE_V1_HEADER_LEN: u16 = 20;
-pub(crate) const OCB_DICTIONARY_INDEX_V1_HEADER_LEN: u16 = 20;
-pub(crate) const OCB_DICTIONARY_VALUES_V1_HEADER_LEN: u16 = 40;
-pub(crate) const OCB_ROW_GROUP_INDEX_V1_HEADER_LEN: u16 = 32;
-pub(crate) const OCB_ORDERING_PROOF_V1_HEADER_LEN: u16 = 28;
-pub(crate) const OCB_COLUMN_CHUNK_V1_HEADER_LEN: u16 = 44;
-pub(crate) const OCB_ROW_GROUP_INDEX_DELTA_V1_HEADER_LEN: u16 = 56;
+pub const OCB_ROOT_V1_LEN: u16 = 220;
+pub const OCB_ROOT_V2_LEN: u16 = 456;
+pub const OCB_SCHEMA_V1_HEADER_LEN: u16 = 52;
+pub const OCB_STRING_TABLE_V1_HEADER_LEN: u16 = 20;
+pub const OCB_DICTIONARY_INDEX_V1_HEADER_LEN: u16 = 20;
+pub const OCB_DICTIONARY_VALUES_V1_HEADER_LEN: u16 = 40;
+pub const OCB_ROW_GROUP_INDEX_V1_HEADER_LEN: u16 = 32;
+pub const OCB_ORDERING_PROOF_V1_HEADER_LEN: u16 = 28;
+pub const OCB_COLUMN_CHUNK_V1_HEADER_LEN: u16 = 44;
+pub const OCB_ROW_GROUP_INDEX_DELTA_V1_HEADER_LEN: u16 = 56;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbBodyKindV1 {
+pub enum OcbBodyKindV1 {
     Unknown = 0,
     Root = 1,
     Schema = 2,
@@ -111,7 +111,7 @@ impl OcbBodyKindV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbChecksumKindV1 {
+pub enum OcbChecksumKindV1 {
     None = 0,
     Crc32c = 1,
 }
@@ -130,7 +130,7 @@ impl OcbChecksumKindV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbPhysicalTypeV1 {
+pub enum OcbPhysicalTypeV1 {
     I32 = 1,
     I64 = 2,
     F32 = 3,
@@ -152,7 +152,7 @@ impl OcbPhysicalTypeV1 {
         }
     }
 
-    pub(crate) const fn primitive_byte_width(self) -> Option<usize> {
+    pub const fn primitive_byte_width(self) -> Option<usize> {
         match self {
             Self::I32 | Self::F32 => Some(4),
             Self::I64 | Self::F64 => Some(8),
@@ -163,7 +163,7 @@ impl OcbPhysicalTypeV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbLogicalKindV1 {
+pub enum OcbLogicalKindV1 {
     Plain = 0,
     TimestampNanosLike = 1,
     ScaledInteger = 2,
@@ -190,7 +190,7 @@ impl OcbLogicalKindV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbNullabilityV1 {
+pub enum OcbNullabilityV1 {
     NonNull = 0,
     Nullable = 1,
 }
@@ -207,7 +207,7 @@ impl OcbNullabilityV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbChunkCodecV1 {
+pub enum OcbChunkCodecV1 {
     None = 0,
     Zstd = 1,
 }
@@ -226,7 +226,7 @@ impl OcbChunkCodecV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub(crate) enum OcbDictionaryValueKindV1 {
+pub enum OcbDictionaryValueKindV1 {
     Utf8 = 1,
     Bytes = 2,
     FixedBytes = 3,
@@ -249,7 +249,7 @@ impl OcbDictionaryValueKindV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum OcbOrderingDirectionV1 {
+pub enum OcbOrderingDirectionV1 {
     Ascending = 0,
     Descending = 1,
 }
@@ -268,7 +268,7 @@ impl OcbOrderingDirectionV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum OcbNullOrderV1 {
+pub enum OcbNullOrderV1 {
     NullsFirst = 0,
     NullsLast = 1,
     NoNulls = 2,
@@ -286,19 +286,19 @@ impl OcbNullOrderV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbBodyRefV2 {
-    pub(crate) offset: u64,
-    pub(crate) length: u64,
-    pub(crate) kind: OcbBodyKindV1,
-    pub(crate) flags: u16,
-    pub(crate) checksum_kind: OcbChecksumKindV1,
-    pub(crate) reserved0: u16,
-    pub(crate) checksum: u32,
-    pub(crate) reserved1: u32,
+pub struct OcbBodyRefV2 {
+    pub offset: u64,
+    pub length: u64,
+    pub kind: OcbBodyKindV1,
+    pub flags: u16,
+    pub checksum_kind: OcbChecksumKindV1,
+    pub reserved0: u16,
+    pub checksum: u32,
+    pub reserved1: u32,
 }
 
 impl OcbBodyRefV2 {
-    pub(crate) const NULL: Self = Self {
+    pub const NULL: Self = Self {
         offset: 0,
         length: 0,
         kind: OcbBodyKindV1::Unknown,
@@ -309,7 +309,7 @@ impl OcbBodyRefV2 {
         reserved1: 0,
     };
 
-    pub(crate) fn new(offset: u64, length: u64, kind: OcbBodyKindV1, checksum: u32) -> Self {
+    pub fn new(offset: u64, length: u64, kind: OcbBodyKindV1, checksum: u32) -> Self {
         Self {
             offset,
             length,
@@ -322,11 +322,11 @@ impl OcbBodyRefV2 {
         }
     }
 
-    pub(crate) const fn is_null(self) -> bool {
+    pub const fn is_null(self) -> bool {
         self.offset == 0 && self.length == 0 && matches!(self.kind, OcbBodyKindV1::Unknown)
     }
 
-    pub(crate) fn validate(self, expected_kind: OcbBodyKindV1, file_len: u64) -> Result<()> {
+    pub fn validate(self, expected_kind: OcbBodyKindV1, file_len: u64) -> Result<()> {
         if self.is_null() {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB body reference is null",
@@ -351,7 +351,7 @@ impl OcbBodyRefV2 {
         Ok(())
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         write_u64(&mut writer, self.offset)?;
         write_u64(&mut writer, self.length)?;
         write_u16(&mut writer, self.kind as u16)?;
@@ -363,7 +363,7 @@ impl OcbBodyRefV2 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             offset: read_u64(&mut reader)?,
             length: read_u64(&mut reader)?,
@@ -378,18 +378,18 @@ impl OcbBodyRefV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbBootstrapPageV1 {
-    pub(crate) format_major: u16,
-    pub(crate) format_minor: u16,
-    pub(crate) flags: u32,
-    pub(crate) page_size: u32,
-    pub(crate) file_uuid: [u8; 16],
-    pub(crate) root_ref: OcbBodyRefV2,
-    pub(crate) crc32c: u32,
+pub struct OcbBootstrapPageV1 {
+    pub format_major: u16,
+    pub format_minor: u16,
+    pub flags: u32,
+    pub page_size: u32,
+    pub file_uuid: [u8; 16],
+    pub root_ref: OcbBodyRefV2,
+    pub crc32c: u32,
 }
 
 impl OcbBootstrapPageV1 {
-    pub(crate) fn new(file_uuid: [u8; 16], root_ref: OcbBodyRefV2) -> Self {
+    pub fn new(file_uuid: [u8; 16], root_ref: OcbBodyRefV2) -> Self {
         Self {
             format_major: OCB_FORMAT_MAJOR_V1,
             format_minor: OCB_FORMAT_MINOR_V1,
@@ -401,7 +401,7 @@ impl OcbBootstrapPageV1 {
         }
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -409,7 +409,7 @@ impl OcbBootstrapPageV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut buf = vec![0u8; OCB_BOOTSTRAP_PAGE_V1_LEN];
         read_exact_ocb(&mut reader, &mut buf)?;
         let actual_crc = read_u32_at_end(&buf)?;
@@ -485,22 +485,22 @@ impl OcbBootstrapPageV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbRootSlotV2 {
-    pub(crate) version: u16,
-    pub(crate) slot_id: u16,
-    pub(crate) flags: u16,
-    pub(crate) generation: u64,
-    pub(crate) root_ref: OcbBodyRefV2,
-    pub(crate) previous_generation: u64,
-    pub(crate) previous_root_ref: OcbBodyRefV2,
-    pub(crate) commit_diagnostics_ref: OcbBodyRefV2,
-    pub(crate) committed_unix_nanos: u64,
-    pub(crate) writer_version: [u8; 16],
-    pub(crate) crc32c: u32,
+pub struct OcbRootSlotV2 {
+    pub version: u16,
+    pub slot_id: u16,
+    pub flags: u16,
+    pub generation: u64,
+    pub root_ref: OcbBodyRefV2,
+    pub previous_generation: u64,
+    pub previous_root_ref: OcbBodyRefV2,
+    pub commit_diagnostics_ref: OcbBodyRefV2,
+    pub committed_unix_nanos: u64,
+    pub writer_version: [u8; 16],
+    pub crc32c: u32,
 }
 
 impl OcbRootSlotV2 {
-    pub(crate) fn empty(slot_id: u16) -> Self {
+    pub fn empty(slot_id: u16) -> Self {
         Self {
             version: OCB_FORMAT_MAJOR_V2,
             slot_id,
@@ -516,7 +516,7 @@ impl OcbRootSlotV2 {
         }
     }
 
-    pub(crate) fn new(
+    pub fn new(
         slot_id: u16,
         generation: u64,
         root_ref: OcbBodyRefV2,
@@ -539,11 +539,11 @@ impl OcbRootSlotV2 {
         }
     }
 
-    pub(crate) const fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.root_ref.is_null()
     }
 
-    pub(crate) fn validate_candidate(&self, expected_slot_id: u16, file_len: u64) -> Result<()> {
+    pub fn validate_candidate(&self, expected_slot_id: u16, file_len: u64) -> Result<()> {
         if self.slot_id != expected_slot_id {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB root slot id does not match table position",
@@ -573,7 +573,7 @@ impl OcbRootSlotV2 {
         Ok(())
     }
 
-    pub(crate) fn validate_root(&self, root: &OcbRootV2) -> Result<()> {
+    pub fn validate_root(&self, root: &OcbRootV2) -> Result<()> {
         if root.generation != self.generation {
             return Err(ArcadiaTioError::ocb_corrupt_file(
                 "OCB root generation does not match root slot",
@@ -597,7 +597,7 @@ impl OcbRootSlotV2 {
         Ok(())
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -605,7 +605,7 @@ impl OcbRootSlotV2 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut buf = vec![0u8; OCB_ROOT_SLOT_V2_LEN];
         read_exact_ocb(&mut reader, &mut buf)?;
         let actual_crc = read_u32_at_end(&buf)?;
@@ -735,18 +735,18 @@ impl OcbRootSlotV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbBootstrapPageV2 {
-    pub(crate) format_major: u16,
-    pub(crate) format_minor: u16,
-    pub(crate) flags: u32,
-    pub(crate) page_size: u32,
-    pub(crate) file_uuid: [u8; 16],
+pub struct OcbBootstrapPageV2 {
+    pub format_major: u16,
+    pub format_minor: u16,
+    pub flags: u32,
+    pub page_size: u32,
+    pub file_uuid: [u8; 16],
     root_slot_bytes: [[u8; OCB_ROOT_SLOT_V2_LEN]; OCB_ROOT_SLOT_V2_COUNT],
-    pub(crate) crc32c: u32,
+    pub crc32c: u32,
 }
 
 impl OcbBootstrapPageV2 {
-    pub(crate) fn new(
+    pub fn new(
         file_uuid: [u8; 16],
         root_slots: [OcbRootSlotV2; OCB_ROOT_SLOT_V2_COUNT],
     ) -> Result<Self> {
@@ -765,14 +765,14 @@ impl OcbBootstrapPageV2 {
         })
     }
 
-    pub(crate) fn decoded_root_slots(&self) -> Vec<Result<OcbRootSlotV2>> {
+    pub fn decoded_root_slots(&self) -> Vec<Result<OcbRootSlotV2>> {
         self.root_slot_bytes
             .iter()
             .map(|bytes| OcbRootSlotV2::read_from(Cursor::new(bytes.as_slice())))
             .collect()
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = Self::bootstrap_crc32c(&buf)?;
         write_u32_at_end(&mut buf, checksum);
@@ -780,7 +780,7 @@ impl OcbBootstrapPageV2 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut buf = vec![0u8; OCB_BOOTSTRAP_PAGE_V2_LEN];
         read_exact_ocb(&mut reader, &mut buf)?;
         let actual_crc = read_u32_at_end(&buf)?;
@@ -877,38 +877,38 @@ impl OcbBootstrapPageV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbRootV2 {
-    pub(crate) version: u16,
-    pub(crate) flags: u32,
-    pub(crate) generation: u64,
-    pub(crate) previous_generation: u64,
-    pub(crate) previous_root_ref: OcbBodyRefV2,
-    pub(crate) append_base_row: u64,
-    pub(crate) append_row_count: u64,
-    pub(crate) append_base_row_group: u32,
-    pub(crate) append_row_group_count: u32,
-    pub(crate) row_count: u64,
-    pub(crate) column_count: u32,
-    pub(crate) row_group_count: u32,
-    pub(crate) dictionary_count: u32,
-    pub(crate) column_chunk_count: u32,
-    pub(crate) schema_ref: OcbBodyRefV2,
-    pub(crate) dictionary_index_ref: OcbBodyRefV2,
-    pub(crate) row_group_index_ref: OcbBodyRefV2,
-    pub(crate) ordering_proof_ref: OcbBodyRefV2,
-    pub(crate) debug_json_ref: OcbBodyRefV2,
-    pub(crate) first_key_tuple_ref: OcbBodyRefV2,
-    pub(crate) last_key_tuple_ref: OcbBodyRefV2,
-    pub(crate) append_first_key_tuple_ref: OcbBodyRefV2,
-    pub(crate) append_last_key_tuple_ref: OcbBodyRefV2,
-    pub(crate) commit_diagnostics_ref: OcbBodyRefV2,
-    pub(crate) created_unix_nanos: u64,
-    pub(crate) content_flags: u64,
-    pub(crate) crc32c: u32,
+pub struct OcbRootV2 {
+    pub version: u16,
+    pub flags: u32,
+    pub generation: u64,
+    pub previous_generation: u64,
+    pub previous_root_ref: OcbBodyRefV2,
+    pub append_base_row: u64,
+    pub append_row_count: u64,
+    pub append_base_row_group: u32,
+    pub append_row_group_count: u32,
+    pub row_count: u64,
+    pub column_count: u32,
+    pub row_group_count: u32,
+    pub dictionary_count: u32,
+    pub column_chunk_count: u32,
+    pub schema_ref: OcbBodyRefV2,
+    pub dictionary_index_ref: OcbBodyRefV2,
+    pub row_group_index_ref: OcbBodyRefV2,
+    pub ordering_proof_ref: OcbBodyRefV2,
+    pub debug_json_ref: OcbBodyRefV2,
+    pub first_key_tuple_ref: OcbBodyRefV2,
+    pub last_key_tuple_ref: OcbBodyRefV2,
+    pub append_first_key_tuple_ref: OcbBodyRefV2,
+    pub append_last_key_tuple_ref: OcbBodyRefV2,
+    pub commit_diagnostics_ref: OcbBodyRefV2,
+    pub created_unix_nanos: u64,
+    pub content_flags: u64,
+    pub crc32c: u32,
 }
 
 impl OcbRootV2 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -916,7 +916,7 @@ impl OcbRootV2 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut buf = vec![0u8; OCB_ROOT_V2_LEN as usize];
         read_exact_ocb(&mut reader, &mut buf)?;
         let actual_crc = read_u32_at_end(&buf)?;
@@ -1002,7 +1002,7 @@ impl OcbRootV2 {
         })
     }
 
-    pub(crate) fn validate_references(&self, file_len: u64) -> Result<()> {
+    pub fn validate_references(&self, file_len: u64) -> Result<()> {
         self.validate_ref_kinds()?;
         self.schema_ref.validate(OcbBodyKindV1::Schema, file_len)?;
         self.row_group_index_ref
@@ -1046,7 +1046,7 @@ impl OcbRootV2 {
         Ok(())
     }
 
-    pub(crate) fn to_v1_root(&self) -> OcbRootV1 {
+    pub fn to_v1_root(&self) -> OcbRootV1 {
         OcbRootV1 {
             version: 1,
             flags: self.flags,
@@ -1238,25 +1238,25 @@ fn validate_optional_ref_kinds(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbRootV1 {
-    pub(crate) version: u16,
-    pub(crate) flags: u32,
-    pub(crate) row_count: u64,
-    pub(crate) column_count: u32,
-    pub(crate) row_group_count: u32,
-    pub(crate) dictionary_count: u32,
-    pub(crate) schema_ref: OcbBodyRefV2,
-    pub(crate) dictionary_index_ref: OcbBodyRefV2,
-    pub(crate) row_group_index_ref: OcbBodyRefV2,
-    pub(crate) ordering_proof_ref: OcbBodyRefV2,
-    pub(crate) debug_json_ref: OcbBodyRefV2,
-    pub(crate) created_unix_nanos: u64,
-    pub(crate) content_flags: u64,
-    pub(crate) crc32c: u32,
+pub struct OcbRootV1 {
+    pub version: u16,
+    pub flags: u32,
+    pub row_count: u64,
+    pub column_count: u32,
+    pub row_group_count: u32,
+    pub dictionary_count: u32,
+    pub schema_ref: OcbBodyRefV2,
+    pub dictionary_index_ref: OcbBodyRefV2,
+    pub row_group_index_ref: OcbBodyRefV2,
+    pub ordering_proof_ref: OcbBodyRefV2,
+    pub debug_json_ref: OcbBodyRefV2,
+    pub created_unix_nanos: u64,
+    pub content_flags: u64,
+    pub crc32c: u32,
 }
 
 impl OcbRootV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -1264,7 +1264,7 @@ impl OcbRootV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut buf = vec![0u8; OCB_ROOT_V1_LEN as usize];
         read_exact_ocb(&mut reader, &mut buf)?;
         let actual_crc = read_u32_at_end(&buf)?;
@@ -1381,14 +1381,14 @@ impl OcbRootV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbStringTableV1 {
-    pub(crate) version: u16,
-    pub(crate) strings: Vec<String>,
-    pub(crate) crc32c: u32,
+pub struct OcbStringTableV1 {
+    pub version: u16,
+    pub strings: Vec<String>,
+    pub crc32c: u32,
 }
 
 impl OcbStringTableV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -1396,18 +1396,18 @@ impl OcbStringTableV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -1500,21 +1500,21 @@ impl OcbStringTableV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbColumnDescV1 {
-    pub(crate) column_id: u32,
-    pub(crate) name_string_id: u32,
-    pub(crate) physical_type: OcbPhysicalTypeV1,
-    pub(crate) logical_kind: OcbLogicalKindV1,
-    pub(crate) flags: u32,
-    pub(crate) dictionary_id: u32,
-    pub(crate) scale: i32,
-    pub(crate) nullability: OcbNullabilityV1,
-    pub(crate) reserved0: u16,
-    pub(crate) fixed_binary_width: u32,
+pub struct OcbColumnDescV1 {
+    pub column_id: u32,
+    pub name_string_id: u32,
+    pub physical_type: OcbPhysicalTypeV1,
+    pub logical_kind: OcbLogicalKindV1,
+    pub flags: u32,
+    pub dictionary_id: u32,
+    pub scale: i32,
+    pub nullability: OcbNullabilityV1,
+    pub reserved0: u16,
+    pub fixed_binary_width: u32,
 }
 
 impl OcbColumnDescV1 {
-    pub(crate) fn value_byte_width(&self) -> Result<u32> {
+    pub fn value_byte_width(&self) -> Result<u32> {
         match self.physical_type {
             OcbPhysicalTypeV1::FixedBinary => {
                 if self.fixed_binary_width == 0 {
@@ -1538,7 +1538,7 @@ impl OcbColumnDescV1 {
         }
     }
 
-    pub(crate) fn expected_value_bytes(&self, row_count: u64) -> Result<u64> {
+    pub fn expected_value_bytes(&self, row_count: u64) -> Result<u64> {
         row_count
             .checked_mul(u64::from(self.value_byte_width()?))
             .ok_or(ArcadiaTioError::ocb_corrupt_file(
@@ -1546,7 +1546,7 @@ impl OcbColumnDescV1 {
             ))
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         if matches!(self.logical_kind, OcbLogicalKindV1::DictionaryCode)
             && self.dictionary_id == OCB_NULL_U32
         {
@@ -1581,7 +1581,7 @@ impl OcbColumnDescV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             column_id: read_u32(&mut reader)?,
             name_string_id: read_u32(&mut reader)?,
@@ -1598,15 +1598,15 @@ impl OcbColumnDescV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbSchemaV1 {
-    pub(crate) version: u16,
-    pub(crate) string_table_ref: OcbBodyRefV2,
-    pub(crate) columns: Vec<OcbColumnDescV1>,
-    pub(crate) crc32c: u32,
+pub struct OcbSchemaV1 {
+    pub version: u16,
+    pub string_table_ref: OcbBodyRefV2,
+    pub columns: Vec<OcbColumnDescV1>,
+    pub crc32c: u32,
 }
 
 impl OcbSchemaV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -1614,18 +1614,18 @@ impl OcbSchemaV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -1712,19 +1712,19 @@ impl OcbSchemaV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbDictionaryDescV1 {
-    pub(crate) dictionary_id: u32,
-    pub(crate) name_string_id: u32,
-    pub(crate) code_physical_type: OcbPhysicalTypeV1,
-    pub(crate) value_kind: OcbDictionaryValueKindV1,
-    pub(crate) flags: u32,
-    pub(crate) values_ref: OcbBodyRefV2,
-    pub(crate) entry_count: u32,
-    pub(crate) reserved0: u32,
+pub struct OcbDictionaryDescV1 {
+    pub dictionary_id: u32,
+    pub name_string_id: u32,
+    pub code_physical_type: OcbPhysicalTypeV1,
+    pub value_kind: OcbDictionaryValueKindV1,
+    pub flags: u32,
+    pub values_ref: OcbBodyRefV2,
+    pub entry_count: u32,
+    pub reserved0: u32,
 }
 
 impl OcbDictionaryDescV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         if self.values_ref.kind != OcbBodyKindV1::DictionaryValues {
             return Err(ArcadiaTioError::ocb_invalid_input(
                 "OCB dictionary values_ref must reference dictionary values",
@@ -1741,7 +1741,7 @@ impl OcbDictionaryDescV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             dictionary_id: read_u32(&mut reader)?,
             name_string_id: read_u32(&mut reader)?,
@@ -1756,14 +1756,14 @@ impl OcbDictionaryDescV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbDictionaryIndexV1 {
-    pub(crate) version: u16,
-    pub(crate) dictionaries: Vec<OcbDictionaryDescV1>,
-    pub(crate) crc32c: u32,
+pub struct OcbDictionaryIndexV1 {
+    pub version: u16,
+    pub dictionaries: Vec<OcbDictionaryDescV1>,
+    pub crc32c: u32,
 }
 
 impl OcbDictionaryIndexV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -1771,18 +1771,18 @@ impl OcbDictionaryIndexV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -1864,16 +1864,16 @@ impl OcbDictionaryIndexV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbDictionaryValuesV1 {
-    pub(crate) version: u16,
-    pub(crate) value_kind: OcbDictionaryValueKindV1,
-    pub(crate) fixed_width: u32,
-    pub(crate) values: Vec<Vec<u8>>,
-    pub(crate) crc32c: u32,
+pub struct OcbDictionaryValuesV1 {
+    pub version: u16,
+    pub value_kind: OcbDictionaryValueKindV1,
+    pub fixed_width: u32,
+    pub values: Vec<Vec<u8>>,
+    pub crc32c: u32,
 }
 
 impl OcbDictionaryValuesV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -1881,18 +1881,18 @@ impl OcbDictionaryValuesV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -2080,7 +2080,7 @@ impl OcbDictionaryValuesV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum OcbStatScalarV1 {
+pub enum OcbStatScalarV1 {
     I32(i32),
     I64(i64),
     F32(f32),
@@ -2088,7 +2088,7 @@ pub(crate) enum OcbStatScalarV1 {
 }
 
 impl OcbStatScalarV1 {
-    pub(crate) const fn physical_type(self) -> OcbPhysicalTypeV1 {
+    pub const fn physical_type(self) -> OcbPhysicalTypeV1 {
         match self {
             Self::I32(_) => OcbPhysicalTypeV1::I32,
             Self::I64(_) => OcbPhysicalTypeV1::I64,
@@ -2097,7 +2097,7 @@ impl OcbStatScalarV1 {
         }
     }
 
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         write_u16(&mut writer, self.physical_type() as u16)?;
         write_u16(&mut writer, 0)?;
         match self {
@@ -2110,7 +2110,7 @@ impl OcbStatScalarV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let physical_type = OcbPhysicalTypeV1::from_u16(read_u16(&mut reader)?)?;
         let _reserved0 = read_u16(&mut reader)?;
         let raw = read_u64(&mut reader)?;
@@ -2130,18 +2130,18 @@ impl OcbStatScalarV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct OcbColumnStatsV1 {
-    pub(crate) row_group_id: u32,
-    pub(crate) column_id: u32,
-    pub(crate) physical_type: OcbPhysicalTypeV1,
-    pub(crate) flags: u16,
-    pub(crate) null_count: u32,
-    pub(crate) min_value: OcbStatScalarV1,
-    pub(crate) max_value: OcbStatScalarV1,
+pub struct OcbColumnStatsV1 {
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub physical_type: OcbPhysicalTypeV1,
+    pub flags: u16,
+    pub null_count: u32,
+    pub min_value: OcbStatScalarV1,
+    pub max_value: OcbStatScalarV1,
 }
 
 impl OcbColumnStatsV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         if self.min_value.physical_type() != self.physical_type
             || self.max_value.physical_type() != self.physical_type
         {
@@ -2159,7 +2159,7 @@ impl OcbColumnStatsV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let row_group_id = read_u32(&mut reader)?;
         let column_id = read_u32(&mut reader)?;
         let physical_type = OcbPhysicalTypeV1::from_u16(read_u16(&mut reader)?)?;
@@ -2186,21 +2186,21 @@ impl OcbColumnStatsV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbRowGroupDescV1 {
-    pub(crate) row_group_id: u32,
-    pub(crate) flags: u32,
-    pub(crate) base_row: u64,
-    pub(crate) row_count: u64,
-    pub(crate) chunk_desc_begin: u64,
-    pub(crate) chunk_desc_count: u32,
-    pub(crate) stat_begin: u64,
-    pub(crate) stat_count: u32,
-    pub(crate) first_key_tuple_ref: OcbBodyRefV2,
-    pub(crate) last_key_tuple_ref: OcbBodyRefV2,
+pub struct OcbRowGroupDescV1 {
+    pub row_group_id: u32,
+    pub flags: u32,
+    pub base_row: u64,
+    pub row_count: u64,
+    pub chunk_desc_begin: u64,
+    pub chunk_desc_count: u32,
+    pub stat_begin: u64,
+    pub stat_count: u32,
+    pub first_key_tuple_ref: OcbBodyRefV2,
+    pub last_key_tuple_ref: OcbBodyRefV2,
 }
 
 impl OcbRowGroupDescV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         write_u32(&mut writer, self.row_group_id)?;
         write_u32(&mut writer, self.flags)?;
         write_u64(&mut writer, self.base_row)?;
@@ -2216,7 +2216,7 @@ impl OcbRowGroupDescV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             row_group_id: read_u32(&mut reader)?,
             flags: read_u32(&mut reader)?,
@@ -2239,20 +2239,20 @@ impl OcbRowGroupDescV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbColumnChunkDescV1 {
-    pub(crate) row_group_id: u32,
-    pub(crate) column_id: u32,
-    pub(crate) physical_type: OcbPhysicalTypeV1,
-    pub(crate) codec: OcbChunkCodecV1,
-    pub(crate) flags: u32,
-    pub(crate) value_ref: OcbBodyRefV2,
-    pub(crate) validity_ref: OcbBodyRefV2,
-    pub(crate) row_count: u64,
-    pub(crate) uncompressed_bytes: u64,
+pub struct OcbColumnChunkDescV1 {
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub physical_type: OcbPhysicalTypeV1,
+    pub codec: OcbChunkCodecV1,
+    pub flags: u32,
+    pub value_ref: OcbBodyRefV2,
+    pub validity_ref: OcbBodyRefV2,
+    pub row_count: u64,
+    pub uncompressed_bytes: u64,
 }
 
 impl OcbColumnChunkDescV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         if self.value_ref.kind != OcbBodyKindV1::ColumnChunk {
             return Err(ArcadiaTioError::ocb_invalid_input(
                 "OCB chunk value_ref must reference column chunk",
@@ -2275,7 +2275,7 @@ impl OcbColumnChunkDescV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             row_group_id: read_u32(&mut reader)?,
             column_id: read_u32(&mut reader)?,
@@ -2291,17 +2291,17 @@ impl OcbColumnChunkDescV1 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OcbRowGroupIndexV1 {
-    pub(crate) version: u16,
-    pub(crate) flags: u32,
-    pub(crate) row_groups: Vec<OcbRowGroupDescV1>,
-    pub(crate) column_chunks: Vec<OcbColumnChunkDescV1>,
-    pub(crate) stats: Vec<OcbColumnStatsV1>,
-    pub(crate) crc32c: u32,
+pub struct OcbRowGroupIndexV1 {
+    pub version: u16,
+    pub flags: u32,
+    pub row_groups: Vec<OcbRowGroupDescV1>,
+    pub column_chunks: Vec<OcbColumnChunkDescV1>,
+    pub stats: Vec<OcbColumnStatsV1>,
+    pub crc32c: u32,
 }
 
 impl OcbRowGroupIndexV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -2309,18 +2309,18 @@ impl OcbRowGroupIndexV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -2458,23 +2458,23 @@ impl OcbRowGroupIndexV1 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OcbRowGroupIndexDeltaV1 {
-    pub(crate) version: u16,
-    pub(crate) flags: u32,
-    pub(crate) base_row_group_count: u32,
-    pub(crate) base_column_chunk_count: u32,
-    pub(crate) base_stat_count: u32,
-    pub(crate) base_ordering_proof_count: u32,
-    pub(crate) row_groups: Vec<OcbRowGroupDescV1>,
-    pub(crate) column_chunks: Vec<OcbColumnChunkDescV1>,
-    pub(crate) stats: Vec<OcbColumnStatsV1>,
-    pub(crate) ordering_keys: Vec<OcbOrderingKeyV1>,
-    pub(crate) row_group_ordering_proofs: Vec<OcbRowGroupOrderingProofV1>,
-    pub(crate) crc32c: u32,
+pub struct OcbRowGroupIndexDeltaV1 {
+    pub version: u16,
+    pub flags: u32,
+    pub base_row_group_count: u32,
+    pub base_column_chunk_count: u32,
+    pub base_stat_count: u32,
+    pub base_ordering_proof_count: u32,
+    pub row_groups: Vec<OcbRowGroupDescV1>,
+    pub column_chunks: Vec<OcbColumnChunkDescV1>,
+    pub stats: Vec<OcbColumnStatsV1>,
+    pub ordering_keys: Vec<OcbOrderingKeyV1>,
+    pub row_group_ordering_proofs: Vec<OcbRowGroupOrderingProofV1>,
+    pub crc32c: u32,
 }
 
 impl OcbRowGroupIndexDeltaV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -2482,18 +2482,18 @@ impl OcbRowGroupIndexDeltaV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -2704,22 +2704,22 @@ impl OcbRowGroupIndexDeltaV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbOrderingKeyV1 {
-    pub(crate) column_id: u32,
-    pub(crate) direction: OcbOrderingDirectionV1,
-    pub(crate) null_order: OcbNullOrderV1,
-    pub(crate) reserved0: u16,
+pub struct OcbOrderingKeyV1 {
+    pub column_id: u32,
+    pub direction: OcbOrderingDirectionV1,
+    pub null_order: OcbNullOrderV1,
+    pub reserved0: u16,
 }
 
 impl OcbOrderingKeyV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         write_u32(&mut writer, self.column_id)?;
         writer.write_all(&[self.direction as u8, self.null_order as u8])?;
         write_u16(&mut writer, self.reserved0)?;
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let column_id = read_u32(&mut reader)?;
         let mut pair = [0u8; 2];
         read_exact_ocb(&mut reader, &mut pair)?;
@@ -2733,15 +2733,15 @@ impl OcbOrderingKeyV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OcbRowGroupOrderingProofV1 {
-    pub(crate) row_group_id: u32,
-    pub(crate) flags: u32,
-    pub(crate) first_tuple_ref: OcbBodyRefV2,
-    pub(crate) last_tuple_ref: OcbBodyRefV2,
+pub struct OcbRowGroupOrderingProofV1 {
+    pub row_group_id: u32,
+    pub flags: u32,
+    pub first_tuple_ref: OcbBodyRefV2,
+    pub last_tuple_ref: OcbBodyRefV2,
 }
 
 impl OcbRowGroupOrderingProofV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         if !self.first_tuple_ref.is_null() && self.first_tuple_ref.kind != OcbBodyKindV1::KeyTuple {
             return Err(ArcadiaTioError::ocb_invalid_input(
                 "OCB ordering first_tuple_ref must reference key tuple",
@@ -2759,7 +2759,7 @@ impl OcbRowGroupOrderingProofV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         Ok(Self {
             row_group_id: read_u32(&mut reader)?,
             flags: read_u32(&mut reader)?,
@@ -2770,16 +2770,16 @@ impl OcbRowGroupOrderingProofV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbOrderingProofV1 {
-    pub(crate) version: u16,
-    pub(crate) flags: u16,
-    pub(crate) keys: Vec<OcbOrderingKeyV1>,
-    pub(crate) row_group_proofs: Vec<OcbRowGroupOrderingProofV1>,
-    pub(crate) crc32c: u32,
+pub struct OcbOrderingProofV1 {
+    pub version: u16,
+    pub flags: u16,
+    pub keys: Vec<OcbOrderingKeyV1>,
+    pub row_group_proofs: Vec<OcbRowGroupOrderingProofV1>,
+    pub crc32c: u32,
 }
 
 impl OcbOrderingProofV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -2787,18 +2787,18 @@ impl OcbOrderingProofV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let mut budget = policy_a_metadata_materialization_budget();
         Self::read_from_bytes_with_budget(bytes, &mut budget)
     }
 
-    pub(crate) fn read_from_bytes_with_budget(
+    pub fn read_from_bytes_with_budget(
         mut bytes: Vec<u8>,
         budget: &mut MetadataMaterializationBudget,
     ) -> Result<Self> {
@@ -2909,21 +2909,21 @@ impl OcbOrderingProofV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OcbColumnChunkObjectV1 {
-    pub(crate) version: u16,
-    pub(crate) physical_type: OcbPhysicalTypeV1,
-    pub(crate) codec: OcbChunkCodecV1,
-    pub(crate) flags: u32,
-    pub(crate) row_group_id: u32,
-    pub(crate) column_id: u32,
-    pub(crate) row_count: u64,
-    pub(crate) uncompressed_bytes: u64,
-    pub(crate) payload: Vec<u8>,
-    pub(crate) crc32c: u32,
+pub struct OcbColumnChunkObjectV1 {
+    pub version: u16,
+    pub physical_type: OcbPhysicalTypeV1,
+    pub codec: OcbChunkCodecV1,
+    pub flags: u32,
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub row_count: u64,
+    pub uncompressed_bytes: u64,
+    pub payload: Vec<u8>,
+    pub crc32c: u32,
 }
 
 impl OcbColumnChunkObjectV1 {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<()> {
         let mut buf = self.encode_without_checksum()?;
         let checksum = crc32c(&buf);
         write_u32_at_end(&mut buf, checksum);
@@ -2931,13 +2931,13 @@ impl OcbColumnChunkObjectV1 {
         Ok(())
     }
 
-    pub(crate) fn read_from<R: Read>(mut reader: R) -> Result<Self> {
+    pub fn read_from<R: Read>(mut reader: R) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Self::read_from_bytes(bytes)
     }
 
-    pub(crate) fn read_from_bytes(mut bytes: Vec<u8>) -> Result<Self> {
+    pub fn read_from_bytes(mut bytes: Vec<u8>) -> Result<Self> {
         let actual_crc = read_u32_at_end(&bytes)?;
         write_u32_at_end(&mut bytes, 0);
         let expected_crc = crc32c(&bytes);
@@ -3017,7 +3017,7 @@ impl OcbColumnChunkObjectV1 {
         })
     }
 
-    pub(crate) fn uncompressed_value_bytes(&self) -> Result<u64> {
+    pub fn uncompressed_value_bytes(&self) -> Result<u64> {
         if let Some(byte_width) = self.physical_type.primitive_byte_width() {
             let expected = self.row_count.checked_mul(byte_width as u64).ok_or(
                 ArcadiaTioError::ocb_corrupt_file("OCB column chunk value byte length overflows"),
@@ -3031,14 +3031,14 @@ impl OcbColumnChunkObjectV1 {
         Ok(self.uncompressed_bytes)
     }
 
-    pub(crate) fn decode_payload(&self) -> Result<Vec<u8>> {
+    pub fn decode_payload(&self) -> Result<Vec<u8>> {
         self.decode_payload_with_limits(
             OCB_POLICY_A_MAX_COMPRESSED_CHUNK_BYTES,
             OCB_POLICY_A_MAX_DECOMPRESSED_CHUNK_BYTES,
         )
     }
 
-    pub(crate) fn decode_payload_with_limits(
+    pub fn decode_payload_with_limits(
         &self,
         max_compressed_bytes: u64,
         max_decompressed_bytes: u64,
@@ -3096,7 +3096,7 @@ impl OcbColumnChunkObjectV1 {
         }
     }
 
-    pub(crate) fn into_decoded_payload_with_limits(
+    pub fn into_decoded_payload_with_limits(
         self,
         max_compressed_bytes: u64,
         max_decompressed_bytes: u64,
@@ -3537,11 +3537,11 @@ const fn build_crc32c_table() -> [u32; 256] {
     table
 }
 
-pub(crate) const fn crc32c_init() -> u32 {
+pub const fn crc32c_init() -> u32 {
     0xFFFF_FFFFu32
 }
 
-pub(crate) fn crc32c_update(mut state: u32, bytes: &[u8]) -> u32 {
+pub fn crc32c_update(mut state: u32, bytes: &[u8]) -> u32 {
     for &byte in bytes {
         let idx = ((state ^ byte as u32) & 0xFF) as usize;
         state = CRC32C_TABLE[idx] ^ (state >> 8);
@@ -3549,11 +3549,11 @@ pub(crate) fn crc32c_update(mut state: u32, bytes: &[u8]) -> u32 {
     state
 }
 
-pub(crate) const fn crc32c_finish(state: u32) -> u32 {
+pub const fn crc32c_finish(state: u32) -> u32 {
     !state
 }
 
-pub(crate) fn crc32c(bytes: &[u8]) -> u32 {
+pub fn crc32c(bytes: &[u8]) -> u32 {
     crc32c_finish(crc32c_update(crc32c_init(), bytes))
 }
 
