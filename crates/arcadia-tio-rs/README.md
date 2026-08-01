@@ -161,6 +161,26 @@ row-group pruning is not exact row filtering, and payload replay should start
 only after the application has certified key continuity and payload shape for the
 selected owner-local/channel-local window.
 
+### OCB copy boundaries and hot-path selection
+
+The C ABI owned-read boundary materializes native-owned buffers. This safe
+wrapper then copies metadata, dictionaries, summaries, batches, visitor batches,
+and parallel-session results into Rust-owned values before the paired native
+free. Those owned paths are convenience and independent-lifetime APIs, not
+zero-copy views. `read_batches_with_attribution` can report wrapper copy time,
+but diagnostic counters alone are not performance evidence.
+
+`read_row_group_into` avoids constructing a wrapper-owned whole-result carrier
+and lets the caller reuse typed destination storage; its buffers are unspecified
+after an error. Rust applications whose hottest read path can use a C-ABI-free
+dependency should prefer the sibling `arcadia-tio-ocb-core` reusable buffer pool
+and `visit_plan_row_groups_into*` callback APIs. Their borrowed slices expire at
+callback return and are overwritten when a pool slot is reused. Fill and
+reusable-visitor paths are lower-copy, not zero-copy: they still validate, read,
+decompress, decode, and write destination memory. Parallel sessions likewise
+stream owned batches and bound native in-flight row-group slots, not bytes the
+caller retains.
+
 OCB also supports generic fixed-width opaque byte columns for compact packed
 payload storage. Declare the schema as `PhysicalType::FixedBinary { width }`,
 write row-major bytes with `PrimitiveValues::FixedBinary { width, bytes }`, and

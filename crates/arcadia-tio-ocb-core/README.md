@@ -201,6 +201,14 @@ For lower-copy reads, allocate a reusable pool with
 `ColumnBundleReusableBatchView<'_>` whose borrowed slices are valid only for the
 callback duration and are overwritten when the pool slot is reused.
 
+This is a lower-copy ownership path, not a zero-copy file view. It avoids the C
+ABI owned-result conversion and permits destination allocation reuse, while the
+reader still validates the selected snapshot, reads encoded chunks, verifies
+requested checksums, decompresses and decodes data, and writes the reusable
+buffers. Copy a callback view before returning only when the application needs
+to retain it; that application-owned copy is then outside the pool and
+scheduler bounds.
+
 For packed fixed-width binary columns, `PrimitiveColumnValuesRef::fixed_binary_records`
 and `FixedBinaryRecordView::{project_fields, project_fields_with_report}` can
 decode little-endian primitive fields at caller-supplied byte offsets into
