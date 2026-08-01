@@ -9,8 +9,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
-use std::thread;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::format::{
@@ -22,7 +21,8 @@ use crate::format::{
 };
 use crate::parallel_prepare::{
     ColumnBundleParallelPrepareContext, ColumnBundleParallelPrepareOptions,
-    ColumnBundleParallelPrepareReport, ParallelPrepareTaskSpec, execute_parallel_prepare,
+    ColumnBundleParallelPrepareReport, OrderedCommitMode, OrderedCommitPanicMode,
+    ParallelPrepareTaskSpec, execute_bounded_ordered, execute_parallel_prepare,
 };
 use crate::read::{
     OcbMetadataV1, OcbOpenValidationMode, OcbReadObjectAttribution, OcbReadSource,
@@ -3760,6 +3760,37 @@ impl ColumnBundleFile {
         })
     }
 
+    fn bounded_ordered_tasks_for_plan(
+        &self,
+        plan: &ColumnBundleReadPlan,
+    ) -> Result<Vec<ParallelPrepareTaskSpec>> {
+        let mut tasks = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
+        for (selected_row_group_ordinal, row_group_id) in
+            plan.row_group_ids.iter().copied().enumerate()
+        {
+            let row_group = self
+                .metadata
+                .row_group_index
+                .row_groups
+                .iter()
+                .find(|row_group| row_group.row_group_id == row_group_id)
+                .ok_or(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB bounded scheduler row group not found",
+                ))?;
+            let row_end = row_group.base_row.checked_add(row_group.row_count).ok_or(
+                ArcadiaTioError::ocb_corrupt_file("OCB bounded scheduler row range overflows"),
+            )?;
+            tasks.push(ParallelPrepareTaskSpec {
+                selected_row_group_ordinal,
+                row_group_id,
+                base_row: row_group.base_row,
+                row_end,
+                row_count: row_group.row_count,
+            });
+        }
+        Ok(tasks)
+    }
+
     fn visit_execution_plan<F>(
         &self,
         plan: &ColumnBundleReadPlan,
@@ -3769,7 +3800,7 @@ impl ColumnBundleFile {
     where
         F: FnMut(ColumnBatch) -> Result<ColumnBundleVisitControl>,
     {
-        let mut report = ColumnBundleReadCursorReport {
+        let mut serial_report = ColumnBundleReadCursorReport {
             base_report: plan.report.clone(),
             batches_yielded: 0,
             rows_yielded: 0,
@@ -3777,7 +3808,7 @@ impl ColumnBundleFile {
             cancelled: false,
         };
         if plan.row_group_ids.is_empty() {
-            return Ok(report);
+            return Ok(serial_report);
         }
         let wave_size = plan
             .report
@@ -3785,71 +3816,63 @@ impl ColumnBundleFile {
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1));
         validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
-        for wave in plan.row_group_ids.chunks(wave_size) {
-            let wave_batches = if wave_size <= 1 {
-                let row_group_id = wave[0];
-                vec![read_row_group(
+        if wave_size <= 1 {
+            serial_report.max_in_flight_row_groups_observed = 1;
+            for row_group_id in plan.row_group_ids.iter().copied() {
+                let batch = read_row_group(
                     &self.source,
                     &self.metadata,
                     &self.columns,
                     row_group_id,
                     &plan.projected_column_ids,
-                )?]
-            } else {
-                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-                for row_group_id in wave.iter().copied() {
-                    let source = Arc::clone(&self.source);
-                    let metadata = Arc::clone(&self.metadata);
-                    let columns = Arc::clone(&self.columns);
-                    let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
-                    handles.push(thread::spawn(move || {
-                        read_row_group(&source, &metadata, &columns, row_group_id, &selected)
-                    }));
-                }
-                let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
-                let mut first_error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok(batch)) => wave_batches.push(batch),
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
-                        }
-                        Err(_) => {
-                            if first_error.is_none() {
-                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                    "OCB read worker panicked",
-                                )));
-                            }
-                        }
-                    }
-                }
-                if let Some(err) = first_error {
-                    return Err(err);
-                }
-                wave_batches
-            };
-            report.max_in_flight_row_groups_observed = report
-                .max_in_flight_row_groups_observed
-                .max(wave_batches.len());
-            for batch in wave_batches {
+                )?;
                 let row_count = batch.row_count;
                 match visitor(batch)? {
                     ColumnBundleVisitControl::Continue => {
-                        report.batches_yielded = report.batches_yielded.saturating_add(1);
-                        report.rows_yielded = report.rows_yielded.saturating_add(row_count);
+                        serial_report.batches_yielded =
+                            serial_report.batches_yielded.saturating_add(1);
+                        serial_report.rows_yielded =
+                            serial_report.rows_yielded.saturating_add(row_count);
                     }
                     ColumnBundleVisitControl::Stop => {
-                        report.batches_yielded = report.batches_yielded.saturating_add(1);
-                        report.rows_yielded = report.rows_yielded.saturating_add(row_count);
-                        report.cancelled = true;
-                        return Ok(report);
+                        serial_report.batches_yielded =
+                            serial_report.batches_yielded.saturating_add(1);
+                        serial_report.rows_yielded =
+                            serial_report.rows_yielded.saturating_add(row_count);
+                        serial_report.cancelled = true;
+                        return Ok(serial_report);
                     }
                 }
             }
+            return Ok(serial_report);
         }
-        Ok(report)
+
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: wave_size,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| {
+                let batch = read_row_group(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &plan.projected_column_ids,
+                )?;
+                Ok((batch, ReadAttributionAccumulator::default()))
+            },
+            |_, batch| Ok(batch),
+            |_, batch| visitor(batch),
+        )?;
+        let mut cursor_report = outcome.report.cursor_report;
+        cursor_report.base_report = plan.report.clone();
+        Ok(cursor_report)
     }
 
     fn visit_execution_plan_with_attribution<F>(
@@ -3889,9 +3912,9 @@ impl ColumnBundleFile {
             .max(1)
             .min(cursor_options.max_in_flight_row_groups.max(1));
         validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
-        for wave in plan.row_group_ids.chunks(wave_size) {
-            let wave_batches = if wave_size <= 1 {
-                let row_group_id = wave[0];
+        if wave_size <= 1 {
+            cursor_report.max_in_flight_row_groups_observed = 1;
+            for row_group_id in plan.row_group_ids.iter().copied() {
                 let (batch, row_attr) = read_row_group_with_attribution(
                     &self.source,
                     &self.metadata,
@@ -3900,55 +3923,6 @@ impl ColumnBundleFile {
                     &plan.projected_column_ids,
                 )?;
                 accumulator.add(row_attr);
-                vec![batch]
-            } else {
-                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-                for row_group_id in wave.iter().copied() {
-                    let source = Arc::clone(&self.source);
-                    let metadata = Arc::clone(&self.metadata);
-                    let columns = Arc::clone(&self.columns);
-                    let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
-                    handles.push(thread::spawn(move || {
-                        read_row_group_with_attribution(
-                            &source,
-                            &metadata,
-                            &columns,
-                            row_group_id,
-                            &selected,
-                        )
-                    }));
-                }
-                let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
-                let mut first_error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok((batch, row_attr))) => {
-                            accumulator.add(row_attr);
-                            wave_batches.push(batch);
-                        }
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
-                        }
-                        Err(_) => {
-                            if first_error.is_none() {
-                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                    "OCB read worker panicked",
-                                )));
-                            }
-                        }
-                    }
-                }
-                if let Some(err) = first_error {
-                    return Err(err);
-                }
-                wave_batches
-            };
-            cursor_report.max_in_flight_row_groups_observed = cursor_report
-                .max_in_flight_row_groups_observed
-                .max(wave_batches.len());
-            for batch in wave_batches {
                 let row_count = batch.row_count;
                 let callback_started = Instant::now();
                 let control = visitor(batch);
@@ -3979,9 +3953,44 @@ impl ColumnBundleFile {
                     }
                 }
             }
+            let attribution = attribution_from_accumulator(
+                accumulator,
+                &plan.report,
+                plan_ns,
+                duration_to_ns(execute_started.elapsed()),
+            );
+            return Ok(ColumnBundleReadAttributedCursorReport {
+                cursor_report,
+                attribution,
+            });
         }
+
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            plan_ns,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: wave_size,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            true,
+            |context| {
+                read_row_group_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &plan.projected_column_ids,
+                )
+            },
+            |_, batch| Ok(batch),
+            |_, batch| visitor(batch),
+        )?;
+        let mut cursor_report = outcome.report.cursor_report;
+        cursor_report.base_report = plan.report.clone();
         let attribution = attribution_from_accumulator(
-            accumulator,
+            outcome.attribution_accumulator,
             &plan.report,
             plan_ns,
             duration_to_ns(execute_started.elapsed()),
@@ -4002,7 +4011,7 @@ impl ColumnBundleFile {
     where
         F: FnMut(ColumnBundleReusableBatchView<'_>) -> Result<ColumnBundleVisitControl>,
     {
-        let mut cursor_report = ColumnBundleReadCursorReport {
+        let cursor_report = ColumnBundleReadCursorReport {
             base_report: plan.report.clone(),
             batches_yielded: 0,
             rows_yielded: 0,
@@ -4019,70 +4028,47 @@ impl ColumnBundleFile {
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
         validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
-        for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
-            thread::scope(|scope| {
-                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-                for (slot, row_group_id) in buffers.buffers[..wave.len()]
-                    .iter_mut()
-                    .zip(wave.iter().copied())
-                {
-                    let source = &self.source;
-                    let metadata = &self.metadata;
-                    let columns = &self.columns;
-                    handles.push(scope.spawn(move || {
-                        read_row_group_into_reusable(source, metadata, columns, row_group_id, slot)
-                    }));
-                }
-                let mut first_error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok(report)) => reports.push(report),
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
-                        }
-                        Err(_) => {
-                            if first_error.is_none() {
-                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                    "OCB reusable read worker panicked",
-                                )));
-                            }
-                        }
-                    }
-                }
-                if let Some(err) = first_error {
-                    return Err(err);
-                }
-                Ok(())
-            })?;
-            cursor_report.max_in_flight_row_groups_observed = cursor_report
-                .max_in_flight_row_groups_observed
-                .max(reports.len());
-            for (slot, report) in buffers.buffers.iter().zip(reports.iter()) {
+        let mut slots = try_column_bundle_vec_with_capacity(wave_size)?;
+        slots.extend(buffers.buffers[..wave_size].iter_mut().map(Mutex::new));
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: wave_size,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let mut slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let report = read_row_group_into_reusable(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &mut slot,
+                )?;
+                Ok((report, ReadAttributionAccumulator::default()))
+            },
+            |_, report| Ok(report),
+            |context, report| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let view = ColumnBundleReusableBatchView {
-                    report,
-                    buffers: slot,
+                    report: &report,
+                    buffers: &slot,
                 };
-                match visitor(view)? {
-                    ColumnBundleVisitControl::Continue => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                    }
-                    ColumnBundleVisitControl::Stop => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                        cursor_report.cancelled = true;
-                        return Ok(cursor_report);
-                    }
-                }
-            }
-        }
+                visitor(view)
+            },
+        )?;
+        let mut cursor_report = outcome.report.cursor_report;
+        cursor_report.base_report = plan.report.clone();
         Ok(cursor_report)
     }
 
@@ -4098,8 +4084,8 @@ impl ColumnBundleFile {
         F: FnMut(ColumnBundleReusableBatchView<'_>) -> Result<ColumnBundleVisitControl>,
     {
         let execute_started = Instant::now();
-        let mut accumulator = ReadAttributionAccumulator::default();
-        let mut cursor_report = ColumnBundleReadCursorReport {
+        let accumulator = ReadAttributionAccumulator::default();
+        let cursor_report = ColumnBundleReadCursorReport {
             base_report: plan.report.clone(),
             batches_yielded: 0,
             rows_yielded: 0,
@@ -4125,93 +4111,48 @@ impl ColumnBundleFile {
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
         validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
-        for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
-            thread::scope(|scope| {
-                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-                for (slot, row_group_id) in buffers.buffers[..wave.len()]
-                    .iter_mut()
-                    .zip(wave.iter().copied())
-                {
-                    let source = &self.source;
-                    let metadata = &self.metadata;
-                    let columns = &self.columns;
-                    handles.push(scope.spawn(move || {
-                        read_row_group_into_reusable_with_attribution(
-                            source,
-                            metadata,
-                            columns,
-                            row_group_id,
-                            slot,
-                        )
-                    }));
-                }
-                let mut first_error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok((report, row_attr))) => {
-                            accumulator.add(row_attr);
-                            reports.push(report);
-                        }
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
-                        }
-                        Err(_) => {
-                            if first_error.is_none() {
-                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                    "OCB reusable read worker panicked",
-                                )));
-                            }
-                        }
-                    }
-                }
-                if let Some(err) = first_error {
-                    return Err(err);
-                }
-                Ok(())
-            })?;
-            cursor_report.max_in_flight_row_groups_observed = cursor_report
-                .max_in_flight_row_groups_observed
-                .max(reports.len());
-            for (slot, report) in buffers.buffers.iter().zip(reports.iter()) {
+        let mut slots = try_column_bundle_vec_with_capacity(wave_size)?;
+        slots.extend(buffers.buffers[..wave_size].iter_mut().map(Mutex::new));
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            plan_ns,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: wave_size,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            true,
+            |context| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let mut slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                read_row_group_into_reusable_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &mut slot,
+                )
+            },
+            |_, report| Ok(report),
+            |context, report| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let view = ColumnBundleReusableBatchView {
-                    report,
-                    buffers: slot,
+                    report: &report,
+                    buffers: &slot,
                 };
-                let callback_started = Instant::now();
-                let control = visitor(view);
-                accumulator.callback += callback_started.elapsed();
-                match control? {
-                    ColumnBundleVisitControl::Continue => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                    }
-                    ColumnBundleVisitControl::Stop => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                        cursor_report.cancelled = true;
-                        let attribution = attribution_from_accumulator(
-                            accumulator,
-                            &plan.report,
-                            plan_ns,
-                            duration_to_ns(execute_started.elapsed()),
-                        );
-                        return Ok(ColumnBundleReadAttributedCursorReport {
-                            cursor_report,
-                            attribution,
-                        });
-                    }
-                }
-            }
-        }
+                visitor(view)
+            },
+        )?;
+        let mut cursor_report = outcome.report.cursor_report;
+        cursor_report.base_report = plan.report.clone();
         let attribution = attribution_from_accumulator(
-            accumulator,
+            outcome.attribution_accumulator,
             &plan.report,
             plan_ns,
             duration_to_ns(execute_started.elapsed()),
@@ -4239,7 +4180,7 @@ impl ColumnBundleFile {
     {
         let execute_started = Instant::now();
         let mut accumulator = ReadAttributionAccumulator::default();
-        let mut cursor_report = ColumnBundleReadCursorReport {
+        let cursor_report = ColumnBundleReadCursorReport {
             base_report: plan.report.clone(),
             batches_yielded: 0,
             rows_yielded: 0,
@@ -4265,60 +4206,40 @@ impl ColumnBundleFile {
             .min(cursor_options.max_in_flight_row_groups.max(1))
             .min(buffers.len());
         validate_contiguous_in_flight_plan_resource_limits(&self.metadata, plan, wave_size)?;
-        for wave in plan.row_group_ids.chunks(wave_size) {
-            let mut reports = try_column_bundle_vec_with_capacity(wave.len())?;
-            thread::scope(|scope| {
-                let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-                for (slot, row_group_id) in buffers.buffers[..wave.len()]
-                    .iter_mut()
-                    .zip(wave.iter().copied())
-                {
-                    let source = &self.source;
-                    let metadata = &self.metadata;
-                    let columns = &self.columns;
-                    handles.push(scope.spawn(move || {
-                        read_row_group_into_reusable_with_attribution(
-                            source,
-                            metadata,
-                            columns,
-                            row_group_id,
-                            slot,
-                        )
-                    }));
-                }
-                let mut first_error = None;
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok((report, row_attr))) => {
-                            accumulator.add(row_attr);
-                            reports.push(report);
-                        }
-                        Ok(Err(err)) => {
-                            if first_error.is_none() {
-                                first_error = Some(err);
-                            }
-                        }
-                        Err(_) => {
-                            if first_error.is_none() {
-                                first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                    "OCB fixed-binary projection read worker panicked",
-                                )));
-                            }
-                        }
-                    }
-                }
-                if let Some(err) = first_error {
-                    return Err(err);
-                }
-                Ok(())
-            })?;
-            cursor_report.max_in_flight_row_groups_observed = cursor_report
-                .max_in_flight_row_groups_observed
-                .max(reports.len());
-            for (slot, report) in buffers.buffers.iter().zip(reports.iter()) {
+        let mut slots = try_column_bundle_vec_with_capacity(wave_size)?;
+        slots.extend(buffers.buffers[..wave_size].iter_mut().map(Mutex::new));
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: wave_size,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let mut slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                read_row_group_into_reusable_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &mut slot,
+                )
+            },
+            |_, report| Ok(report),
+            |context, report| {
+                let slot_index = context.selected_row_group_ordinal % wave_size;
+                let slot = slots[slot_index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let view = ColumnBundleReusableBatchView {
-                    report,
-                    buffers: slot,
+                    report: &report,
+                    buffers: &slot,
                 };
                 let projection_report =
                     project_fixed_binary_reusable_batch(&view, projection, projection_buffer)?;
@@ -4328,33 +4249,12 @@ impl ColumnBundleFile {
                 let callback_started = Instant::now();
                 let control = visitor(view, projected_view);
                 accumulator.callback += callback_started.elapsed();
-                match control? {
-                    ColumnBundleVisitControl::Continue => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                    }
-                    ColumnBundleVisitControl::Stop => {
-                        cursor_report.batches_yielded =
-                            cursor_report.batches_yielded.saturating_add(1);
-                        cursor_report.rows_yielded =
-                            cursor_report.rows_yielded.saturating_add(report.row_count);
-                        cursor_report.cancelled = true;
-                        let attribution = attribution_from_accumulator(
-                            accumulator,
-                            &plan.report,
-                            0,
-                            duration_to_ns(execute_started.elapsed()),
-                        );
-                        return Ok(ColumnBundleReadAttributedCursorReport {
-                            cursor_report,
-                            attribution,
-                        });
-                    }
-                }
-            }
-        }
+                control
+            },
+        )?;
+        accumulator.add(outcome.attribution_accumulator);
+        let mut cursor_report = outcome.report.cursor_report;
+        cursor_report.base_report = plan.report.clone();
         let attribution = attribution_from_accumulator(
             accumulator,
             &plan.report,
@@ -4387,42 +4287,32 @@ impl ColumnBundleFile {
         }
 
         let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
-        for wave in plan.row_group_ids.chunks(plan.report.effective_threads) {
-            let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-            for row_group_id in wave.iter().copied() {
-                let source = Arc::clone(&self.source);
-                let metadata = Arc::clone(&self.metadata);
-                let columns = Arc::clone(&self.columns);
-                let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
-                handles.push(thread::spawn(move || {
-                    read_row_group(&source, &metadata, &columns, row_group_id, &selected)
-                }));
-            }
-
-            let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
-            let mut first_error = None;
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok(batch)) => wave_batches.push(batch),
-                    Ok(Err(err)) => {
-                        if first_error.is_none() {
-                            first_error = Some(err);
-                        }
-                    }
-                    Err(_) => {
-                        if first_error.is_none() {
-                            first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                "OCB read worker panicked",
-                            )));
-                        }
-                    }
-                }
-            }
-            if let Some(err) = first_error {
-                return Err(err);
-            }
-            batches.extend(wave_batches);
-        }
+        execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: plan.report.effective_threads,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| {
+                let batch = read_row_group(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &plan.projected_column_ids,
+                )?;
+                Ok((batch, ReadAttributionAccumulator::default()))
+            },
+            |_, batch| Ok(batch),
+            |_, batch| {
+                batches.push(batch);
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )?;
         Ok(batches)
     }
 
@@ -4452,53 +4342,32 @@ impl ColumnBundleFile {
         }
 
         let mut batches = try_column_bundle_vec_with_capacity(plan.row_group_ids.len())?;
-        let mut attribution = ReadAttributionAccumulator::default();
-        for wave in plan.row_group_ids.chunks(plan.report.effective_threads) {
-            let mut handles = try_column_bundle_vec_with_capacity(wave.len())?;
-            for row_group_id in wave.iter().copied() {
-                let source = Arc::clone(&self.source);
-                let metadata = Arc::clone(&self.metadata);
-                let columns = Arc::clone(&self.columns);
-                let selected = clone_column_bundle_u32s_fallibly(&plan.projected_column_ids)?;
-                handles.push(thread::spawn(move || {
-                    read_row_group_with_attribution(
-                        &source,
-                        &metadata,
-                        &columns,
-                        row_group_id,
-                        &selected,
-                    )
-                }));
-            }
-
-            let mut wave_batches = try_column_bundle_vec_with_capacity(handles.len())?;
-            let mut first_error = None;
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok((batch, row_attr))) => {
-                        attribution.add(row_attr);
-                        wave_batches.push(batch);
-                    }
-                    Ok(Err(err)) => {
-                        if first_error.is_none() {
-                            first_error = Some(err);
-                        }
-                    }
-                    Err(_) => {
-                        if first_error.is_none() {
-                            first_error = Some(ArcadiaTioError::Io(std::io::Error::other(
-                                "OCB read worker panicked",
-                            )));
-                        }
-                    }
-                }
-            }
-            if let Some(err) = first_error {
-                return Err(err);
-            }
-            batches.extend(wave_batches);
-        }
-        Ok((batches, attribution))
+        let outcome = execute_bounded_ordered(
+            self.bounded_ordered_tasks_for_plan(plan)?,
+            plan.report.clone(),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: plan.report.effective_threads,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| {
+                read_row_group_with_attribution(
+                    &self.source,
+                    &self.metadata,
+                    &self.columns,
+                    context.row_group_id,
+                    &plan.projected_column_ids,
+                )
+            },
+            |_, batch| Ok(batch),
+            |_, batch| {
+                batches.push(batch);
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )?;
+        Ok((batches, outcome.attribution_accumulator))
     }
 
     fn validate_read_plan(&self, plan: &ColumnBundleReadPlan) -> Result<()> {
@@ -7674,6 +7543,7 @@ mod tests {
     use std::fs;
     use std::io::{Cursor, Seek, SeekFrom, Write};
     use std::path::PathBuf;
+    use std::thread;
 
     use super::*;
     use crate::format::{

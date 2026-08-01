@@ -152,6 +152,24 @@ pub(crate) struct ParallelPrepareTaskSpec {
     pub(crate) row_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrderedCommitMode {
+    Sliding,
+    Windowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrderedCommitPanicMode {
+    ConvertToError,
+    Propagate,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoundedOrderedOutcome {
+    pub(crate) report: ColumnBundleParallelPrepareReport,
+    pub(crate) attribution_accumulator: ReadAttributionAccumulator,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ParallelPrepareRuntimeOptions {
     task_queue_capacity: usize,
@@ -185,10 +203,76 @@ struct TaskQueue {
     capacity: usize,
     state: Mutex<TaskQueueState>,
     available: Condvar,
+    progress_notifications: AtomicBool,
+    progress: ProgressSignal,
+}
+
+struct ProgressSignal {
+    generation: AtomicU64,
+    waiters: AtomicUsize,
+    wait_lock: Mutex<()>,
+    changed: Condvar,
+}
+
+impl ProgressSignal {
+    fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            waiters: AtomicUsize::new(0),
+            wait_lock: Mutex::new(()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn snapshot(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if self.waiters.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+
+        let _wait_lock = lock_unpoisoned(&self.wait_lock);
+        self.changed.notify_all();
+    }
+
+    fn wait_for_change(&self, observed: u64, cancelled: &AtomicBool) -> bool {
+        let _waiter = ProgressWaiterGuard::register(&self.waiters);
+        if self.generation.load(Ordering::SeqCst) == observed && !cancelled.load(Ordering::Acquire)
+        {
+            let mut wait_lock = lock_unpoisoned(&self.wait_lock);
+            while self.generation.load(Ordering::SeqCst) == observed
+                && !cancelled.load(Ordering::Acquire)
+            {
+                wait_lock = wait_unpoisoned(&self.changed, wait_lock);
+            }
+        }
+        !cancelled.load(Ordering::Acquire)
+    }
+}
+
+struct ProgressWaiterGuard<'a> {
+    waiters: &'a AtomicUsize,
+}
+
+impl<'a> ProgressWaiterGuard<'a> {
+    fn register(waiters: &'a AtomicUsize) -> Self {
+        waiters.fetch_add(1, Ordering::SeqCst);
+        Self { waiters }
+    }
+}
+
+impl Drop for ProgressWaiterGuard<'_> {
+    fn drop(&mut self) {
+        let previous = self.waiters.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(previous > 0, "progress waiter count must not underflow");
+    }
 }
 
 impl TaskQueue {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, progress_notifications: bool) -> Self {
         Self {
             capacity: capacity.max(1),
             state: Mutex::new(TaskQueueState {
@@ -196,6 +280,8 @@ impl TaskQueue {
                 closed: false,
             }),
             available: Condvar::new(),
+            progress_notifications: AtomicBool::new(progress_notifications),
+            progress: ProgressSignal::new(),
         }
     }
 
@@ -208,7 +294,22 @@ impl TaskQueue {
             return TaskPush::Full;
         }
         state.tasks.push_back(task);
+        drop(state);
         self.available.notify_one();
+        TaskPush::Pushed
+    }
+
+    fn try_push_window(&self, tasks: &[ParallelPrepareTaskSpec]) -> TaskPush {
+        let mut state = lock_unpoisoned(&self.state);
+        if state.closed {
+            return TaskPush::Closed;
+        }
+        if tasks.len() > self.capacity.saturating_sub(state.tasks.len()) {
+            return TaskPush::Full;
+        }
+        state.tasks.extend(tasks.iter().copied());
+        drop(state);
+        self.available.notify_all();
         TaskPush::Pushed
     }
 
@@ -219,6 +320,8 @@ impl TaskQueue {
                 return None;
             }
             if let Some(task) = state.tasks.pop_front() {
+                drop(state);
+                self.notify_progress();
                 return Some(task);
             }
             if state.closed {
@@ -232,6 +335,32 @@ impl TaskQueue {
         let mut state = lock_unpoisoned(&self.state);
         state.closed = true;
         self.available.notify_all();
+        drop(state);
+        self.notify_progress();
+    }
+
+    fn progress_snapshot(&self) -> Option<u64> {
+        self.progress_notifications
+            .load(Ordering::Acquire)
+            .then(|| self.progress.snapshot())
+    }
+
+    fn enable_progress_notifications(&self) {
+        self.progress_notifications.store(true, Ordering::Release);
+    }
+
+    fn progress_notifications_enabled(&self) -> bool {
+        self.progress_notifications.load(Ordering::Acquire)
+    }
+
+    fn notify_progress(&self) {
+        if self.progress_notifications.load(Ordering::Acquire) {
+            self.progress.notify();
+        }
+    }
+
+    fn wait_for_progress(&self, observed: u64, cancelled: &AtomicBool) -> bool {
+        self.progress.wait_for_change(observed, cancelled)
     }
 }
 
@@ -427,13 +556,13 @@ where
 #[allow(clippy::too_many_arguments)]
 fn execute_parallel_prepare_with_runtime<T, Read, Prepare, Commit, BeforePublish, AfterPublish>(
     tasks: Vec<ParallelPrepareTaskSpec>,
-    mut base_report: ColumnBundleReadReport,
+    base_report: ColumnBundleReadReport,
     plan_ns: u64,
     options: ColumnBundleParallelPrepareOptions,
     runtime: ParallelPrepareRuntimeOptions,
     read: Read,
     prepare: Prepare,
-    mut ordered_commit: Commit,
+    ordered_commit: Commit,
     before_publish: BeforePublish,
     after_publish: AfterPublish,
 ) -> Result<ColumnBundleParallelPrepareReport>
@@ -441,6 +570,101 @@ where
     T: Send + 'static,
     Read: Fn(u32) -> Result<(ColumnBatch, ReadAttributionAccumulator)> + Sync,
     Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
+    Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+    BeforePublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
+    AfterPublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
+{
+    execute_bounded_ordered_with_runtime(
+        tasks,
+        base_report,
+        plan_ns,
+        options,
+        runtime,
+        OrderedCommitMode::Sliding,
+        OrderedCommitPanicMode::ConvertToError,
+        true,
+        move |context| {
+            let (batch, attribution) = read(context.row_group_id)?;
+            if batch.row_group_id != context.row_group_id
+                || batch.base_row != context.base_row
+                || batch.row_count != context.row_count
+            {
+                return Err(ArcadiaTioError::ocb_corrupt_file(
+                    "OCB parallel prepare decoded batch context does not match row-group metadata",
+                ));
+            }
+            Ok((batch, attribution))
+        },
+        prepare,
+        ordered_commit,
+        before_publish,
+        after_publish,
+    )
+    .map(|outcome| outcome.report)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_bounded_ordered<M, T, Read, Prepare, Commit>(
+    tasks: Vec<ParallelPrepareTaskSpec>,
+    base_report: ColumnBundleReadReport,
+    plan_ns: u64,
+    options: ColumnBundleParallelPrepareOptions,
+    commit_mode: OrderedCommitMode,
+    commit_panic_mode: OrderedCommitPanicMode,
+    attribute_ordered_commit: bool,
+    read: Read,
+    prepare: Prepare,
+    ordered_commit: Commit,
+) -> Result<BoundedOrderedOutcome>
+where
+    M: Send,
+    T: Send,
+    Read: Fn(ColumnBundleParallelPrepareContext) -> Result<(M, ReadAttributionAccumulator)> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, M) -> Result<T> + Sync,
+    Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    let started_workers = base_report
+        .effective_threads
+        .min(options.max_in_flight_row_groups)
+        .min(tasks.len());
+    execute_bounded_ordered_with_runtime(
+        tasks,
+        base_report,
+        plan_ns,
+        options,
+        ParallelPrepareRuntimeOptions::production(started_workers),
+        commit_mode,
+        commit_panic_mode,
+        attribute_ordered_commit,
+        read,
+        prepare,
+        ordered_commit,
+        |_| {},
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_bounded_ordered_with_runtime<M, T, Read, Prepare, Commit, BeforePublish, AfterPublish>(
+    tasks: Vec<ParallelPrepareTaskSpec>,
+    mut base_report: ColumnBundleReadReport,
+    plan_ns: u64,
+    options: ColumnBundleParallelPrepareOptions,
+    runtime: ParallelPrepareRuntimeOptions,
+    commit_mode: OrderedCommitMode,
+    commit_panic_mode: OrderedCommitPanicMode,
+    attribute_ordered_commit: bool,
+    read: Read,
+    prepare: Prepare,
+    mut ordered_commit: Commit,
+    before_publish: BeforePublish,
+    after_publish: AfterPublish,
+) -> Result<BoundedOrderedOutcome>
+where
+    M: Send,
+    T: Send,
+    Read: Fn(ColumnBundleParallelPrepareContext) -> Result<(M, ReadAttributionAccumulator)> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, M) -> Result<T> + Sync,
     Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
     BeforePublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
     AfterPublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
@@ -464,15 +688,25 @@ where
         .min(tasks.len());
     base_report.effective_threads = started_workers;
     if tasks.is_empty() {
-        return Ok(empty_report(
-            base_report,
-            plan_ns,
-            requested_workers,
-            execute_started.elapsed(),
-        ));
+        return Ok(BoundedOrderedOutcome {
+            report: empty_report(
+                base_report,
+                plan_ns,
+                requested_workers,
+                execute_started.elapsed(),
+            ),
+            attribution_accumulator: ReadAttributionAccumulator::default(),
+        });
     }
 
-    let task_queue = Arc::new(TaskQueue::new(runtime.task_queue_capacity));
+    let window_size = options.max_in_flight_row_groups.min(tasks.len());
+    let progress_notifications_required = commit_mode == OrderedCommitMode::Sliding
+        || runtime.task_queue_capacity < window_size
+        || runtime.result_queue_capacity < window_size;
+    let task_queue = Arc::new(TaskQueue::new(
+        runtime.task_queue_capacity,
+        progress_notifications_required,
+    ));
     let cancelled = Arc::new(AtomicBool::new(false));
     let observations = Arc::new(SharedObservations::new());
     let (result_sender, result_receiver) =
@@ -517,6 +751,8 @@ where
             &observations,
             &result_receiver,
             &mut ordered_commit,
+            commit_mode,
+            commit_panic_mode,
         );
         if coordinator_result.is_err()
             || coordinator_result
@@ -526,6 +762,7 @@ where
             cancelled.store(true, Ordering::Release);
         }
         task_queue.close();
+        drop(result_receiver);
 
         let mut worker_reports = Vec::with_capacity(handles.len());
         let mut join_error = None;
@@ -550,7 +787,9 @@ where
     let coordinator = coordinator_result?;
     let execute_wall_ns = duration_to_ns(execute_started.elapsed());
     let mut attribution_accumulator = ReadAttributionAccumulator::default();
-    attribution_accumulator.add_callback(coordinator.ordered_commit);
+    if attribute_ordered_commit {
+        attribution_accumulator.add_callback(coordinator.ordered_commit);
+    }
     let mut public_worker_reports = Vec::with_capacity(worker_reports.len());
     let mut row_groups_completed = 0usize;
     let mut rows_completed = 0u64;
@@ -570,7 +809,7 @@ where
     }
     public_worker_reports.sort_by_key(|worker| worker.worker_id);
     let attribution = attribution_from_accumulator(
-        attribution_accumulator,
+        attribution_accumulator.clone(),
         &base_report,
         plan_ns,
         execute_wall_ns,
@@ -585,7 +824,7 @@ where
         cancelled: coordinator.cancelled,
     };
 
-    Ok(ColumnBundleParallelPrepareReport {
+    let report = ColumnBundleParallelPrepareReport {
         cursor_report,
         attribution,
         requested_workers,
@@ -615,6 +854,10 @@ where
         ordered_commit_ns: duration_to_ns(coordinator.ordered_commit),
         ordered_terminal_completed,
         worker_reports: public_worker_reports,
+    };
+    Ok(BoundedOrderedOutcome {
+        report,
+        attribution_accumulator,
     })
 }
 
@@ -666,7 +909,7 @@ fn empty_report(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn worker_loop<T, Read, Prepare, BeforePublish, AfterPublish>(
+fn worker_loop<M, T, Read, Prepare, BeforePublish, AfterPublish>(
     worker_id: usize,
     task_queue: Arc<TaskQueue>,
     cancelled: Arc<AtomicBool>,
@@ -678,9 +921,10 @@ fn worker_loop<T, Read, Prepare, BeforePublish, AfterPublish>(
     after_publish: &AfterPublish,
 ) -> WorkerExecutionReport
 where
-    T: Send + 'static,
-    Read: Fn(u32) -> Result<(ColumnBatch, ReadAttributionAccumulator)> + Sync,
-    Prepare: Fn(ColumnBundleParallelPrepareContext, ColumnBatch) -> Result<T> + Sync,
+    M: Send,
+    T: Send,
+    Read: Fn(ColumnBundleParallelPrepareContext) -> Result<(M, ReadAttributionAccumulator)> + Sync,
+    Prepare: Fn(ColumnBundleParallelPrepareContext, M) -> Result<T> + Sync,
     BeforePublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
     AfterPublish: Fn(ColumnBundleParallelPrepareContext) + Sync,
 {
@@ -701,21 +945,13 @@ where
         let mut decoded_rows = 0u64;
         let prepared = catch_unwind(AssertUnwindSafe(|| {
             let read_started = Instant::now();
-            let read_result = read(task.row_group_id);
+            let read_result = read(context);
             report.row_group_read += read_started.elapsed();
-            let (batch, attribution) = read_result?;
-            if batch.row_group_id != context.row_group_id
-                || batch.base_row != context.base_row
-                || batch.row_count != context.row_count
-            {
-                return Err(ArcadiaTioError::ocb_corrupt_file(
-                    "OCB parallel prepare decoded batch context does not match row-group metadata",
-                ));
-            }
-            decoded_rows = batch.row_count;
+            let (materialized, attribution) = read_result?;
+            decoded_rows = context.row_count;
             report.attribution.add(attribution);
             let prepare_started = Instant::now();
-            let prepared = prepare(context, batch);
+            let prepared = prepare(context, materialized);
             report.caller_prepare += prepare_started.elapsed();
             before_publish(context);
             prepared
@@ -743,6 +979,7 @@ where
                 }
                 return report;
             }
+            let progress = task_queue.progress_snapshot();
             match result_sender.try_send(message) {
                 Ok(()) => {
                     if let Some(started) = full_wait_started {
@@ -751,6 +988,7 @@ where
                             duration_to_ns(started.elapsed()),
                         );
                     }
+                    task_queue.notify_progress();
                     after_publish(context);
                     break;
                 }
@@ -762,7 +1000,19 @@ where
                             .fetch_add(1, Ordering::AcqRel);
                         full_wait_started = Some(Instant::now());
                     }
-                    thread::yield_now();
+                    if let Some(progress) = progress {
+                        if !task_queue.wait_for_progress(progress, &cancelled) {
+                            if let Some(started) = full_wait_started.take() {
+                                atomic_saturating_add_u64(
+                                    &observations.result_queue_full_wait_ns,
+                                    duration_to_ns(started.elapsed()),
+                                );
+                            }
+                            return report;
+                        }
+                    } else {
+                        task_queue.enable_progress_notifications();
+                    }
                 }
                 Err(mpsc::TrySendError::Disconnected(_)) => return report,
             }
@@ -780,6 +1030,46 @@ fn coordinate_ordered_commit<T, Commit>(
     observations: &SharedObservations,
     result_receiver: &mpsc::Receiver<ParallelPrepareMessage<T>>,
     ordered_commit: &mut Commit,
+    commit_mode: OrderedCommitMode,
+    commit_panic_mode: OrderedCommitPanicMode,
+) -> Result<CoordinatorReport>
+where
+    Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    match commit_mode {
+        OrderedCommitMode::Sliding => coordinate_sliding_ordered_commit(
+            tasks,
+            max_in_flight_row_groups,
+            task_queue,
+            cancelled,
+            observations,
+            result_receiver,
+            ordered_commit,
+            commit_panic_mode,
+        ),
+        OrderedCommitMode::Windowed => coordinate_windowed_ordered_commit(
+            tasks,
+            max_in_flight_row_groups,
+            task_queue,
+            cancelled,
+            observations,
+            result_receiver,
+            ordered_commit,
+            commit_panic_mode,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coordinate_sliding_ordered_commit<T, Commit>(
+    tasks: &[ParallelPrepareTaskSpec],
+    max_in_flight_row_groups: usize,
+    task_queue: &TaskQueue,
+    cancelled: &AtomicBool,
+    observations: &SharedObservations,
+    result_receiver: &mpsc::Receiver<ParallelPrepareMessage<T>>,
+    ordered_commit: &mut Commit,
+    commit_panic_mode: OrderedCommitPanicMode,
 ) -> Result<CoordinatorReport>
 where
     Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
@@ -796,15 +1086,12 @@ where
             match message.prepared {
                 Ok(prepared) => {
                     let commit_started = Instant::now();
-                    let control = catch_unwind(AssertUnwindSafe(|| {
-                        ordered_commit(message.context, prepared)
-                    }))
-                    .unwrap_or_else(|_| {
-                        Err(ArcadiaTioError::Io(std::io::Error::other(format!(
-                            "OCB ordered commit panicked at selected row-group ordinal {}",
-                            message.context.selected_row_group_ordinal
-                        ))))
-                    });
+                    let control = invoke_ordered_commit(
+                        ordered_commit,
+                        message.context,
+                        prepared,
+                        commit_panic_mode,
+                    );
                     report.ordered_commit += commit_started.elapsed();
                     match control? {
                         ColumnBundleVisitControl::Continue => {}
@@ -838,6 +1125,7 @@ where
         let can_queue =
             !stop_launching && next_to_queue < tasks.len() && in_flight < max_in_flight_row_groups;
         if can_queue {
+            let progress = task_queue.progress_snapshot();
             match task_queue.try_push(tasks[next_to_queue]) {
                 TaskPush::Pushed => {
                     close_task_full_wait(&mut task_full_wait_started, &mut report);
@@ -859,11 +1147,18 @@ where
                     }
                     match result_receiver.try_recv() {
                         Ok(message) => {
+                            task_queue.notify_progress();
                             close_task_full_wait(&mut task_full_wait_started, &mut report);
                             stop_launching |= message.prepared.is_err();
                             insert_pending(&mut pending, message)?;
                         }
-                        Err(mpsc::TryRecvError::Empty) => thread::yield_now(),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            if let Some(progress) = progress {
+                                task_queue.wait_for_progress(progress, cancelled);
+                            } else {
+                                task_queue.enable_progress_notifications();
+                            }
+                        }
                         Err(mpsc::TryRecvError::Disconnected) => {
                             return Err(disconnected_worker_error());
                         }
@@ -883,6 +1178,7 @@ where
         let message = result_receiver
             .recv()
             .map_err(|_| disconnected_worker_error())?;
+        task_queue.notify_progress();
         let waited = wait_started.elapsed();
         report.ordered_frontier_wait += waited;
         if !stop_launching && next_to_queue < tasks.len() && in_flight >= max_in_flight_row_groups {
@@ -893,6 +1189,179 @@ where
     }
     close_task_full_wait(&mut task_full_wait_started, &mut report);
     Ok(report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coordinate_windowed_ordered_commit<T, Commit>(
+    tasks: &[ParallelPrepareTaskSpec],
+    window_size: usize,
+    task_queue: &TaskQueue,
+    cancelled: &AtomicBool,
+    observations: &SharedObservations,
+    result_receiver: &mpsc::Receiver<ParallelPrepareMessage<T>>,
+    ordered_commit: &mut Commit,
+    commit_panic_mode: OrderedCommitPanicMode,
+) -> Result<CoordinatorReport>
+where
+    Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    let mut report = CoordinatorReport::default();
+    let mut pending: BTreeMap<usize, ParallelPrepareMessage<T>> = BTreeMap::new();
+    let mut task_full_wait_started = None;
+
+    for window_start in (0..tasks.len()).step_by(window_size) {
+        let window_end = window_start.saturating_add(window_size).min(tasks.len());
+        let mut next_to_queue = window_start;
+        if !task_queue.progress_notifications_enabled() {
+            match task_queue.try_push_window(&tasks[window_start..window_end]) {
+                TaskPush::Pushed => {
+                    next_to_queue = window_end;
+                    let queued = window_end.saturating_sub(window_start);
+                    report.row_groups_queued = report.row_groups_queued.saturating_add(queued);
+                    report.max_in_flight_row_groups_observed =
+                        report.max_in_flight_row_groups_observed.max(queued);
+                }
+                TaskPush::Full => task_queue.enable_progress_notifications(),
+                TaskPush::Closed => return Err(disconnected_worker_error()),
+            }
+        }
+        while next_to_queue < window_end {
+            let progress = task_queue.progress_snapshot();
+            match task_queue.try_push(tasks[next_to_queue]) {
+                TaskPush::Pushed => {
+                    close_task_full_wait(&mut task_full_wait_started, &mut report);
+                    next_to_queue = next_to_queue.saturating_add(1);
+                    report.row_groups_queued = report.row_groups_queued.saturating_add(1);
+                    report.max_in_flight_row_groups_observed = report
+                        .max_in_flight_row_groups_observed
+                        .max(report.row_groups_queued.saturating_sub(window_start));
+                }
+                TaskPush::Full => {
+                    if task_full_wait_started.is_none() {
+                        report.task_queue_full_wait_count =
+                            report.task_queue_full_wait_count.saturating_add(1);
+                        task_full_wait_started = Some(Instant::now());
+                    }
+                    match result_receiver.try_recv() {
+                        Ok(message) => {
+                            task_queue.notify_progress();
+                            insert_pending(&mut pending, message)?;
+                            close_task_full_wait(&mut task_full_wait_started, &mut report);
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {
+                            if let Some(progress) = progress {
+                                task_queue.wait_for_progress(progress, cancelled);
+                            } else {
+                                task_queue.enable_progress_notifications();
+                            }
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            return Err(disconnected_worker_error());
+                        }
+                    }
+                }
+                TaskPush::Closed => return Err(disconnected_worker_error()),
+            }
+        }
+        if window_end == tasks.len() {
+            task_queue.close();
+        }
+
+        while pending.len() < window_end.saturating_sub(window_start) {
+            receive_pending_result(result_receiver, task_queue, &mut pending, &mut report, true)?;
+        }
+
+        for ordinal in window_start..window_end {
+            if pending
+                .get(&ordinal)
+                .is_some_and(|message| message.prepared.is_err())
+            {
+                cancelled.store(true, Ordering::Release);
+                let message = pending
+                    .remove(&ordinal)
+                    .ok_or_else(disconnected_worker_error)?;
+                return match message.prepared {
+                    Ok(_) => Err(disconnected_worker_error()),
+                    Err(err) => Err(err),
+                };
+            }
+        }
+
+        for ordinal in window_start..window_end {
+            let message = pending
+                .remove(&ordinal)
+                .ok_or_else(disconnected_worker_error)?;
+            let prepared = message.prepared?;
+            let commit_started = Instant::now();
+            let control =
+                invoke_ordered_commit(ordered_commit, message.context, prepared, commit_panic_mode);
+            report.ordered_commit += commit_started.elapsed();
+            match control? {
+                ColumnBundleVisitControl::Continue => {}
+                ColumnBundleVisitControl::Stop => report.cancelled = true,
+            }
+            report.row_groups_ordered_committed =
+                report.row_groups_ordered_committed.saturating_add(1);
+            report.rows_ordered_committed = report
+                .rows_ordered_committed
+                .saturating_add(message.context.row_count);
+            observations.result_committed(message.context.row_count);
+            if report.cancelled {
+                cancelled.store(true, Ordering::Release);
+                return Ok(report);
+            }
+        }
+    }
+    close_task_full_wait(&mut task_full_wait_started, &mut report);
+    Ok(report)
+}
+
+fn receive_pending_result<T>(
+    result_receiver: &mpsc::Receiver<ParallelPrepareMessage<T>>,
+    task_queue: &TaskQueue,
+    pending: &mut BTreeMap<usize, ParallelPrepareMessage<T>>,
+    report: &mut CoordinatorReport,
+    capacity_wait: bool,
+) -> Result<()> {
+    report.ordered_frontier_wait_count = report.ordered_frontier_wait_count.saturating_add(1);
+    if capacity_wait {
+        report.capacity_wait_count = report.capacity_wait_count.saturating_add(1);
+    }
+    let wait_started = Instant::now();
+    let message = result_receiver
+        .recv()
+        .map_err(|_| disconnected_worker_error())?;
+    task_queue.notify_progress();
+    let waited = wait_started.elapsed();
+    report.ordered_frontier_wait += waited;
+    if capacity_wait {
+        report.capacity_wait += waited;
+    }
+    insert_pending(pending, message)
+}
+
+fn invoke_ordered_commit<T, Commit>(
+    ordered_commit: &mut Commit,
+    context: ColumnBundleParallelPrepareContext,
+    prepared: T,
+    panic_mode: OrderedCommitPanicMode,
+) -> Result<ColumnBundleVisitControl>
+where
+    Commit: FnMut(ColumnBundleParallelPrepareContext, T) -> Result<ColumnBundleVisitControl>,
+{
+    match panic_mode {
+        OrderedCommitPanicMode::ConvertToError => {
+            catch_unwind(AssertUnwindSafe(|| ordered_commit(context, prepared))).unwrap_or_else(
+                |_| {
+                    Err(ArcadiaTioError::Io(std::io::Error::other(format!(
+                        "OCB ordered commit panicked at selected row-group ordinal {}",
+                        context.selected_row_group_ordinal
+                    ))))
+                },
+            )
+        }
+        OrderedCommitPanicMode::Propagate => ordered_commit(context, prepared),
+    }
 }
 
 fn insert_pending<T>(
@@ -961,6 +1430,59 @@ mod tests {
             },
             ReadAttributionAccumulator::default(),
         ))
+    }
+
+    fn wait_for_registered_progress_waiter(signal: &ProgressSignal) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while signal.waiters.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "progress waiter did not register before the test deadline"
+            );
+            std::hint::spin_loop();
+        }
+    }
+
+    #[test]
+    fn progress_signal_observes_notification_before_wait_registration() {
+        let signal = ProgressSignal::new();
+        let cancelled = AtomicBool::new(false);
+        let observed = signal.snapshot();
+
+        signal.notify();
+
+        assert!(signal.wait_for_change(observed, &cancelled));
+        assert_eq!(signal.waiters.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn progress_signal_wakes_registered_waiter_for_notification_and_cancellation() {
+        let signal = Arc::new(ProgressSignal::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed = signal.snapshot();
+        let waiting_signal = Arc::clone(&signal);
+        let waiting_cancelled = Arc::clone(&cancelled);
+        let notified =
+            thread::spawn(move || waiting_signal.wait_for_change(observed, &waiting_cancelled));
+        wait_for_registered_progress_waiter(&signal);
+
+        signal.notify();
+
+        assert!(notified.join().expect("notification waiter join"));
+        assert_eq!(signal.waiters.load(Ordering::SeqCst), 0);
+
+        let observed = signal.snapshot();
+        let waiting_signal = Arc::clone(&signal);
+        let waiting_cancelled = Arc::clone(&cancelled);
+        let cancelled_waiter =
+            thread::spawn(move || waiting_signal.wait_for_change(observed, &waiting_cancelled));
+        wait_for_registered_progress_waiter(&signal);
+
+        cancelled.store(true, Ordering::Release);
+        signal.notify();
+
+        assert!(!cancelled_waiter.join().expect("cancelled waiter join"));
+        assert_eq!(signal.waiters.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -1069,6 +1591,92 @@ mod tests {
                 expected = Some(output);
             }
         }
+    }
+
+    #[test]
+    fn windowed_mode_starts_one_fixed_worker_set_for_many_tasks() {
+        for workers in [1, 2, 4, 8] {
+            let outcome = execute_bounded_ordered(
+                tasks(512),
+                report(workers, 512),
+                0,
+                ColumnBundleParallelPrepareOptions {
+                    max_in_flight_row_groups: workers,
+                },
+                OrderedCommitMode::Windowed,
+                OrderedCommitPanicMode::Propagate,
+                false,
+                |context| read(context.row_group_id),
+                |context, _| Ok(context.selected_row_group_ordinal),
+                |context, prepared| {
+                    assert_eq!(prepared, context.selected_row_group_ordinal);
+                    Ok(ColumnBundleVisitControl::Continue)
+                },
+            )
+            .expect("windowed fixed-worker execution");
+            assert_eq!(outcome.report.started_workers, workers);
+            assert_eq!(outcome.report.worker_reports.len(), workers);
+            assert_eq!(outcome.report.row_groups_queued, 512);
+            assert_eq!(outcome.report.row_groups_completed, 512);
+            assert_eq!(outcome.report.row_groups_ordered_committed, 512);
+            assert!(outcome.report.ordered_terminal_completed);
+        }
+    }
+
+    #[test]
+    fn windowed_mode_suppresses_current_window_commits_on_read_stage_error() {
+        let mut committed = Vec::new();
+        let error = execute_bounded_ordered(
+            tasks(4),
+            report(4, 4),
+            0,
+            ColumnBundleParallelPrepareOptions {
+                max_in_flight_row_groups: 4,
+            },
+            OrderedCommitMode::Windowed,
+            OrderedCommitPanicMode::Propagate,
+            false,
+            |context| read(context.row_group_id),
+            |context, _| {
+                if context.selected_row_group_ordinal == 2 {
+                    Err(ArcadiaTioError::InvalidArgument(
+                        "injected windowed ordinal two failure",
+                    ))
+                } else {
+                    Ok(context.selected_row_group_ordinal)
+                }
+            },
+            |_, prepared| {
+                committed.push(prepared);
+                Ok(ColumnBundleVisitControl::Continue)
+            },
+        )
+        .expect_err("windowed read-stage failure must fail");
+        assert!(error.to_string().contains("ordinal two failure"));
+        assert!(committed.is_empty());
+    }
+
+    #[test]
+    fn windowed_legacy_commit_panic_unwinds_after_worker_shutdown() {
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _ = execute_bounded_ordered(
+                tasks(4),
+                report(4, 4),
+                0,
+                ColumnBundleParallelPrepareOptions {
+                    max_in_flight_row_groups: 4,
+                },
+                OrderedCommitMode::Windowed,
+                OrderedCommitPanicMode::Propagate,
+                false,
+                |context| read(context.row_group_id),
+                |context, _| Ok(context.selected_row_group_ordinal),
+                |_, _| -> Result<ColumnBundleVisitControl> {
+                    panic!("injected legacy windowed commit panic")
+                },
+            );
+        }));
+        assert!(panic.is_err());
     }
 
     #[test]
@@ -1253,7 +1861,7 @@ mod tests {
 
     #[test]
     fn task_queue_saturation_is_bounded_and_drains_in_order() {
-        let queue = TaskQueue::new(1);
+        let queue = TaskQueue::new(1, true);
         let cancelled = AtomicBool::new(false);
         let task_specs = tasks(2);
 
@@ -1276,6 +1884,40 @@ mod tests {
             1
         );
         assert!(queue.pop(&cancelled).is_none());
+    }
+
+    #[test]
+    fn balanced_window_skips_progress_until_saturation_enables_it() {
+        let queue = TaskQueue::new(2, false);
+        let cancelled = AtomicBool::new(false);
+        let task_specs = tasks(2);
+        let initial_generation = queue.progress.snapshot();
+
+        assert!(matches!(
+            queue.try_push_window(&task_specs),
+            TaskPush::Pushed
+        ));
+        assert_eq!(
+            queue
+                .pop(&cancelled)
+                .expect("first balanced-window task")
+                .selected_row_group_ordinal,
+            0
+        );
+        assert_eq!(
+            queue
+                .pop(&cancelled)
+                .expect("second balanced-window task")
+                .selected_row_group_ordinal,
+            1
+        );
+        queue.notify_progress();
+        assert_eq!(queue.progress.snapshot(), initial_generation);
+
+        queue.enable_progress_notifications();
+        queue.notify_progress();
+        assert_ne!(queue.progress.snapshot(), initial_generation);
+        queue.close();
     }
 
     #[test]
@@ -1323,6 +1965,139 @@ mod tests {
         assert!(outcome.capacity_wait_count > 0);
         assert_eq!(outcome.row_groups_ordered_committed, 8);
         assert!(outcome.ordered_terminal_completed);
+    }
+
+    #[test]
+    fn constrained_queue_matrix_preserves_completion_stop_and_error_liveness() {
+        for workers in [1, 2, 4, 8] {
+            for task_queue_capacity in [1, 2] {
+                for result_queue_capacity in [1, 2] {
+                    for commit_mode in [OrderedCommitMode::Sliding, OrderedCommitMode::Windowed] {
+                        let options = ColumnBundleParallelPrepareOptions {
+                            max_in_flight_row_groups: workers,
+                        };
+                        let runtime = ParallelPrepareRuntimeOptions::with_queue_capacities(
+                            task_queue_capacity,
+                            result_queue_capacity,
+                        );
+                        let mut committed = Vec::new();
+                        let outcome = execute_bounded_ordered_with_runtime(
+                            tasks(16),
+                            report(workers, 16),
+                            0,
+                            options,
+                            runtime,
+                            commit_mode,
+                            OrderedCommitPanicMode::ConvertToError,
+                            false,
+                            |context| read(context.row_group_id),
+                            |context, _| Ok(context.selected_row_group_ordinal),
+                            |context, prepared| {
+                                assert_eq!(prepared, context.selected_row_group_ordinal);
+                                committed.push(prepared);
+                                Ok(ColumnBundleVisitControl::Continue)
+                            },
+                            |_| {},
+                            |_| {},
+                        )
+                        .expect("constrained queue completion");
+                        assert_eq!(committed, (0..16).collect::<Vec<_>>());
+                        assert_eq!(outcome.report.started_workers, workers);
+                        assert_eq!(outcome.report.row_groups_ordered_committed, 16);
+                        assert!(outcome.report.ordered_terminal_completed);
+
+                        let mut stopped = Vec::new();
+                        let stopped_outcome = execute_bounded_ordered_with_runtime(
+                            tasks(16),
+                            report(workers, 16),
+                            0,
+                            options,
+                            runtime,
+                            commit_mode,
+                            OrderedCommitPanicMode::ConvertToError,
+                            false,
+                            |context| read(context.row_group_id),
+                            |context, _| Ok(context.selected_row_group_ordinal),
+                            |_, prepared| {
+                                stopped.push(prepared);
+                                Ok(ColumnBundleVisitControl::Stop)
+                            },
+                            |_| {},
+                            |_| {},
+                        )
+                        .expect("constrained queue stop");
+                        assert_eq!(stopped, vec![0]);
+                        assert!(stopped_outcome.report.cursor_report.cancelled);
+                        assert!(!stopped_outcome.report.ordered_terminal_completed);
+
+                        let mut committed_before_prepare_error = Vec::new();
+                        let prepare_error = execute_bounded_ordered_with_runtime(
+                            tasks(16),
+                            report(workers, 16),
+                            0,
+                            options,
+                            runtime,
+                            commit_mode,
+                            OrderedCommitPanicMode::ConvertToError,
+                            false,
+                            |context| read(context.row_group_id),
+                            |context, _| {
+                                if context.selected_row_group_ordinal == 1 {
+                                    Err(ArcadiaTioError::InvalidArgument(
+                                        "injected constrained prepare error",
+                                    ))
+                                } else {
+                                    Ok(context.selected_row_group_ordinal)
+                                }
+                            },
+                            |_, prepared| {
+                                committed_before_prepare_error.push(prepared);
+                                Ok(ColumnBundleVisitControl::Continue)
+                            },
+                            |_| {},
+                            |_| {},
+                        )
+                        .expect_err("constrained prepare error must propagate");
+                        assert!(
+                            prepare_error
+                                .to_string()
+                                .contains("constrained prepare error")
+                        );
+                        assert!(
+                            committed_before_prepare_error
+                                .iter()
+                                .all(|ordinal| *ordinal < 1)
+                        );
+
+                        let commit_error = execute_bounded_ordered_with_runtime(
+                            tasks(16),
+                            report(workers, 16),
+                            0,
+                            options,
+                            runtime,
+                            commit_mode,
+                            OrderedCommitPanicMode::ConvertToError,
+                            false,
+                            |context| read(context.row_group_id),
+                            |context, _| Ok(context.selected_row_group_ordinal),
+                            |_, _| {
+                                Err(ArcadiaTioError::InvalidArgument(
+                                    "injected constrained commit error",
+                                ))
+                            },
+                            |_| {},
+                            |_| {},
+                        )
+                        .expect_err("constrained commit error must propagate");
+                        assert!(
+                            commit_error
+                                .to_string()
+                                .contains("constrained commit error")
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
