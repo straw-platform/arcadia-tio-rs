@@ -267,6 +267,7 @@ Linux:
 export ARCADIA_TIO_CAPI_LIB_DIR="$PWD/native/x86_64-unknown-linux-gnu/lib"
 export LD_LIBRARY_PATH="$ARCADIA_TIO_CAPI_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cargo make native-info
+cargo make module-size-check
 cargo make test-core-reader
 cargo make ci
 cargo make test-matrix
@@ -291,7 +292,8 @@ The public cargo-make matrix runs `test-default`, explicit `test-no-default`,
 `test-arrow-ndarray`, `test-csv-parquet`, explicit `test-ocb`, and
 `test-all-features`; OCB can also be exercised directly with
 `--features format-ocb`; `ci` runs
-`fmt`, C-ABI-free `test-core-reader`, the no-C-ABI dependency guard,
+`fmt`, the exact post-split `module-size-check`, C-ABI-free `test-core-reader`,
+the no-C-ABI dependency guard,
 all-feature `check`, and that matrix. The feature-gated tensor
 ops/conversions tutorial uses owned tensor ops, typed wrappers, owned Arrow
 RecordBatch/IPC, ndarray, and CSV/Parquet companion conversions with tiny

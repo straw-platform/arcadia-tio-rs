@@ -20,6 +20,8 @@ Read:
 - `crates/arcadia-tio-ocb-core/README.md`
 - `crates/arcadia-tio-ocb-core/src/lib.rs`
 - `crates/arcadia-tio-ocb-core/src/column_bundle.rs`
+- the matching owner under `src/column_bundle/{planning,execution,materialize,attribution}.rs`
+  and `src/{format,read,parallel_prepare,parallel_read}.rs`
 
 Validate without native-library setup:
 
@@ -36,7 +38,9 @@ The dependency tree for this crate must not include `arcadia-tio-sys`,
 Read:
 
 - `crates/arcadia-tio-rs/README.md`
-- `crates/arcadia-tio-rs/src/lib.rs`
+- `crates/arcadia-tio-rs/src/lib.rs` (stable re-export facade)
+- the matching owner under `src/{error,ownership,tensor,ops,file_types,coordinates,tensor_file,conversion}.rs`
+  or `src/ocb/{model,read,session,write,maintenance,conversion}.rs`
 - matching tests under `crates/arcadia-tio-rs/tests/`
 - matching tutorial example under `crates/arcadia-tio-rs/examples/tutorials/` when behavior is user-visible
 
@@ -52,7 +56,9 @@ cargo make test-all-features
 Read:
 
 - `crates/arcadia-tio-sys/README.md`
-- `crates/arcadia-tio-sys/src/lib.rs`
+- `crates/arcadia-tio-sys/src/lib.rs` (stable re-export facade)
+- the matching ABI family under
+  `src/{common,types,tensor,lifecycle_coordinates,read,mutation,maintenance,ocb,metadata,history}.rs`
 - `crates/arcadia-tio-sys/build.rs`
 - `crates/arcadia-tio-sys/tests/`
 
@@ -62,6 +68,24 @@ Validate with:
 cargo make native-info
 cargo make test-all-features
 ```
+
+### Structure, routing, and docs-only changes
+
+Read:
+
+- this routing map and root `AGENTS.md`
+- `scripts/check_module_size_budgets.py`
+- the facade and focused owner being documented
+
+Validate with:
+
+```sh
+cargo make module-size-check
+cargo fmt --all -- --check
+```
+
+The budgets are exact post-split ratchets. Split within an existing ownership
+family when one is reached; do not raise a limit as routine growth allowance.
 
 ### Optional feature integrations
 

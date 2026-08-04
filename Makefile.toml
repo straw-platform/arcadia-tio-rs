@@ -26,7 +26,8 @@ echo "  cargo make test-csv-parquet   # run safe wrapper tests with csv,parquet"
 echo "  cargo make test-ocb           # run OCB feature tests and examples"
 echo "  cargo make test-all-features  # run safe wrapper tests with --all-features"
 echo "  cargo make fmt                # verify rustfmt"
-echo "  cargo make ci                 # fmt + core-reader + no-C-ABI guard + feature test matrix"
+echo "  cargo make module-size-check  # enforce post-split implementation ratchets"
+echo "  cargo make ci                 # fmt + size/core/no-C-ABI guards + feature test matrix"
 echo "  cargo make native-info        # print detected native library path, size, and checksum"
 echo ""
 echo "Native library:"
@@ -257,6 +258,12 @@ description = "Verify rustfmt"
 command = "cargo"
 args = ["fmt", "--all", "--", "--check"]
 
+[tasks.module-size-check]
+clear = true
+description = "Enforce post-split implementation line-count ratchets"
+command = "python3"
+args = ["scripts/check_module_size_budgets.py"]
+
 [tasks.ci]
-description = "Run fmt, core-reader tests, no-C-ABI guard, all-feature check, and the feature test matrix"
-dependencies = ["fmt", "test-core-reader", "test-core-reader-no-cabi", "check", "test-matrix"]
+description = "Run fmt, size/core/no-C-ABI guards, all-feature check, and the feature test matrix"
+dependencies = ["fmt", "module-size-check", "test-core-reader", "test-core-reader-no-cabi", "check", "test-matrix"]

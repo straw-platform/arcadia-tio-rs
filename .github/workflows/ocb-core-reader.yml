@@ -25,6 +25,9 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
+      - name: Check module-size ratchets
+        run: python3 scripts/check_module_size_budgets.py
+
       - name: Test C-ABI-free OCB core reader
         run: cargo test -p arcadia-tio-ocb-core
 

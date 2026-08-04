@@ -9,6 +9,11 @@ crates. It is not the broader private core implementation repository.
 - `crates/arcadia-tio-ocb-core/`: C-ABI-free Rust-core OCB reader, planning, bounded visitor, and attribution APIs.
 - `crates/arcadia-tio-sys/`: unsafe C ABI declarations, constants, link discovery, and raw ownership boundaries.
 - `crates/arcadia-tio-rs/`: safe Rust wrapper over `arcadia-tio-sys`.
+- `crates/arcadia-tio-rs/src/`: thin crate facade plus error/ownership, tensor,
+  operations, coordinates, TensorFile, conversion, and nested `ocb/*` families.
+- `crates/arcadia-tio-sys/src/`: thin raw facade plus ABI-family declarations
+  for common types, lifecycle/coordinates, reads, mutation, maintenance, OCB,
+  metadata, and history.
 - `crates/arcadia-tio-rs/examples/tutorials/`: Cargo tutorial example targets.
 - `examples/tutorials/run/`: shell runners for source-only tutorial validation.
 - `native/<target>/`: local-only native library/include layout for tests. Keep this ignored unless a release task explicitly approves otherwise.
@@ -37,6 +42,7 @@ The C-ABI-free OCB core reader can be tested without native-library setup:
 ```sh
 cargo make test-core-reader
 cargo make test-core-reader-tree
+cargo make module-size-check
 ```
 
 Native-library setup is required for wrapper build/test commands. Prefer the
@@ -60,6 +66,7 @@ cargo make test-no-default
 cargo make test-arrow-ndarray
 cargo make test-csv-parquet
 cargo make test-all-features
+cargo make module-size-check
 ```
 
 ## Coding Style
