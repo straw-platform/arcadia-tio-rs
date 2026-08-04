@@ -33,9 +33,12 @@ pub mod private_adapter {
     /// Narrow selected-snapshot read helpers shared with private maintenance.
     #[doc(hidden)]
     pub mod read {
+        #[cfg(feature = "private-maintenance")]
         pub use crate::read::{
-            OcbMaintenanceAnalysisV2, OcbMetadataV1, OcbOpenValidationMode,
-            OcbRootCandidateDiagnosticV2, analyze_v2_maintenance,
+            OcbMaintenanceAnalysisV2, OcbRootCandidateDiagnosticV2, analyze_v2_maintenance,
+        };
+        pub use crate::read::{
+            OcbMetadataV1, OcbOpenValidationMode,
             read_column_chunk_from_reader_with_resource_limits, read_metadata,
             read_metadata_objects_v2, read_object_bytes, selected_snapshot_referenced_end,
             validate_v2_root_referenced_metadata,

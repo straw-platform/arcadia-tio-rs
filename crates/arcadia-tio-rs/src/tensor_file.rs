@@ -4146,10 +4146,6 @@ impl TensorFile {
         })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn raw_handle(&self) -> *mut sys::ArcadiaTioHandle {
-        self.raw.as_ptr()
-    }
 }
 
 impl Drop for TensorFile {

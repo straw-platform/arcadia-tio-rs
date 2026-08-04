@@ -83,6 +83,7 @@ struct OcbRootCandidateV2 {
     root: OcbRootV2,
 }
 
+#[cfg(feature = "private-maintenance")]
 #[derive(Debug, Clone)]
 pub struct OcbMaintenanceAnalysisV2 {
     pub file_len: u64,
@@ -95,6 +96,7 @@ pub struct OcbMaintenanceAnalysisV2 {
     pub rejected_candidates: Vec<OcbRootCandidateDiagnosticV2>,
 }
 
+#[cfg(feature = "private-maintenance")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcbRootCandidateDiagnosticV2 {
     pub slot_id: Option<u16>,
@@ -330,6 +332,7 @@ fn read_metadata_v2(
     select_v2_metadata(file, file_len, &bootstrap, validation, resource_limits)
 }
 
+#[cfg(feature = "private-maintenance")]
 pub fn analyze_v2_maintenance(
     path: &Path,
     validation: OcbOpenValidationMode,
@@ -366,6 +369,7 @@ pub fn analyze_v2_maintenance(
     }
 }
 
+#[cfg(feature = "private-maintenance")]
 fn analyze_v2_maintenance_from_bootstrap(
     file: &mut (impl Read + Seek),
     file_len: u64,
@@ -548,6 +552,7 @@ fn is_discardable_candidate_error(error: &ArcadiaTioError) -> bool {
     )
 }
 
+#[cfg(feature = "private-maintenance")]
 fn root_candidate_diagnostic(
     slot_id: Option<u16>,
     generation: Option<u64>,

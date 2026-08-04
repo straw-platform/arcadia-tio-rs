@@ -13,6 +13,11 @@ readme = "README.md"
 name = "arcadia_tio_ocb_core"
 path = "src/lib.rs"
 
+[features]
+default = []
+# Compiles the unsupported maintenance bridge consumed by the private parent crate.
+private-maintenance = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
