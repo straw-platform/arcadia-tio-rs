@@ -5,7 +5,23 @@ use std::path::{Path, PathBuf};
 
 use arcadia_tio_sys::*;
 
-const SYS_LIB: &str = include_str!("../src/lib.rs");
+const SYS_SOURCES: &[&str] = &[
+    include_str!("../src/lib.rs"),
+    include_str!("../src/types.rs"),
+    include_str!("../src/common.rs"),
+    include_str!("../src/ocb.rs"),
+    include_str!("../src/lifecycle_coordinates.rs"),
+    include_str!("../src/tensor.rs"),
+    include_str!("../src/mutation.rs"),
+    include_str!("../src/maintenance.rs"),
+    include_str!("../src/metadata.rs"),
+    include_str!("../src/read.rs"),
+    include_str!("../src/history.rs"),
+];
+
+fn sys_source() -> String {
+    SYS_SOURCES.concat()
+}
 
 const EXPECTED_MISSING_DEFERRED_C_ABI_FUNCTIONS: &[&str] = &[];
 
@@ -128,8 +144,9 @@ fn deferred_c_abi_gap_matches_expected_inventory() {
         return;
     };
 
+    let source = sys_source();
     let header_functions = collect_c_functions(&headers.functions);
-    let sys_functions = collect_sys_functions(SYS_LIB);
+    let sys_functions = collect_sys_functions(&source);
     let missing_functions = sorted_difference(&header_functions, &sys_functions);
     assert_eq!(
         missing_functions, EXPECTED_MISSING_DEFERRED_C_ABI_FUNCTIONS,
@@ -138,7 +155,7 @@ fn deferred_c_abi_gap_matches_expected_inventory() {
 
     let mut header_types = collect_c_types(&headers.types);
     header_types.extend(collect_arrow_types(&headers.arrow));
-    let sys_types = collect_sys_types(SYS_LIB);
+    let sys_types = collect_sys_types(&source);
     let mut missing_types = sorted_difference(&header_types, &sys_types);
     missing_types.retain(|name| !INTENTIONALLY_EXCLUDED_C_ABI_TYPES.contains(&name.as_str()));
     assert_eq!(
@@ -258,6 +275,7 @@ fn sorted_difference(
 
 #[test]
 fn coordinate_v2_symbols_are_declared() {
+    let source = sys_source();
     for name in [
         "arcadia_tio_create_with_policy_with_coordinates_v2",
         "arcadia_tio_create_inferred_with_coordinates_v2",
@@ -293,7 +311,7 @@ fn coordinate_v2_symbols_are_declared() {
         "arcadia_tio_append_i64_with_coordinates_v2",
     ] {
         assert!(
-            SYS_LIB.contains(&format!("pub fn {name}(")),
+            source.contains(&format!("pub fn {name}(")),
             "missing sys declaration for {name}"
         );
     }
@@ -301,6 +319,7 @@ fn coordinate_v2_symbols_are_declared() {
 
 #[test]
 fn sparse_integer_append_symbols_are_declared() {
+    let source = sys_source();
     for name in [
         "arcadia_tio_analyze_sparse_append_i32",
         "arcadia_tio_analyze_sparse_append_i64",
@@ -310,7 +329,7 @@ fn sparse_integer_append_symbols_are_declared() {
         "arcadia_tio_append_sparse_i64_with_range",
     ] {
         assert!(
-            SYS_LIB.contains(&format!("pub fn {name}(")),
+            source.contains(&format!("pub fn {name}(")),
             "missing sys declaration for {name}"
         );
     }
@@ -319,12 +338,13 @@ fn sparse_integer_append_symbols_are_declared() {
 #[cfg(feature = "format-ocb")]
 #[test]
 fn ocb_resource_limit_symbols_are_declared() {
+    let source = sys_source();
     for name in [
         "arcadia_tio_ocb_open_with_options_and_resource_limits",
         "arcadia_tio_ocb_resource_limits_init",
     ] {
         assert!(
-            SYS_LIB.contains(&format!("pub fn {name}(")),
+            source.contains(&format!("pub fn {name}(")),
             "missing sys declaration for {name}"
         );
     }

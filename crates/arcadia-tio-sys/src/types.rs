@@ -1,0 +1,4144 @@
+use super::*;
+
+/// Exact base C ABI version expected by this sys crate.
+pub const ARCADIA_TIO_ABI_VERSION: u32 = 3;
+/// Pointer-based compaction family version expected by this sys crate.
+pub const ARCADIA_TIO_COMPACTION_ABI_VERSION: u32 = 1;
+/// Current OCB C ABI version expected by this sys crate.
+#[cfg(feature = "format-ocb")]
+pub const ARCADIA_TIO_OCB_ABI_VERSION: u32 = 1;
+
+/// V4 precise reason-code taxonomy string exposed by the C ABI.
+pub const ARCADIA_TIO_V4_PRECISE_REASON_CODE_TAXONOMY: &str = "v4.precise.v1";
+/// Query parallel reason-code taxonomy string exposed by the C ABI.
+pub const ARCADIA_TIO_QUERY_PARALLEL_REASON_CODE_TAXONOMY: &str = "v4.query_parallel.v1";
+
+/// Opaque TensorFile handle owned by the native library.
+#[repr(C)]
+pub struct ArcadiaTioHandle {
+    _private: [u8; 0],
+}
+
+/// Opaque OCB file handle owned by the native library.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+pub struct ArcadiaTioOcbFile {
+    _private: [u8; 0],
+}
+
+/// Opaque OCB read plan owned by the native library.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+pub struct ArcadiaTioOcbReadPlan {
+    _private: [u8; 0],
+}
+
+/// Opaque pull-driven parallel OCB read session owned by the native library.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+pub struct ArcadiaTioOcbParallelReadSession {
+    _private: [u8; 0],
+}
+
+/// Thread-local C ABI error code value.
+pub type ArcadiaTioErrorCode = c_int;
+/// OCB structured error-kind value.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbErrorKind = c_int;
+/// OCB structured failure-cause value.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbFailureCause = c_int;
+/// OCB open validation selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbOpenValidation = c_int;
+/// OCB manifest/file-set compatibility status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbCompatibilityStatus = c_int;
+/// OCB selected-snapshot health status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbHealthStatus = c_int;
+/// OCB column physical type value.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbPhysicalType = c_int;
+/// OCB column logical-kind value.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbLogicalKind = c_int;
+/// OCB dictionary value-kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbDictionaryValueKind = c_int;
+/// OCB ordering direction selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbOrderingDirection = c_int;
+/// OCB null-order selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbNullOrder = c_int;
+/// OCB projection-kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbProjectionKind = c_int;
+/// OCB parallel read `next` terminal/result status.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbParallelReadNextStatus = c_int;
+/// OCB body kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbBodyKind = c_int;
+/// OCB checksum kind selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbChecksumKind = c_int;
+/// OCB column-chunk summary codec selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbColumnChunkSummaryCodec = c_int;
+/// OCB write chunk codec selector.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbWriteChunkCodec = c_int;
+/// OCB batch visitor callback.
+#[cfg(feature = "format-ocb")]
+pub type ArcadiaTioOcbBatchVisitor = Option<
+    unsafe extern "C" fn(
+        user: *mut c_void,
+        batch: *const ArcadiaTioOcbColumnBatch,
+        out_continue: *mut u8,
+    ) -> ArcadiaTioErrorCode,
+>;
+/// Native payload dtype value.
+pub type ArcadiaTioDType = c_int;
+/// Compression mode value.
+pub type ArcadiaTioCompressionMode = c_int;
+/// Compression codec value.
+pub type ArcadiaTioCompressionCodec = c_int;
+/// Coordinate payload dtype value.
+pub type ArcadiaTioCoordinateDType = c_int;
+/// Axis coordinate semantic kind value.
+pub type ArcadiaTioCoordinateKind = c_int;
+/// Axis coordinate integer encoding value.
+pub type ArcadiaTioCoordinateEncoding = c_int;
+/// Declared sortedness value for coordinate values.
+pub type ArcadiaTioCoordinateSortedness = c_int;
+/// Declared monotonicity value for coordinate values.
+pub type ArcadiaTioCoordinateMonotonicity = c_int;
+/// Declared uniqueness value for coordinate values.
+pub type ArcadiaTioCoordinateUniqueness = c_int;
+/// Coordinate storage location kind value.
+pub type ArcadiaTioCoordinateStorageKind = c_int;
+/// External coordinate source kind value.
+pub type ArcadiaTioCoordinateSourceKind = c_int;
+/// Coordinate validation status value.
+pub type ArcadiaTioCoordinateValidationStatus = c_int;
+/// Coordinate v2 value-domain selector.
+pub type ArcadiaTioCoordinateValueDomainV2 = c_int;
+/// Coordinate v2 lookup-key domain selector.
+pub type ArcadiaTioCoordinateKeyDomainV2 = c_int;
+/// Coordinate v2 dictionary-code integer dtype selector.
+pub type ArcadiaTioCoordinateCodeDTypeV2 = c_int;
+/// Coordinate v2 fixed-text encoding selector.
+pub type ArcadiaTioCoordinateFixedTextEncodingV2 = c_int;
+/// Coordinate v2 fixed-text padding selector.
+pub type ArcadiaTioCoordinateFixedTextPaddingV2 = c_int;
+/// Coordinate v2 external-source kind selector.
+pub type ArcadiaTioCoordinateSourceKindV2 = c_int;
+/// Coordinate v2 availability status selector.
+pub type ArcadiaTioCoordinateAvailabilityV2 = c_int;
+/// Coordinate v2 status-category selector.
+pub type ArcadiaTioCoordinateStatusCategoryV2 = c_int;
+/// Coordinate v2 optional-index kind selector.
+pub type ArcadiaTioCoordinateIndexKindV2 = c_int;
+/// Coordinate v2 optional-index validation status selector.
+pub type ArcadiaTioCoordinateIndexValidationStatusV2 = c_int;
+/// Coordinate v2 optional-index fallback selector.
+pub type ArcadiaTioCoordinateIndexFallbackV2 = c_int;
+/// Coordinate v2 optional-index selected-use selector.
+pub type ArcadiaTioCoordinateIndexUseV2 = c_int;
+/// Coordinate v2 lookup-result status selector.
+pub type ArcadiaTioCoordinateLookupResultStatusV2 = c_int;
+/// Tensor axis kind value.
+pub type ArcadiaTioAxisKind = c_int;
+/// Storage profile selector value used by policy create helpers.
+pub type ArcadiaTioStorageProfile = c_int;
+/// Storage access kind value used by inferred create helpers.
+pub type ArcadiaTioStorageAccessKind = c_int;
+/// Expected open/query pattern value used by inferred create helpers.
+pub type ArcadiaTioOpenPattern = c_int;
+/// File population kind value used by inferred create helpers.
+pub type ArcadiaTioFilePopulation = c_int;
+/// Metadata stability hint value used by inferred create helpers.
+pub type ArcadiaTioMetadataStability = c_int;
+/// Header profile value used in loaded metadata.
+pub type ArcadiaTioHeaderProfile = c_int;
+/// Entry-selector tag value for historical/current selector reads.
+pub type ArcadiaTioEntrySelectorTag = c_int;
+/// Read execution mode value for option-bearing read APIs.
+pub type ArcadiaTioReadExecutionMode = c_int;
+/// Read shape policy tag value for current and historical reads.
+pub type ArcadiaTioReadShapePolicyTag = c_int;
+/// Axis identity mode used by universe-aware create APIs.
+pub type ArcadiaTioAxisIdentityMode = c_int;
+/// Historical query source kind reported by historical read APIs.
+pub type ArcadiaTioHistoricalQuerySourceKind = c_int;
+/// Compaction mode selector value.
+pub type ArcadiaTioCompactionModeTag = c_int;
+/// Reform target layout selector value.
+pub type ArcadiaTioReformTargetLayout = c_int;
+/// Status value for non-precise V4 report APIs.
+pub type ArcadiaTioV4ReportStatus = c_int;
+/// Ordinary V4 compaction-analysis policy value.
+pub type ArcadiaTioV4CompactionAnalysisPolicy = c_int;
+/// Precise-accounting field selector value.
+pub type ArcadiaTioV4PreciseAccountingField = c_int;
+/// Retained-history compaction policy value.
+pub type ArcadiaTioV4RetainedHistoryPolicy = c_int;
+/// Sparse-intent detector selector value.
+pub type ArcadiaTioSparseDetectorKind = c_int;
+/// Sparse-intent value predicate selector value.
+pub type ArcadiaTioSparseValuePredicateKind = c_int;
+/// Sparse-intent V2 value predicate selector value.
+pub type ArcadiaTioSparseValuePredicateKindV2 = c_int;
+/// Sparse-intent fallback policy selector value.
+pub type ArcadiaTioSparseFallbackPolicy = c_int;
+/// Sparse-append analysis outcome value.
+pub type ArcadiaTioSparseAppendOutcome = c_int;
+/// Sparse-append analysis reason-code value.
+pub type ArcadiaTioSparseAppendReason = c_int;
+/// Read-index item tag value.
+pub type ArcadiaTioReadIndexItemTag = c_int;
+/// Read-index lowering-kind report value.
+pub type ArcadiaTioReadIndexLoweringKind = c_int;
+
+macro_rules! raw_constant {
+    ($name:ident: $ty:ty = $value:expr) => {
+        #[doc = concat!("Raw C ABI constant `", stringify!($name), "`.")]
+        pub const $name: $ty = $value;
+    };
+}
+
+raw_constant!(ARCADIA_TIO_ERROR_OK: ArcadiaTioErrorCode = 0);
+raw_constant!(ARCADIA_TIO_ERROR_INVALID_ARGUMENT: ArcadiaTioErrorCode = 1);
+raw_constant!(ARCADIA_TIO_ERROR_UNIMPLEMENTED: ArcadiaTioErrorCode = 2);
+raw_constant!(ARCADIA_TIO_ERROR_IO: ArcadiaTioErrorCode = 3);
+raw_constant!(ARCADIA_TIO_ERROR_FLATBUFFERS: ArcadiaTioErrorCode = 4);
+
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_NONE: ArcadiaTioOcbErrorKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_INVALID_INPUT: ArcadiaTioOcbErrorKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_UNSUPPORTED_FORMAT: ArcadiaTioOcbErrorKind = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_CORRUPT_FILE: ArcadiaTioOcbErrorKind = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_LOCK_UNAVAILABLE: ArcadiaTioOcbErrorKind = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ERROR_KIND_IO: ArcadiaTioOcbErrorKind = 5);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_NONE: ArcadiaTioOcbFailureCause = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_INVALID_INPUT: ArcadiaTioOcbFailureCause = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_UNSUPPORTED_FORMAT: ArcadiaTioOcbFailureCause = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_CORRUPT_FILE: ArcadiaTioOcbFailureCause = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_FAILURE_CAUSE_LOCK_UNAVAILABLE: ArcadiaTioOcbFailureCause = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_METADATA_GRAPH: ArcadiaTioOcbOpenValidation = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_OPEN_VALIDATION_FULL_PAYLOAD: ArcadiaTioOcbOpenValidation = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_COMPATIBLE: ArcadiaTioOcbCompatibilityStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_INCOMPATIBLE: ArcadiaTioOcbCompatibilityStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COMPATIBILITY_STATUS_UNKNOWN: ArcadiaTioOcbCompatibilityStatus = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_VALID: ArcadiaTioOcbHealthStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_INVALID: ArcadiaTioOcbHealthStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_HEALTH_STATUS_UNKNOWN: ArcadiaTioOcbHealthStatus = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_I32: ArcadiaTioOcbPhysicalType = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_I64: ArcadiaTioOcbPhysicalType = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_F32: ArcadiaTioOcbPhysicalType = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_F64: ArcadiaTioOcbPhysicalType = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PHYSICAL_TYPE_FIXED_BINARY: ArcadiaTioOcbPhysicalType = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_PLAIN: ArcadiaTioOcbLogicalKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_TIMESTAMP_NANOS_LIKE: ArcadiaTioOcbLogicalKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_SCALED_INTEGER: ArcadiaTioOcbLogicalKind = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_DICTIONARY_CODE: ArcadiaTioOcbLogicalKind = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_ENUM_CODE: ArcadiaTioOcbLogicalKind = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_LOGICAL_KIND_OPAQUE_KEY: ArcadiaTioOcbLogicalKind = 5);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_DICTIONARY_VALUE_KIND_UTF8: ArcadiaTioOcbDictionaryValueKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_DICTIONARY_VALUE_KIND_BYTES: ArcadiaTioOcbDictionaryValueKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_DICTIONARY_VALUE_KIND_FIXED_BYTES: ArcadiaTioOcbDictionaryValueKind = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_DICTIONARY_VALUE_KIND_ENUM_LABELS: ArcadiaTioOcbDictionaryValueKind = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ORDERING_DIRECTION_ASCENDING: ArcadiaTioOcbOrderingDirection = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_ORDERING_DIRECTION_DESCENDING: ArcadiaTioOcbOrderingDirection = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_NULL_ORDER_NULLS_FIRST: ArcadiaTioOcbNullOrder = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_NULL_ORDER_NULLS_LAST: ArcadiaTioOcbNullOrder = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_NULL_ORDER_NO_NULLS: ArcadiaTioOcbNullOrder = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PROJECTION_ALL: ArcadiaTioOcbProjectionKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PROJECTION_NAMES: ArcadiaTioOcbProjectionKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_BATCH: ArcadiaTioOcbParallelReadNextStatus = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_END: ArcadiaTioOcbParallelReadNextStatus = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_PARALLEL_READ_NEXT_CANCELLED: ArcadiaTioOcbParallelReadNextStatus = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_UNKNOWN: ArcadiaTioOcbBodyKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROOT: ArcadiaTioOcbBodyKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_SCHEMA: ArcadiaTioOcbBodyKind = 2);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_INDEX: ArcadiaTioOcbBodyKind = 3);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DICTIONARY_VALUES: ArcadiaTioOcbBodyKind = 4);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX: ArcadiaTioOcbBodyKind = 5);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ORDERING_PROOF: ArcadiaTioOcbBodyKind = 6);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_COLUMN_CHUNK: ArcadiaTioOcbBodyKind = 7);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_STRING_TABLE: ArcadiaTioOcbBodyKind = 8);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_DEBUG_JSON_METADATA: ArcadiaTioOcbBodyKind = 9);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_VALIDITY_BITMAP: ArcadiaTioOcbBodyKind = 10);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_KEY_TUPLE: ArcadiaTioOcbBodyKind = 11);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_BODY_KIND_ROW_GROUP_INDEX_DELTA: ArcadiaTioOcbBodyKind = 12);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_CHECKSUM_KIND_NONE: ArcadiaTioOcbChecksumKind = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_CHECKSUM_KIND_CRC32C: ArcadiaTioOcbChecksumKind = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_NONE: ArcadiaTioOcbColumnChunkSummaryCodec = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_COLUMN_CHUNK_SUMMARY_CODEC_ZSTD: ArcadiaTioOcbColumnChunkSummaryCodec = 1);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_NONE: ArcadiaTioOcbWriteChunkCodec = 0);
+#[cfg(feature = "format-ocb")]
+raw_constant!(ARCADIA_TIO_OCB_WRITE_CHUNK_CODEC_ZSTD: ArcadiaTioOcbWriteChunkCodec = 1);
+
+raw_constant!(ARCADIA_TIO_DTYPE_F32: ArcadiaTioDType = 0);
+raw_constant!(ARCADIA_TIO_DTYPE_F64: ArcadiaTioDType = 1);
+raw_constant!(ARCADIA_TIO_DTYPE_I32: ArcadiaTioDType = 2);
+raw_constant!(ARCADIA_TIO_DTYPE_I64: ArcadiaTioDType = 3);
+raw_constant!(ARCADIA_TIO_COMPRESSION_FORCE_OFF: ArcadiaTioCompressionMode = 0);
+raw_constant!(ARCADIA_TIO_COMPRESSION_AUTO: ArcadiaTioCompressionMode = 1);
+raw_constant!(ARCADIA_TIO_COMPRESSION_FORCE_ON: ArcadiaTioCompressionMode = 2);
+raw_constant!(ARCADIA_TIO_COMPRESSION_CODEC_ZSTD: ArcadiaTioCompressionCodec = 0);
+raw_constant!(ARCADIA_TIO_COMPRESSION_CODEC_LZ4: ArcadiaTioCompressionCodec = 1);
+
+raw_constant!(ARCADIA_TIO_COORDINATE_DTYPE_I32: ArcadiaTioCoordinateDType = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_DTYPE_I64: ArcadiaTioCoordinateDType = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_KIND_POSITION: ArcadiaTioCoordinateKind = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_KIND_LABEL_ID: ArcadiaTioCoordinateKind = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_KIND_DATE: ArcadiaTioCoordinateKind = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_KIND_TIMESTAMP: ArcadiaTioCoordinateKind = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_KIND_DOMAIN_VALUE: ArcadiaTioCoordinateKind = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_PLAIN: ArcadiaTioCoordinateEncoding = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_DATE_DAYS: ArcadiaTioCoordinateEncoding = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_DATE_YYYYMMDD: ArcadiaTioCoordinateEncoding = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_EPOCH_SECONDS: ArcadiaTioCoordinateEncoding = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_EPOCH_MILLISECONDS: ArcadiaTioCoordinateEncoding = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_EPOCH_MICROSECONDS: ArcadiaTioCoordinateEncoding = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_ENCODING_EPOCH_NANOSECONDS: ArcadiaTioCoordinateEncoding = 6);
+raw_constant!(ARCADIA_TIO_COORDINATE_SORTED_UNKNOWN: ArcadiaTioCoordinateSortedness = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_SORTED_ASCENDING: ArcadiaTioCoordinateSortedness = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_SORTED_DESCENDING: ArcadiaTioCoordinateSortedness = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_SORTED_UNSORTED: ArcadiaTioCoordinateSortedness = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_UNKNOWN: ArcadiaTioCoordinateMonotonicity = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_NON_DECREASING: ArcadiaTioCoordinateMonotonicity = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_STRICTLY_INCREASING: ArcadiaTioCoordinateMonotonicity = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_NON_INCREASING: ArcadiaTioCoordinateMonotonicity = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_STRICTLY_DECREASING: ArcadiaTioCoordinateMonotonicity = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_MONOTONICITY_NOT_MONOTONIC: ArcadiaTioCoordinateMonotonicity = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_UNIQUENESS_UNKNOWN: ArcadiaTioCoordinateUniqueness = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_UNIQUENESS_UNIQUE: ArcadiaTioCoordinateUniqueness = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_UNIQUENESS_HAS_DUPLICATES: ArcadiaTioCoordinateUniqueness = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_STORAGE_INLINE: ArcadiaTioCoordinateStorageKind = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_STORAGE_EXTERNAL: ArcadiaTioCoordinateStorageKind = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_SAME_FILE_OBJECT: ArcadiaTioCoordinateSourceKind = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_RELATIVE_PATH: ArcadiaTioCoordinateSourceKind = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_ABSOLUTE_PATH: ArcadiaTioCoordinateSourceKind = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_URI: ArcadiaTioCoordinateSourceKind = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALIDATED: ArcadiaTioCoordinateValidationStatus = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_UNVALIDATED: ArcadiaTioCoordinateValidationStatus = 1);
+
+raw_constant!(ARCADIA_TIO_COORDINATE_V2_ABI_VERSION: u32 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALUE_DOMAIN_V2_INLINE_NUMERIC: ArcadiaTioCoordinateValueDomainV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALUE_DOMAIN_V2_FIXED_TEXT: ArcadiaTioCoordinateValueDomainV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALUE_DOMAIN_V2_DICTIONARY_CODE: ArcadiaTioCoordinateValueDomainV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALUE_DOMAIN_V2_APPEND_SEQUENCE: ArcadiaTioCoordinateValueDomainV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_VALUE_DOMAIN_V2_EXTERNAL_REFERENCE: ArcadiaTioCoordinateValueDomainV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_I32: ArcadiaTioCoordinateKeyDomainV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_I64: ArcadiaTioCoordinateKeyDomainV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_FIXED_TEXT: ArcadiaTioCoordinateKeyDomainV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_DICTIONARY_CODE: ArcadiaTioCoordinateKeyDomainV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_STABLE_ID: ArcadiaTioCoordinateKeyDomainV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_DISPLAY_LABEL: ArcadiaTioCoordinateKeyDomainV2 = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_ALIAS: ArcadiaTioCoordinateKeyDomainV2 = 6);
+raw_constant!(ARCADIA_TIO_COORDINATE_KEY_DOMAIN_V2_RAW_TIME: ArcadiaTioCoordinateKeyDomainV2 = 7);
+raw_constant!(ARCADIA_TIO_COORDINATE_CODE_DTYPE_V2_U8: ArcadiaTioCoordinateCodeDTypeV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_CODE_DTYPE_V2_U16: ArcadiaTioCoordinateCodeDTypeV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_CODE_DTYPE_V2_U32: ArcadiaTioCoordinateCodeDTypeV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_CODE_DTYPE_V2_U64: ArcadiaTioCoordinateCodeDTypeV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_FIXED_TEXT_ENCODING_V2_ASCII: ArcadiaTioCoordinateFixedTextEncodingV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_FIXED_TEXT_PADDING_V2_RIGHT_SPACE: ArcadiaTioCoordinateFixedTextPaddingV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_V2_SAME_FILE_OBJECT: ArcadiaTioCoordinateSourceKindV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_V2_RELATIVE_PATH: ArcadiaTioCoordinateSourceKindV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_V2_ABSOLUTE_PATH: ArcadiaTioCoordinateSourceKindV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_V2_URI: ArcadiaTioCoordinateSourceKindV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_SOURCE_V2_APPLICATION_REGISTRY: ArcadiaTioCoordinateSourceKindV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_AVAILABLE: ArcadiaTioCoordinateAvailabilityV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_ABSENT: ArcadiaTioCoordinateAvailabilityV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_UNKNOWN: ArcadiaTioCoordinateAvailabilityV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_INVALID: ArcadiaTioCoordinateAvailabilityV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_UNAVAILABLE: ArcadiaTioCoordinateAvailabilityV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_AVAILABILITY_V2_UNSUPPORTED: ArcadiaTioCoordinateAvailabilityV2 = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_OK: ArcadiaTioCoordinateStatusCategoryV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_INVALID_ARGUMENT: ArcadiaTioCoordinateStatusCategoryV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_UNSUPPORTED_DOMAIN: ArcadiaTioCoordinateStatusCategoryV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_UNKNOWN_REQUIRED_VERSION: ArcadiaTioCoordinateStatusCategoryV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_REQUIRED_UNAVAILABLE: ArcadiaTioCoordinateStatusCategoryV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_STALE_EXTERNAL_BINDING: ArcadiaTioCoordinateStatusCategoryV2 = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_DUPLICATE_UNIQUE_LOOKUP: ArcadiaTioCoordinateStatusCategoryV2 = 6);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_LOOKUP_DOMAIN_MISMATCH: ArcadiaTioCoordinateStatusCategoryV2 = 7);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_INVALID_INDEX: ArcadiaTioCoordinateStatusCategoryV2 = 8);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_STALE_INDEX: ArcadiaTioCoordinateStatusCategoryV2 = 9);
+raw_constant!(ARCADIA_TIO_COORDINATE_STATUS_V2_UNSUPPORTED_INDEX: ArcadiaTioCoordinateStatusCategoryV2 = 10);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_KIND_V2_EXACT: ArcadiaTioCoordinateIndexKindV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_KIND_V2_RANGE: ArcadiaTioCoordinateIndexKindV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_KIND_V2_DICTIONARY_KEY: ArcadiaTioCoordinateIndexKindV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_STATUS_V2_VALIDATED: ArcadiaTioCoordinateIndexValidationStatusV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_STATUS_V2_MISSING: ArcadiaTioCoordinateIndexValidationStatusV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_STATUS_V2_STALE: ArcadiaTioCoordinateIndexValidationStatusV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_STATUS_V2_INVALID: ArcadiaTioCoordinateIndexValidationStatusV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_STATUS_V2_UNSUPPORTED: ArcadiaTioCoordinateIndexValidationStatusV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_FALLBACK_V2_AUTHORITATIVE_SCAN: ArcadiaTioCoordinateIndexFallbackV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_FALLBACK_V2_REBUILD: ArcadiaTioCoordinateIndexFallbackV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_FALLBACK_V2_REJECT_INDEX_DEPENDENT_OPERATION: ArcadiaTioCoordinateIndexFallbackV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_USE_V2_USE_INDEX: ArcadiaTioCoordinateIndexUseV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_USE_V2_AUTHORITATIVE_SCAN: ArcadiaTioCoordinateIndexUseV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_USE_V2_REBUILD: ArcadiaTioCoordinateIndexUseV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_INDEX_USE_V2_UNAVAILABLE: ArcadiaTioCoordinateIndexUseV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_UNIQUE: ArcadiaTioCoordinateLookupResultStatusV2 = 0);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_RANGE: ArcadiaTioCoordinateLookupResultStatusV2 = 1);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_MANY: ArcadiaTioCoordinateLookupResultStatusV2 = 2);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_MISSING: ArcadiaTioCoordinateLookupResultStatusV2 = 3);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_UNAVAILABLE: ArcadiaTioCoordinateLookupResultStatusV2 = 4);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_DUPLICATE: ArcadiaTioCoordinateLookupResultStatusV2 = 5);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_UNSUPPORTED: ArcadiaTioCoordinateLookupResultStatusV2 = 6);
+raw_constant!(ARCADIA_TIO_COORDINATE_LOOKUP_RESULT_V2_ERROR: ArcadiaTioCoordinateLookupResultStatusV2 = 7);
+
+raw_constant!(ARCADIA_TIO_AXIS_TIME: ArcadiaTioAxisKind = 0);
+raw_constant!(ARCADIA_TIO_AXIS_SYMBOL: ArcadiaTioAxisKind = 1);
+raw_constant!(ARCADIA_TIO_AXIS_CHANNEL: ArcadiaTioAxisKind = 2);
+raw_constant!(ARCADIA_TIO_AXIS_OTHER: ArcadiaTioAxisKind = 3);
+raw_constant!(ARCADIA_TIO_STORAGE_BALANCED: ArcadiaTioStorageProfile = 0);
+raw_constant!(ARCADIA_TIO_STORAGE_NVME: ArcadiaTioStorageProfile = 1);
+raw_constant!(ARCADIA_TIO_STORAGE_HDD: ArcadiaTioStorageProfile = 2);
+raw_constant!(ARCADIA_TIO_STORAGE_ACCESS_SEEKABLE_MOUNTED: ArcadiaTioStorageAccessKind = 0);
+raw_constant!(ARCADIA_TIO_STORAGE_ACCESS_REMOTE_RANGE_READ: ArcadiaTioStorageAccessKind = 1);
+raw_constant!(ARCADIA_TIO_STORAGE_ACCESS_FORWARD_ONLY: ArcadiaTioStorageAccessKind = 2);
+raw_constant!(ARCADIA_TIO_OPEN_PATTERN_METADATA_HOT: ArcadiaTioOpenPattern = 0);
+raw_constant!(ARCADIA_TIO_OPEN_PATTERN_DATA_HOT: ArcadiaTioOpenPattern = 1);
+raw_constant!(ARCADIA_TIO_OPEN_PATTERN_MIXED: ArcadiaTioOpenPattern = 2);
+raw_constant!(ARCADIA_TIO_FILE_POPULATION_FEW_LONG_LIVED: ArcadiaTioFilePopulation = 0);
+raw_constant!(ARCADIA_TIO_FILE_POPULATION_MANY_SHARDS: ArcadiaTioFilePopulation = 1);
+raw_constant!(ARCADIA_TIO_METADATA_STABILITY_STABLE: ArcadiaTioMetadataStability = 0);
+raw_constant!(ARCADIA_TIO_METADATA_STABILITY_GROWING: ArcadiaTioMetadataStability = 1);
+raw_constant!(ARCADIA_TIO_HEADER_PROFILE_STREAMING: ArcadiaTioHeaderProfile = 0);
+raw_constant!(ARCADIA_TIO_HEADER_PROFILE_RANDOM_ACCESS: ArcadiaTioHeaderProfile = 1);
+raw_constant!(ARCADIA_TIO_ENTRY_SELECTOR_ALL: ArcadiaTioEntrySelectorTag = 0);
+raw_constant!(ARCADIA_TIO_ENTRY_SELECTOR_RANGE: ArcadiaTioEntrySelectorTag = 1);
+raw_constant!(ARCADIA_TIO_ENTRY_SELECTOR_TAKE: ArcadiaTioEntrySelectorTag = 2);
+raw_constant!(ARCADIA_TIO_READ_EXECUTION_SERIAL: ArcadiaTioReadExecutionMode = 0);
+raw_constant!(ARCADIA_TIO_READ_EXECUTION_PARALLEL_THREADS: ArcadiaTioReadExecutionMode = 1);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_FILE_ENVELOPE: ArcadiaTioReadShapePolicyTag = 0);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_CURRENT_HEAD: ArcadiaTioReadShapePolicyTag = 1);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_UNION: ArcadiaTioReadShapePolicyTag = 2);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_INTERSECTION: ArcadiaTioReadShapePolicyTag = 3);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_INITIAL_REGISTERED: ArcadiaTioReadShapePolicyTag = 4);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_EXPLICIT_EXTENTS: ArcadiaTioReadShapePolicyTag = 5);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_EXPLICIT_UNIVERSE: ArcadiaTioReadShapePolicyTag = 6);
+raw_constant!(ARCADIA_TIO_READ_SHAPE_POLICY_EXPLICIT_UNIVERSE_AND_EXTENTS: ArcadiaTioReadShapePolicyTag = 7);
+raw_constant!(ARCADIA_TIO_AXIS_IDENTITY_EXTENT_ONLY: ArcadiaTioAxisIdentityMode = 0);
+raw_constant!(ARCADIA_TIO_AXIS_IDENTITY_UNIVERSE_AWARE: ArcadiaTioAxisIdentityMode = 1);
+raw_constant!(ARCADIA_TIO_HISTORICAL_QUERY_SOURCE_RETAINED_VISIBLE_COMMIT: ArcadiaTioHistoricalQuerySourceKind = 0);
+raw_constant!(ARCADIA_TIO_COMPACTION_COPY_LIVE: ArcadiaTioCompactionModeTag = 0);
+raw_constant!(ARCADIA_TIO_COMPACTION_REBLOCK: ArcadiaTioCompactionModeTag = 1);
+raw_constant!(ARCADIA_TIO_REFORM_TARGET_PRESERVE_FAMILY: ArcadiaTioReformTargetLayout = 0);
+raw_constant!(ARCADIA_TIO_REFORM_TARGET_WHOLE_APPEND_UNIT: ArcadiaTioReformTargetLayout = 1);
+raw_constant!(ARCADIA_TIO_REFORM_TARGET_REGULAR_CHUNKED: ArcadiaTioReformTargetLayout = 2);
+raw_constant!(ARCADIA_TIO_V4_REPORT_COMPLETE: ArcadiaTioV4ReportStatus = 0);
+raw_constant!(ARCADIA_TIO_V4_REPORT_UNSUPPORTED: ArcadiaTioV4ReportStatus = 1);
+raw_constant!(ARCADIA_TIO_V4_REPORT_UNKNOWN: ArcadiaTioV4ReportStatus = 2);
+raw_constant!(ARCADIA_TIO_V4_COMPACTION_POLICY_COMPACT_TO_CURRENT_STATE: ArcadiaTioV4CompactionAnalysisPolicy = 0);
+raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_UNREACHABLE_BYTES: ArcadiaTioV4PreciseAccountingField = 0);
+raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_RETAINED_HISTORY_REQUIRED_BYTES: ArcadiaTioV4PreciseAccountingField = 1);
+raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_POPPED_SKIPPED_BYTES: ArcadiaTioV4PreciseAccountingField = 2);
+raw_constant!(ARCADIA_TIO_V4_PRECISE_ACCOUNTING_RECLAIMABLE_BYTES: ArcadiaTioV4PreciseAccountingField = 3);
+raw_constant!(ARCADIA_TIO_V4_RETAINED_HISTORY_RETAIN_LAST: ArcadiaTioV4RetainedHistoryPolicy = 0);
+
+raw_constant!(ARCADIA_TIO_SPARSE_DETECTOR_NULL_SUBTENSOR: ArcadiaTioSparseDetectorKind = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_DETECTOR_PREDICATE_SUBTENSOR: ArcadiaTioSparseDetectorKind = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_NAN: ArcadiaTioSparseValuePredicateKind = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_ZERO: ArcadiaTioSparseValuePredicateKind = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F32: ArcadiaTioSparseValuePredicateKind = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_EQUAL_F64: ArcadiaTioSparseValuePredicateKind = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_NAN: ArcadiaTioSparseValuePredicateKindV2 = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_ZERO: ArcadiaTioSparseValuePredicateKindV2 = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_EQUAL_F32: ArcadiaTioSparseValuePredicateKindV2 = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_EQUAL_F64: ArcadiaTioSparseValuePredicateKindV2 = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_EQUAL_I32: ArcadiaTioSparseValuePredicateKindV2 = 4);
+raw_constant!(ARCADIA_TIO_SPARSE_PREDICATE_V2_EQUAL_I64: ArcadiaTioSparseValuePredicateKindV2 = 5);
+raw_constant!(ARCADIA_TIO_SPARSE_FALLBACK_DENSE: ArcadiaTioSparseFallbackPolicy = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_SPARSE_REGULAR_CHUNKED: ArcadiaTioSparseAppendOutcome = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_DENSE_FALLBACK: ArcadiaTioSparseAppendOutcome = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_REJECT: ArcadiaTioSparseAppendOutcome = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_APPEND_SPARSE_CHUNK_TREE: ArcadiaTioSparseAppendOutcome = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_NO_ABSENT_SUBTENSORS_DETECTED: ArcadiaTioSparseAppendReason = 0);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_NOT_BE_EMPTY: ArcadiaTioSparseAppendReason = 1);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_BE_UNIQUE: ArcadiaTioSparseAppendReason = 2);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_OUT_OF_BOUNDS: ArcadiaTioSparseAppendReason = 3);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_AXES_MUST_EXCLUDE_APPEND_AXIS: ArcadiaTioSparseAppendReason = 4);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_APPEND_AXIS_MUST_BE_ZERO_FOR_CURRENT_ROOT_APPEND: ArcadiaTioSparseAppendReason = 5);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_PREDICATE_DTYPE_MISMATCH: ArcadiaTioSparseAppendReason = 6);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_DENSE_FALLBACK_PRESERVES_EXACT_VALUES: ArcadiaTioSparseAppendReason = 7);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_SPARSE_LOWERING_BELOW_THRESHOLD: ArcadiaTioSparseAppendReason = 8);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_WHOLE_APPEND_UNIT_HAS_NO_SPARSE_PRODUCER_PATH: ArcadiaTioSparseAppendReason = 9);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_BLOCK_SHAPE_UNPUBLISHED: ArcadiaTioSparseAppendReason = 10);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_STABLE_NON_APPEND_EXTENTS: ArcadiaTioSparseAppendReason = 11);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_DENSE_FALLBACK_REQUIRES_DENSE_PUBLISHED_LANE_SET: ArcadiaTioSparseAppendReason = 12);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_REGULAR_CHUNKED_SPARSE_LOWERING_REQUIRES_STABLE_PUBLISHED_LANE_SET: ArcadiaTioSparseAppendReason = 13);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_TENSOR_CONTAINS_NULLS_THAT_DENSE_FALLBACK_CANNOT_PRESERVE: ArcadiaTioSparseAppendReason = 14);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_LOGICAL_ABSENCE_DOES_NOT_COMPILE_TO_CURRENT_SPARSE_MODEL: ArcadiaTioSparseAppendReason = 15);
+raw_constant!(ARCADIA_TIO_SPARSE_REASON_CURRENT_SPARSE_LOWERING_NOT_YET_IMPLEMENTED_FOR_DETECTOR: ArcadiaTioSparseAppendReason = 16);
+
+raw_constant!(ARCADIA_TIO_READ_INDEX_ALL: ArcadiaTioReadIndexItemTag = 0);
+raw_constant!(ARCADIA_TIO_READ_INDEX_SLICE: ArcadiaTioReadIndexItemTag = 1);
+raw_constant!(ARCADIA_TIO_READ_INDEX_INDEX: ArcadiaTioReadIndexItemTag = 2);
+raw_constant!(ARCADIA_TIO_READ_INDEX_NEW_AXIS: ArcadiaTioReadIndexItemTag = 3);
+raw_constant!(ARCADIA_TIO_READ_INDEX_ELLIPSIS: ArcadiaTioReadIndexItemTag = 4);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_UNKNOWN: ArcadiaTioReadIndexLoweringKind = 0);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ: ArcadiaTioReadIndexLoweringKind = 1);
+raw_constant!(ARCADIA_TIO_READ_INDEX_LOWERING_SELECTOR_READ_WITH_SHAPE_POSTPROCESS: ArcadiaTioReadIndexLoweringKind = 2);
+
+/// OCB column descriptor returned in metadata.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbColumnDescriptor {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local column id.
+    pub id: u32,
+    /// Native-owned UTF-8 column name.
+    pub name: *mut c_char,
+    /// Physical primitive type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// Logical column kind.
+    pub logical_kind: ArcadiaTioOcbLogicalKind,
+    /// Nonzero when dictionary_id is meaningful.
+    pub has_dictionary_id: u8,
+    /// Dictionary id for dictionary-coded columns.
+    pub dictionary_id: u32,
+    /// Decimal scale for scaled-integer logical columns.
+    pub scale: i32,
+    /// Nonzero when values may be null.
+    pub nullable: u8,
+    /// Reserved words. For fixed-binary columns, reserved[0] carries the byte
+    /// width; prefer [`arcadia_tio_ocb_column_descriptor_fixed_binary_width`].
+    pub reserved: [u64; 3],
+}
+
+/// OCB dictionary descriptor returned in metadata.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbDictionaryDescriptor {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local dictionary id.
+    pub dictionary_id: u32,
+    /// Native-owned UTF-8 dictionary name.
+    pub name: *mut c_char,
+    /// Physical code type used by dictionary-coded columns.
+    pub code_physical_type: ArcadiaTioOcbPhysicalType,
+    /// Decoded value kind.
+    pub value_kind: ArcadiaTioOcbDictionaryValueKind,
+    /// Number of entries in the dictionary.
+    pub entry_count: u32,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB open options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbOpenOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Open validation depth.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Finite OCB read limits retained by one selected-snapshot handle.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbResourceLimits {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum encoded size of one OCB body object.
+    pub max_encoded_object_bytes: u64,
+    /// Maximum encoded size of one compressed column-chunk payload.
+    pub max_compressed_chunk_bytes: u64,
+    /// Maximum decoded size of one column-chunk payload.
+    pub max_decompressed_chunk_bytes: u64,
+    /// Maximum decoded/materialized size of one projected row group.
+    pub max_projected_row_group_bytes: u64,
+    /// Maximum owned-read compressed bytes and unique open-time auxiliary bytes.
+    pub max_owned_selected_compressed_bytes: u64,
+    /// Maximum owned-read bytes and one root candidate's metadata materialization.
+    pub max_owned_decoded_materialized_bytes: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB ordering-key descriptor returned in metadata.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbOrderingKey {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local column id.
+    pub column_id: u32,
+    /// Native-owned UTF-8 column name snapshot.
+    pub column_name: *mut c_char,
+    /// Sort direction.
+    pub direction: ArcadiaTioOcbOrderingDirection,
+    /// Null-order declaration.
+    pub null_order: ArcadiaTioOcbNullOrder,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// Owned OCB metadata result; free with [`arcadia_tio_ocb_metadata_free`].
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbMetadata {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned format name, currently `OCB`.
+    pub format_name: *mut c_char,
+    /// Nonzero when the selected file is appendable.
+    pub appendable: u8,
+    /// Selected root generation.
+    pub root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous root generation when available.
+    pub previous_root_generation: u64,
+    /// Rows visible in the selected snapshot.
+    pub row_count: u64,
+    /// Row groups visible in the selected snapshot.
+    pub row_group_count: u32,
+    /// Column chunks visible in the selected snapshot.
+    pub column_chunk_count: u32,
+    /// Native-owned column descriptor array.
+    pub columns: *mut ArcadiaTioOcbColumnDescriptor,
+    /// Number of column descriptors.
+    pub columns_len: usize,
+    /// Native-owned dictionary descriptor array.
+    pub dictionaries: *mut ArcadiaTioOcbDictionaryDescriptor,
+    /// Number of dictionary descriptors.
+    pub dictionaries_len: usize,
+    /// Native-owned ordering-key descriptor array.
+    pub ordering_keys: *mut ArcadiaTioOcbOrderingKey,
+    /// Number of ordering keys.
+    pub ordering_keys_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB byte slice in owned dictionary/read results.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbByteSlice {
+    /// Borrowed byte pointer tied to the owning result object.
+    pub data: *const u8,
+    /// Number of bytes.
+    pub len: usize,
+}
+
+/// Owned OCB dictionary values result; free with [`arcadia_tio_ocb_dictionary_values_free`].
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbDictionaryValues {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local dictionary id.
+    pub dictionary_id: u32,
+    /// Native-owned UTF-8 dictionary name.
+    pub name: *mut c_char,
+    /// Decoded value kind.
+    pub value_kind: ArcadiaTioOcbDictionaryValueKind,
+    /// Fixed byte width when value_kind is fixed bytes.
+    pub fixed_width: u32,
+    /// Native-owned UTF-8 string array for string-like dictionaries.
+    pub string_values: *mut *mut c_char,
+    /// Number of string values.
+    pub string_values_len: usize,
+    /// Native-owned byte-slice array for bytes-like dictionaries.
+    pub byte_values: *mut ArcadiaTioOcbByteSlice,
+    /// Number of byte values.
+    pub byte_values_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Borrowed OCB primitive values input or owned primitive values output.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbPrimitiveValues {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Physical primitive type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// Primitive buffer pointer.
+    pub data: *const c_void,
+    /// Number of primitive values. For fixed-binary values this is row count,
+    /// while `data` points to `len * fixed_binary_width` bytes.
+    pub len: usize,
+    /// Reserved words. For fixed-binary values, reserved[0] carries the byte
+    /// width.
+    pub reserved: [u64; 3],
+}
+
+/// OCB validity bitmap; least-significant-bit first, where 1 means valid.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbValidityBitmap {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Bitmap byte pointer.
+    pub data: *const u8,
+    /// Number of bitmap bytes.
+    pub len: usize,
+    /// Number of meaningful bits/rows.
+    pub row_count: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write-column schema input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteColumn {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed UTF-8 column name.
+    pub name: *const c_char,
+    /// Physical primitive type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// Logical column kind.
+    pub logical_kind: ArcadiaTioOcbLogicalKind,
+    /// Nonzero when dictionary_id is meaningful.
+    pub has_dictionary_id: u8,
+    /// Dictionary id for dictionary-coded columns.
+    pub dictionary_id: u32,
+    /// Decimal scale for scaled-integer logical columns.
+    pub scale: i32,
+    /// Nonzero when values may be null.
+    pub nullable: u8,
+    /// Reserved words. For fixed-binary columns, set reserved[0] to the byte
+    /// width, preferably via
+    /// [`arcadia_tio_ocb_write_column_set_fixed_binary_width`].
+    pub reserved: [u64; 3],
+}
+
+/// OCB write-dictionary entry input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbDictionaryEntry {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed bytes for one decoded dictionary value.
+    pub data: *const u8,
+    /// Number of bytes.
+    pub len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write-dictionary input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteDictionary {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local dictionary id.
+    pub dictionary_id: u32,
+    /// Borrowed UTF-8 dictionary name.
+    pub name: *const c_char,
+    /// Physical code type.
+    pub code_physical_type: ArcadiaTioOcbPhysicalType,
+    /// Decoded value kind.
+    pub value_kind: ArcadiaTioOcbDictionaryValueKind,
+    /// Fixed byte width when value_kind is fixed bytes.
+    pub fixed_width: u32,
+    /// Borrowed dictionary-entry array.
+    pub entries: *const ArcadiaTioOcbDictionaryEntry,
+    /// Number of entries.
+    pub entries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write row-group column chunk input.
+#[cfg(feature = "format-ocb")]
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteColumnChunk {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local column id.
+    pub column_id: u32,
+    /// Borrowed primitive values.
+    pub values: ArcadiaTioOcbPrimitiveValues,
+    /// Optional borrowed validity bitmap; NULL means all rows valid.
+    pub validity: *const ArcadiaTioOcbValidityBitmap,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write row-group input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteRowGroup {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed column chunk array.
+    pub columns: *const ArcadiaTioOcbWriteColumnChunk,
+    /// Number of column chunks.
+    pub columns_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write ordering-key input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteOrderingKey {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local column id.
+    pub column_id: u32,
+    /// Sort direction.
+    pub direction: ArcadiaTioOcbOrderingDirection,
+    /// Null-order declaration.
+    pub null_order: ArcadiaTioOcbNullOrder,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB write spec input for create/append.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbWriteSpec {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed column schema array.
+    pub columns: *const ArcadiaTioOcbWriteColumn,
+    /// Number of columns.
+    pub columns_len: usize,
+    /// Borrowed dictionary declarations.
+    pub dictionaries: *const ArcadiaTioOcbWriteDictionary,
+    /// Number of dictionaries.
+    pub dictionaries_len: usize,
+    /// Borrowed row-group array.
+    pub row_groups: *const ArcadiaTioOcbWriteRowGroup,
+    /// Number of row groups.
+    pub row_groups_len: usize,
+    /// Borrowed ordering-key array.
+    pub ordering_keys: *const ArcadiaTioOcbWriteOrderingKey,
+    /// Number of ordering keys.
+    pub ordering_keys_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB write options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWriteOptions {
+    pub version: u32,
+    pub struct_size: usize,
+    pub write_threads: usize,
+    pub chunk_codec: ArcadiaTioOcbWriteChunkCodec,
+    pub zstd_level: i32,
+    pub reserved: [u64; 4],
+}
+
+/// OCB write phase timings in nanoseconds.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWritePhaseTimings {
+    pub version: u32,
+    pub struct_size: usize,
+    pub to_internal_ns: u64,
+    pub validate_spec_ns: u64,
+    pub validate_dictionary_codes_ns: u64,
+    pub validate_ordering_ns: u64,
+    pub append_base_read_ns: u64,
+    pub append_base_validate_ns: u64,
+    pub row_group_encode_ns: u64,
+    pub row_group_merge_ns: u64,
+    pub metadata_encode_ns: u64,
+    pub file_write_ns: u64,
+    pub sync_data_ns: u64,
+    pub commit_validate_ns: u64,
+    pub slot_publish_ns: u64,
+    pub sync_all_ns: u64,
+    pub rename_ns: u64,
+    pub parent_sync_ns: u64,
+    pub reserved: [u64; 4],
+}
+
+/// OCB write diagnostic counters and phase timings.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbWriteReport {
+    pub version: u32,
+    pub struct_size: usize,
+    pub requested_write_threads: usize,
+    pub effective_write_threads: usize,
+    pub row_count: u64,
+    pub row_group_count: u32,
+    pub column_count: u32,
+    pub dictionary_count: u32,
+    pub dictionary_coded_column_count: u32,
+    pub column_chunk_count: u32,
+    pub stat_count: u32,
+    pub payload_bytes: u64,
+    pub validity_bytes: u64,
+    pub row_group_object_bytes: u64,
+    pub file_bytes: u64,
+    pub tail_bytes: u64,
+    pub root_generation: u64,
+    pub previous_root_generation: u64,
+    pub parallel_batches: usize,
+    pub worker_count: usize,
+    pub timings: ArcadiaTioOcbWritePhaseTimings,
+    pub reserved: [u64; 4],
+}
+
+/// OCB cleanup result.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCleanupResult {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Nonzero when orphan tail bytes were truncated.
+    pub truncated: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// Generic OCB report issue.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbIssue {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned reason code string.
+    pub code: *mut c_char,
+    /// Native-owned optional field path string.
+    pub field_path: *mut c_char,
+    /// Native-owned diagnostic message string.
+    pub message: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Rejected OCB root-candidate diagnostic.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbRootCandidateDiagnostic {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Nonzero when slot_id is meaningful.
+    pub has_slot_id: u8,
+    /// Candidate root slot id.
+    pub slot_id: u16,
+    /// Nonzero when generation is meaningful.
+    pub has_generation: u8,
+    /// Candidate root generation.
+    pub generation: u64,
+    /// Diagnostic issue.
+    pub issue: ArcadiaTioOcbIssue,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Read-only OCB maintenance report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbMaintenanceReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned path string.
+    pub path: *mut c_char,
+    /// Selected-snapshot health status.
+    pub status: ArcadiaTioOcbHealthStatus,
+    /// Nonzero when file_bytes is meaningful.
+    pub has_file_bytes: u8,
+    /// Observed file length.
+    pub file_bytes: u64,
+    /// Nonzero when selected_root_generation is meaningful.
+    pub has_selected_root_generation: u8,
+    /// Selected root generation.
+    pub selected_root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous root generation.
+    pub previous_root_generation: u64,
+    /// Nonzero when selected_slot_id is meaningful.
+    pub has_selected_slot_id: u8,
+    /// Selected root slot id.
+    pub selected_slot_id: u16,
+    /// Nonzero when selected_root_end_offset is meaningful.
+    pub has_selected_root_end_offset: u8,
+    /// End offset of the selected root object.
+    pub selected_root_end_offset: u64,
+    /// Nonzero when selected_snapshot_end_offset is meaningful.
+    pub has_selected_snapshot_end_offset: u8,
+    /// End offset of the selected snapshot.
+    pub selected_snapshot_end_offset: u64,
+    /// Nonzero when orphan_tail_bytes is meaningful.
+    pub has_orphan_tail_bytes: u8,
+    /// Unreachable trailing bytes after the selected snapshot.
+    pub orphan_tail_bytes: u64,
+    /// Nonzero when cleanup is recommended.
+    pub cleanup_recommended: u8,
+    /// Nonzero when rejected root candidates were observed.
+    pub root_candidate_rejection_observed: u8,
+    /// Number of rejected root candidates observed.
+    pub rejected_root_candidate_count: usize,
+    /// Native-owned rejected root-candidate diagnostics.
+    pub rejected_root_candidates: *mut ArcadiaTioOcbRootCandidateDiagnostic,
+    /// Number of rejected root-candidate diagnostics returned.
+    pub rejected_root_candidates_len: usize,
+    /// Native-owned report issues.
+    pub issues: *mut ArcadiaTioOcbIssue,
+    /// Number of report issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Report-bearing orphan-tail cleanup result.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCleanupReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned path string.
+    pub path: *mut c_char,
+    /// File length before cleanup.
+    pub before_file_bytes: u64,
+    /// File length after cleanup.
+    pub after_file_bytes: u64,
+    /// Selected root generation.
+    pub selected_root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous root generation.
+    pub previous_root_generation: u64,
+    /// Selected root slot id.
+    pub selected_slot_id: u16,
+    /// End offset of the selected root object.
+    pub selected_root_end_offset: u64,
+    /// End offset of the selected snapshot.
+    pub selected_snapshot_end_offset: u64,
+    /// Orphan-tail bytes before cleanup.
+    pub orphan_tail_bytes_before: u64,
+    /// Orphan-tail bytes after cleanup.
+    pub orphan_tail_bytes_after: u64,
+    /// Bytes removed by cleanup.
+    pub bytes_removed: u64,
+    /// Nonzero when the file was shortened.
+    pub truncated: u8,
+    /// Native-owned report issues.
+    pub issues: *mut ArcadiaTioOcbIssue,
+    /// Number of report issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB selected-snapshot export-copy options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbSnapshotExportOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Validation depth for the source and staged destination.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB selected-snapshot export-copy report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbSnapshotExportReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned source path string.
+    pub source_path: *mut c_char,
+    /// Native-owned destination path string.
+    pub destination_path: *mut c_char,
+    /// Validation depth applied during export.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Source file length observed before export.
+    pub source_file_bytes: u64,
+    /// Destination file length after export.
+    pub destination_file_bytes: u64,
+    /// Number of selected-snapshot bytes copied.
+    pub bytes_copied: u64,
+    /// Orphan tail bytes excluded from the destination.
+    pub orphan_tail_bytes_excluded: u64,
+    /// Selected root generation.
+    pub root_generation: u64,
+    /// Nonzero when previous_root_generation is meaningful.
+    pub has_previous_root_generation: u8,
+    /// Previous selected root generation.
+    pub previous_root_generation: u64,
+    /// Selected snapshot row count.
+    pub row_count: u64,
+    /// Selected snapshot row-group count.
+    pub row_group_count: u32,
+    /// Native-owned fingerprint algorithm string.
+    pub fingerprint_algorithm: *mut c_char,
+    /// Native-owned schema fingerprint string.
+    pub schema_fingerprint: *mut c_char,
+    /// Native-owned dictionary fingerprint string.
+    pub dictionaries_fingerprint: *mut c_char,
+    /// Native-owned ordering fingerprint string.
+    pub ordering_fingerprint: *mut c_char,
+    /// Native-owned combined fingerprint string.
+    pub combined_fingerprint: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest build options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestBuildOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Validation depth for opened input files.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Nonzero to compute and include per-file SHA-256 digests.
+    pub compute_file_digest: u8,
+    /// Optional borrowed generated-by name override.
+    pub generated_by_name: *const c_char,
+    /// Optional borrowed generated-by version override.
+    pub generated_by_version: *const c_char,
+    /// Nonzero when generated_at_unix_seconds is meaningful.
+    pub has_generated_at_unix_seconds: u8,
+    /// Explicit generated-at timestamp.
+    pub generated_at_unix_seconds: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Tool identity recorded in an OCB manifest.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestTool {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed tool name, depending on carrier ownership.
+    pub name: *mut c_char,
+    /// Native-owned or caller-borrowed tool version text, depending on carrier ownership.
+    pub version_text: *mut c_char,
+    /// Manifest generated-at timestamp.
+    pub generated_at_unix_seconds: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Optional file digest recorded in an OCB manifest entry.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestDigest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed digest algorithm string.
+    pub algorithm: *mut c_char,
+    /// Native-owned or caller-borrowed digest hex string.
+    pub digest: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest declaration fingerprints.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestFingerprints {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed fingerprint algorithm string.
+    pub algorithm: *mut c_char,
+    /// Native-owned or caller-borrowed schema fingerprint string.
+    pub schema: *mut c_char,
+    /// Native-owned or caller-borrowed dictionaries fingerprint string.
+    pub dictionaries: *mut c_char,
+    /// Native-owned or caller-borrowed ordering fingerprint string.
+    pub ordering: *mut c_char,
+    /// Native-owned or caller-borrowed combined fingerprint string.
+    pub combined: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest validation issue.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestIssue {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed reason code string.
+    pub code: *mut c_char,
+    /// Native-owned or caller-borrowed optional field path string.
+    pub field_path: *mut c_char,
+    /// Native-owned or caller-borrowed diagnostic message string.
+    pub message: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest entry validation summary.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestEntryValidation {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed validation mode string.
+    pub mode: *mut c_char,
+    /// Native-owned or caller-borrowed validation status string.
+    pub status: *mut c_char,
+    /// Native-owned or caller-borrowed issue array.
+    pub issues: *mut ArcadiaTioOcbManifestIssue,
+    /// Number of issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest file entry.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestEntry {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed entry path string.
+    pub path: *mut c_char,
+    /// Native-owned or caller-borrowed optional URI string.
+    pub uri: *mut c_char,
+    /// Nonzero when file_bytes is meaningful.
+    pub has_file_bytes: u8,
+    /// Entry file length.
+    pub file_bytes: u64,
+    /// Nonzero when digest is meaningful.
+    pub has_digest: u8,
+    /// Optional digest value.
+    pub digest: ArcadiaTioOcbManifestDigest,
+    /// Selected root generation.
+    pub root_generation: u64,
+    /// Selected snapshot row count.
+    pub row_count: u64,
+    /// Selected snapshot row-group count.
+    pub row_group_count: u32,
+    /// Declaration fingerprints.
+    pub fingerprints: ArcadiaTioOcbManifestFingerprints,
+    /// Validation summary captured when the entry was built.
+    pub validation: ArcadiaTioOcbManifestEntryValidation,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB selected-snapshot manifest carrier.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned or caller-borrowed manifest schema string.
+    pub schema: *mut c_char,
+    /// Manifest generated-by tool identity.
+    pub generated_by: ArcadiaTioOcbManifestTool,
+    /// Native-owned or caller-borrowed entry array.
+    pub entries: *mut ArcadiaTioOcbManifestEntry,
+    /// Number of entries.
+    pub entries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB manifest validation report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbManifestValidationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-set compatibility status.
+    pub status: ArcadiaTioOcbCompatibilityStatus,
+    /// Validation depth used by the report.
+    pub validation: ArcadiaTioOcbOpenValidation,
+    /// Number of manifest entries checked.
+    pub entries_checked: usize,
+    /// Native-owned issue array.
+    pub issues: *mut ArcadiaTioOcbManifestIssue,
+    /// Number of issues.
+    pub issues_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 certification options for channel-sharded OCB artifacts.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2CertificationOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Expected source record width in bytes.
+    pub expected_record_width: u32,
+    /// Nonzero to verify payload headers.
+    pub verify_payload_header: u8,
+    /// Nonzero to verify CRC32C checksums.
+    pub verify_crc32c: u8,
+    /// Nonzero to verify content hashes.
+    pub verify_hashes: u8,
+    /// Nonzero when max_rows is meaningful.
+    pub has_max_rows: u8,
+    /// Maximum rows accepted during certification.
+    pub max_rows: u64,
+    /// Requested worker thread count.
+    pub read_threads: usize,
+    /// Maximum row groups allowed in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Borrowed expected artifact format string or NULL.
+    pub artifact_format: *const c_char,
+    /// Borrowed payload column name string or NULL.
+    pub payload_column_name: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Per-channel compact-L2 certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2ChannelCertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Channel identifier.
+    pub channel_id: u32,
+    /// Certified row count.
+    pub row_count: u64,
+    /// Certified row-group count.
+    pub row_group_count: u32,
+    /// First business index in the channel.
+    pub first_biz_index: u64,
+    /// Last business index in the channel.
+    pub last_biz_index: u64,
+    /// Nonzero when min_receive_nano is meaningful.
+    pub has_min_receive_nano: u8,
+    /// Minimum receive timestamp in nanoseconds.
+    pub min_receive_nano: i64,
+    /// Nonzero when max_receive_nano is meaningful.
+    pub has_max_receive_nano: u8,
+    /// Maximum receive timestamp in nanoseconds.
+    pub max_receive_nano: i64,
+    /// Nonzero when order_record_count is meaningful.
+    pub has_order_record_count: u8,
+    /// Count of order records.
+    pub order_record_count: u64,
+    /// Nonzero when trade_record_count is meaningful.
+    pub has_trade_record_count: u8,
+    /// Count of trade records.
+    pub trade_record_count: u64,
+    /// Nonzero when checksums were verified.
+    pub checksum_verified: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2CertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Certified schema version.
+    pub schema_version: u32,
+    /// Certified trading day.
+    pub trading_day: u32,
+    /// Native-owned artifact format string or NULL.
+    pub artifact_format: *mut c_char,
+    /// Number of certified channels.
+    pub channel_count: usize,
+    /// Total certified row count.
+    pub row_count: u64,
+    /// Total certified row-group count.
+    pub row_group_count: u64,
+    /// Number of channels that failed certification.
+    pub failed_channel_count: usize,
+    /// Nonzero when the artifact is certified.
+    pub certified: u8,
+    /// Nonzero when paths were redacted.
+    pub path_redacted: u8,
+    /// Native-owned channel reports.
+    pub channels: *mut ArcadiaTioOcbCompactL2ChannelCertificationReport,
+    /// Number of channel reports.
+    pub channels_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 physical-v2 layout facts.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2LayoutFacts {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned artifact format string or NULL.
+    pub artifact_format: *mut c_char,
+    /// Legacy fixed-binary record width in bytes.
+    pub legacy_record_width: u32,
+    /// Required physical-v2 column count.
+    pub required_column_count: u32,
+    /// Body word lane count.
+    pub body_word_column_count: u32,
+    /// Nonzero when legacy 168-byte payload reconstruction is supported.
+    pub legacy_reconstruction_supported: u8,
+    /// Nonzero when hot typed read streaming is exposed through this C ABI.
+    pub hot_read_streaming_supported: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 physical-v2 manifest certification options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2CertificationOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed expected artifact format string or NULL.
+    pub artifact_format: *const c_char,
+    /// Nonzero to verify scalar continuity.
+    pub verify_scalar_continuity: u8,
+    /// Nonzero to reconstruct legacy 168-byte payloads for verification.
+    pub verify_legacy_reconstruction: u8,
+    /// Nonzero to verify content hashes.
+    pub verify_hashes: u8,
+    /// Nonzero when max_rows is meaningful.
+    pub has_max_rows: u8,
+    /// Maximum rows accepted during certification.
+    pub max_rows: u64,
+    /// Requested worker thread count.
+    pub read_threads: usize,
+    /// Maximum row groups allowed in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 physical-v2 single-artifact certification options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Nonzero when expected_row_count is meaningful.
+    pub has_expected_row_count: u8,
+    /// Nonzero when expected_trading_day is meaningful.
+    pub has_expected_trading_day: u8,
+    /// Nonzero when expected_channel_id is meaningful.
+    pub has_expected_channel_id: u8,
+    /// Nonzero when expected_first_biz_index is meaningful.
+    pub has_expected_first_biz_index: u8,
+    /// Nonzero when expected_last_biz_index is meaningful.
+    pub has_expected_last_biz_index: u8,
+    /// Nonzero to verify scalar continuity.
+    pub verify_scalar_continuity: u8,
+    /// Nonzero to reconstruct legacy 168-byte payloads for verification.
+    pub verify_legacy_reconstruction: u8,
+    /// Nonzero when max_rows is meaningful.
+    pub has_max_rows: u8,
+    /// Expected artifact row count.
+    pub expected_row_count: u64,
+    /// Expected trading day encoded in physical-v2 rows.
+    pub expected_trading_day: u32,
+    /// Expected channel id encoded in physical-v2 rows.
+    pub expected_channel_id: u32,
+    /// Expected first BizIndex.
+    pub expected_first_biz_index: u64,
+    /// Expected last BizIndex.
+    pub expected_last_biz_index: u64,
+    /// Maximum rows accepted during certification.
+    pub max_rows: u64,
+    /// Requested worker thread count.
+    pub read_threads: usize,
+    /// Maximum row groups allowed in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Borrowed expected reconstructed legacy payload FNV-1a64 hash or NULL.
+    pub expected_legacy_payload_hash_fnv1a64: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 physical-v2 single-artifact certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2ArtifactCertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Certified row count.
+    pub row_count: u64,
+    /// Certified row-group count.
+    pub row_group_count: u32,
+    /// Required physical-v2 column count.
+    pub required_column_count: usize,
+    /// Selected column chunk count.
+    pub selected_column_chunk_count: u64,
+    /// Selected compressed byte total.
+    pub selected_compressed_bytes: u64,
+    /// Selected uncompressed byte total.
+    pub selected_uncompressed_bytes: u64,
+    /// First business index.
+    pub first_biz_index: u64,
+    /// Last business index.
+    pub last_biz_index: u64,
+    /// Minimum receive timestamp in nanoseconds.
+    pub min_receive_nano: i64,
+    /// Maximum receive timestamp in nanoseconds.
+    pub max_receive_nano: i64,
+    /// Count of order records.
+    pub order_record_count: u64,
+    /// Count of trade records.
+    pub trade_record_count: u64,
+    /// Native-owned legacy payload FNV-1a64 hash string or NULL.
+    pub legacy_payload_hash_fnv1a64: *mut c_char,
+    /// Nonzero when first_biz_index is meaningful.
+    pub has_first_biz_index: u8,
+    /// Nonzero when last_biz_index is meaningful.
+    pub has_last_biz_index: u8,
+    /// Nonzero when min_receive_nano is meaningful.
+    pub has_min_receive_nano: u8,
+    /// Nonzero when max_receive_nano is meaningful.
+    pub has_max_receive_nano: u8,
+    /// Nonzero when order_record_count is meaningful.
+    pub has_order_record_count: u8,
+    /// Nonzero when trade_record_count is meaningful.
+    pub has_trade_record_count: u8,
+    /// Nonzero when legacy_payload_hash_fnv1a64 is meaningful.
+    pub has_legacy_payload_hash_fnv1a64: u8,
+    /// Nonzero when expected legacy payload hash was supplied and matched.
+    pub legacy_payload_hash_verified: u8,
+    /// Nonzero when certification completed.
+    pub certified: u8,
+    /// Nonzero when paths were redacted.
+    pub path_redacted: u8,
+    /// Nonzero if the certification wrote transformed artifacts.
+    pub writes_transformed_artifacts: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Per-channel compact-L2 physical-v2 certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2ChannelCertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Channel identifier.
+    pub channel_id: u32,
+    /// Certified row-group count.
+    pub row_group_count: u32,
+    /// Certified row count.
+    pub row_count: u64,
+    /// First business index in the channel.
+    pub first_biz_index: u64,
+    /// Last business index in the channel.
+    pub last_biz_index: u64,
+    /// Minimum receive timestamp in nanoseconds.
+    pub min_receive_nano: i64,
+    /// Maximum receive timestamp in nanoseconds.
+    pub max_receive_nano: i64,
+    /// Count of order records.
+    pub order_record_count: u64,
+    /// Count of trade records.
+    pub trade_record_count: u64,
+    /// Required physical-v2 column count.
+    pub required_column_count: usize,
+    /// Selected column chunk count.
+    pub selected_column_chunk_count: u64,
+    /// Selected compressed byte total.
+    pub selected_compressed_bytes: u64,
+    /// Selected uncompressed byte total.
+    pub selected_uncompressed_bytes: u64,
+    /// Native-owned legacy payload FNV-1a64 hash string or NULL.
+    pub legacy_payload_hash_fnv1a64: *mut c_char,
+    /// Nonzero when first_biz_index is meaningful.
+    pub has_first_biz_index: u8,
+    /// Nonzero when last_biz_index is meaningful.
+    pub has_last_biz_index: u8,
+    /// Nonzero when min_receive_nano is meaningful.
+    pub has_min_receive_nano: u8,
+    /// Nonzero when max_receive_nano is meaningful.
+    pub has_max_receive_nano: u8,
+    /// Nonzero when order_record_count is meaningful.
+    pub has_order_record_count: u8,
+    /// Nonzero when trade_record_count is meaningful.
+    pub has_trade_record_count: u8,
+    /// Nonzero when legacy_payload_hash_fnv1a64 is meaningful.
+    pub has_legacy_payload_hash_fnv1a64: u8,
+    /// Nonzero when checksums were verified.
+    pub checksum_verified: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Compact-L2 physical-v2 manifest certification report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbCompactL2PhysicalV2CertificationReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Certified schema version.
+    pub schema_version: u32,
+    /// Certified trading day.
+    pub trading_day: u32,
+    /// Native-owned artifact format string or NULL.
+    pub artifact_format: *mut c_char,
+    /// Number of certified channels.
+    pub channel_count: usize,
+    /// Total certified row count.
+    pub row_count: u64,
+    /// Total certified row-group count.
+    pub row_group_count: u64,
+    /// Number of channels that failed certification.
+    pub failed_channel_count: usize,
+    /// Selected column chunk count.
+    pub selected_column_chunk_count: u64,
+    /// Selected compressed byte total.
+    pub selected_compressed_bytes: u64,
+    /// Selected uncompressed byte total.
+    pub selected_uncompressed_bytes: u64,
+    /// Nonzero when the artifact set is certified.
+    pub certified: u8,
+    /// Nonzero when paths were redacted.
+    pub path_redacted: u8,
+    /// Nonzero if the certification wrote transformed artifacts.
+    pub writes_transformed_artifacts: u8,
+    /// Native-owned channel reports.
+    pub channels: *mut ArcadiaTioOcbCompactL2PhysicalV2ChannelCertificationReport,
+    /// Number of channel reports.
+    pub channels_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB predicate bound value.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbPredicateValue {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Physical primitive type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// i32 predicate value.
+    pub i32_value: i32,
+    /// i64 predicate value.
+    pub i64_value: i64,
+    /// f32 predicate value.
+    pub f32_value: c_float,
+    /// f64 predicate value.
+    pub f64_value: c_double,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB row-group predicate input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbRowGroupPredicate {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed UTF-8 column name.
+    pub column: *const c_char,
+    /// Nonzero when lower is meaningful.
+    pub has_lower: u8,
+    /// Inclusive lower bound.
+    pub lower: ArcadiaTioOcbPredicateValue,
+    /// Nonzero when upper is meaningful.
+    pub has_upper: u8,
+    /// Inclusive upper bound.
+    pub upper: ArcadiaTioOcbPredicateValue,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 3],
+}
+
+/// OCB read request input.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadRequest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Projection kind.
+    pub projection_kind: ArcadiaTioOcbProjectionKind,
+    /// Borrowed UTF-8 column name array for name projections.
+    pub column_names: *const *const c_char,
+    /// Number of projected column names.
+    pub column_names_len: usize,
+    /// Borrowed predicate array.
+    pub predicates: *const ArcadiaTioOcbRowGroupPredicate,
+    /// Number of predicates.
+    pub predicates_len: usize,
+    /// Requested worker thread count.
+    pub max_threads: usize,
+    /// Nonzero to validate checksums.
+    pub validate_checksums: u8,
+    /// Reserved flag for dictionary decode behavior.
+    pub decode_dictionaries: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB read execution report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested worker thread count.
+    pub requested_threads: usize,
+    /// Effective worker thread count.
+    pub effective_threads: usize,
+    /// Selected row groups.
+    pub selected_row_groups: usize,
+    /// Pruned row groups.
+    pub pruned_row_groups: usize,
+    /// Selected column chunks.
+    pub selected_column_chunks: usize,
+    /// Native-owned fallback reason string or NULL.
+    pub fallback_reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB read attribution diagnostics.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadAttribution {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Planning duration in nanoseconds.
+    pub plan_ns: u64,
+    /// Read execution wall duration in nanoseconds.
+    pub execute_wall_ns: u64,
+    /// Cumulative row-group read duration in nanoseconds.
+    pub row_group_read_ns: u64,
+    /// Cumulative file read duration in nanoseconds.
+    pub read_io_ns: u64,
+    /// Cumulative checksum duration in nanoseconds.
+    pub checksum_ns: u64,
+    /// Cumulative decompression duration in nanoseconds.
+    pub decompression_ns: u64,
+    /// Cumulative primitive decode duration in nanoseconds.
+    pub primitive_decode_ns: u64,
+    /// Nonzero when native_to_c_copy_ns is meaningful.
+    pub has_native_to_c_copy_ns: u8,
+    /// Native-to-C outcome conversion duration in nanoseconds.
+    pub native_to_c_copy_ns: u64,
+    /// Nonzero when wrapper_copy_ns is meaningful.
+    pub has_wrapper_copy_ns: u8,
+    /// Safe-wrapper copy duration in nanoseconds.
+    pub wrapper_copy_ns: u64,
+    /// Selected object bytes read.
+    pub bytes_read: u64,
+    /// Selected compressed column payload bytes.
+    pub compressed_bytes: u64,
+    /// Selected uncompressed column payload bytes.
+    pub uncompressed_bytes: u64,
+    /// Requested worker thread count.
+    pub requested_threads: usize,
+    /// Effective worker thread count.
+    pub effective_threads: usize,
+    /// Selected row groups.
+    pub selected_row_groups: usize,
+    /// Pruned row groups.
+    pub pruned_row_groups: usize,
+    /// Selected column chunks.
+    pub selected_column_chunks: usize,
+    /// Native-owned fallback reason string or NULL.
+    pub fallback_reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB read cursor/visitor options.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbBodyRefSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub offset: u64,
+    pub length: u64,
+    pub kind: ArcadiaTioOcbBodyKind,
+    pub flags: u16,
+    pub checksum_kind: ArcadiaTioOcbChecksumKind,
+    pub checksum: u32,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbColumnChunkSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub column_name: *mut c_char,
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    pub logical_kind: ArcadiaTioOcbLogicalKind,
+    pub fixed_binary_width: u32,
+    pub codec: ArcadiaTioOcbColumnChunkSummaryCodec,
+    pub row_count: u64,
+    pub compressed_bytes: u64,
+    pub uncompressed_bytes: u64,
+    pub value_ref: ArcadiaTioOcbBodyRefSummary,
+    pub has_validity_ref: u8,
+    pub validity_ref: ArcadiaTioOcbBodyRefSummary,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbColumnStatsSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub column_id: u32,
+    pub column_name: *mut c_char,
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    pub null_count: u32,
+    pub min: ArcadiaTioOcbPredicateValue,
+    pub max: ArcadiaTioOcbPredicateValue,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbRowGroupSummary {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_group_id: u32,
+    pub base_row: u64,
+    pub row_count: u64,
+    pub has_first_key_tuple_ref: u8,
+    pub first_key_tuple_ref: ArcadiaTioOcbBodyRefSummary,
+    pub has_last_key_tuple_ref: u8,
+    pub last_key_tuple_ref: ArcadiaTioOcbBodyRefSummary,
+    pub chunks: *mut ArcadiaTioOcbColumnChunkSummary,
+    pub chunks_len: usize,
+    pub stats: *mut ArcadiaTioOcbColumnStatsSummary,
+    pub stats_len: usize,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbRowGroupSummaries {
+    pub version: u32,
+    pub struct_size: usize,
+    pub row_groups: *mut ArcadiaTioOcbRowGroupSummary,
+    pub row_groups_len: usize,
+    pub reserved: [u64; 4],
+}
+
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct ArcadiaTioOcbReadCursorOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum decoded row-group batches in flight.
+    pub max_in_flight_row_groups: usize,
+    /// Nonzero to preserve deterministic row-group order.
+    pub ordered: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// OCB read cursor/visitor report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadCursorReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Base read planning/execution report.
+    pub base_report: ArcadiaTioOcbReadReport,
+    /// Batches yielded to the visitor.
+    pub batches_yielded: usize,
+    /// Rows yielded to the visitor.
+    pub rows_yielded: u64,
+    /// Nonzero when visitor stopped early.
+    pub cancelled: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// OCB caller-owned column fill buffer.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbColumnFillBuffer {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Optional borrowed UTF-8 column name selector.
+    pub column_name: *const c_char,
+    /// File-local column id selector or success output.
+    pub column_id: u32,
+    /// Nonzero when column_id is an input selector; set on success output.
+    pub has_column_id: u8,
+    /// Caller-owned value physical type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// Caller-owned typed value storage.
+    pub values: *mut c_void,
+    /// Value element capacity. For fixed-binary fill buffers this is byte
+    /// capacity (`rows * fixed_binary_width`), not row count.
+    pub values_len: usize,
+    /// Optional caller-owned validity bitmap storage.
+    pub validity_bytes: *mut u8,
+    /// Validity byte capacity.
+    pub validity_bytes_len: usize,
+    /// Nonzero if nullable chunks are accepted.
+    pub allow_nulls: u8,
+    /// Rows filled on success.
+    pub rows_filled: usize,
+    /// Nonzero if validity bytes were filled on success.
+    pub validity_filled: u8,
+    /// Reserved words. For fixed-binary fill buffers, reserved[0] carries the
+    /// byte width, preferably via
+    /// [`arcadia_tio_ocb_column_fill_buffer_set_fixed_binary_width`].
+    pub reserved: [u64; 8],
+}
+
+/// OCB single-row-group caller-owned fill request.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbRowGroupFillRequest {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local row group id.
+    pub row_group_id: u32,
+    /// Caller-owned column buffers.
+    pub columns: *mut ArcadiaTioOcbColumnFillBuffer,
+    /// Number of column buffers.
+    pub columns_len: usize,
+    /// Nonzero to validate checksums.
+    pub validate_checksums: u8,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// OCB caller-owned fill report.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadFillReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local row group id.
+    pub row_group_id: u32,
+    /// Base row offset.
+    pub base_row: u64,
+    /// Rows in the row group.
+    pub row_count: u64,
+    /// Number of column buffers filled.
+    pub columns_filled: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// OCB read-result column array.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbColumnArray {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local column id.
+    pub column_id: u32,
+    /// Native-owned UTF-8 column name.
+    pub name: *mut c_char,
+    /// Physical primitive type.
+    pub physical_type: ArcadiaTioOcbPhysicalType,
+    /// Logical column kind.
+    pub logical_kind: ArcadiaTioOcbLogicalKind,
+    /// Nonzero when dictionary_id is meaningful.
+    pub has_dictionary_id: u8,
+    /// Dictionary id for dictionary-coded columns.
+    pub dictionary_id: u32,
+    /// Owned primitive values tied to the read outcome.
+    pub values: ArcadiaTioOcbPrimitiveValues,
+    /// Nonzero when validity is meaningful.
+    pub has_validity: u8,
+    /// Owned validity bitmap tied to the read outcome.
+    pub validity: ArcadiaTioOcbValidityBitmap,
+    /// Reserved words. For fixed-binary columns, reserved[0] carries the byte
+    /// width; prefer [`arcadia_tio_ocb_column_array_fixed_binary_width`].
+    pub reserved: [u64; 4],
+}
+
+/// OCB read-result row group batch.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbColumnBatch {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// File-local row group id.
+    pub row_group_id: u32,
+    /// Base row offset.
+    pub base_row: u64,
+    /// Number of rows.
+    pub row_count: u64,
+    /// Native-owned column array.
+    pub columns: *mut ArcadiaTioOcbColumnArray,
+    /// Number of columns.
+    pub columns_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Options for a bounded parallel OCB read session.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadOptions {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Maximum launched row groups not yet retired in order.
+    pub max_in_flight_row_groups: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// Deterministic context for one parallel OCB result.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadContext {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Zero-based ordinal in the plan-ordered selected subset.
+    pub selected_row_group_ordinal: usize,
+    /// File-local row group id.
+    pub row_group_id: u32,
+    /// Logical first row.
+    pub base_row: u64,
+    /// Exclusive logical row end.
+    pub row_end: u64,
+    /// Logical row count.
+    pub row_count: u64,
+    /// Invocation-local worker slot id.
+    pub worker_id: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Owned batch result from one successful parallel OCB `next` call.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadResult {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Deterministic selected-row-group context.
+    pub context: ArcadiaTioOcbParallelReadContext,
+    /// Native-owned batch, freed by the paired result free function.
+    pub batch: ArcadiaTioOcbColumnBatch,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Per-worker bounded parallel OCB read diagnostics.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadWorkerReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Invocation-local worker slot id.
+    pub worker_id: usize,
+    /// Row groups completed by this worker.
+    pub row_groups_completed: usize,
+    /// Rows completed by this worker.
+    pub rows_completed: u64,
+    /// Worker row-group read elapsed nanoseconds.
+    pub row_group_read_ns: u64,
+    /// Worker preparation/copy elapsed nanoseconds.
+    pub caller_prepare_ns: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Owned terminal diagnostics for a bounded parallel OCB read session.
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbParallelReadReport {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Visitor-compatible terminal cursor report.
+    pub cursor_report: ArcadiaTioOcbReadCursorReport,
+    /// Read/checksum/decode attribution.
+    pub attribution: ArcadiaTioOcbReadAttribution,
+    /// Worker count requested by the read request.
+    pub requested_workers: usize,
+    /// Worker count started after bounded fallback.
+    pub started_workers: usize,
+    /// Maximum simultaneously active workers observed.
+    pub max_active_workers_observed: usize,
+    /// Row-group tasks admitted to the worker stage.
+    pub row_groups_queued: usize,
+    /// Row groups completed by workers.
+    pub row_groups_completed: usize,
+    /// Row groups released through ordered delivery.
+    pub row_groups_ordered_committed: usize,
+    /// Rows completed by workers.
+    pub rows_completed: u64,
+    /// Rows released through ordered delivery.
+    pub rows_ordered_committed: u64,
+    /// Maximum launched-but-not-retired row groups observed.
+    pub max_in_flight_row_groups_observed: usize,
+    /// Maximum completed results awaiting ordered delivery.
+    pub max_pending_results_observed: usize,
+    /// Maximum decoded rows awaiting ordered delivery.
+    pub max_pending_rows_observed: u64,
+    /// Number of waits at the global in-flight cap.
+    pub capacity_wait_count: usize,
+    /// Nanoseconds waiting at the global in-flight cap.
+    pub capacity_wait_ns: u64,
+    /// Number of bounded task-queue full waits.
+    pub task_queue_full_wait_count: usize,
+    /// Nanoseconds in bounded task-queue full waits.
+    pub task_queue_full_wait_ns: u64,
+    /// Number of bounded result-queue full waits.
+    pub result_queue_full_wait_count: usize,
+    /// Nanoseconds in bounded result-queue full waits.
+    pub result_queue_full_wait_ns: u64,
+    /// Number of waits for the next ordered ordinal.
+    pub ordered_frontier_wait_count: usize,
+    /// Nanoseconds waiting for the next ordered ordinal.
+    pub ordered_frontier_wait_ns: u64,
+    /// Summed worker preparation/copy nanoseconds.
+    pub caller_prepare_ns: u64,
+    /// Ordered delivery callback elapsed nanoseconds.
+    pub ordered_commit_ns: u64,
+    /// Nonzero only when every selected ordinal crossed ordered delivery.
+    pub ordered_terminal_completed: u8,
+    /// Native-owned per-worker reports.
+    pub worker_reports: *mut ArcadiaTioOcbParallelReadWorkerReport,
+    /// Number of per-worker reports.
+    pub worker_reports_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 8],
+}
+
+/// Owned OCB read outcome; free with [`arcadia_tio_ocb_read_outcome_free`].
+#[cfg(feature = "format-ocb")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioOcbReadOutcome {
+    /// Struct version; set to [`ARCADIA_TIO_OCB_ABI_VERSION`].
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned batch array.
+    pub batches: *mut ArcadiaTioOcbColumnBatch,
+    /// Number of batches.
+    pub batches_len: usize,
+    /// Read execution report.
+    pub report: ArcadiaTioOcbReadReport,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Write-time compression configuration.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCompressionConfig {
+    /// Struct version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Compression mode.
+    pub mode: ArcadiaTioCompressionMode,
+    /// Compression codec.
+    pub codec: ArcadiaTioCompressionCodec,
+    /// Auto-mode minimum raw payload bytes.
+    pub min_payload_bytes: u32,
+    /// Zstd level.
+    pub zstd_level: i32,
+}
+
+/// Owned raw tensor returned by read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioTensor {
+    /// Native-owned data pointer; free with [`arcadia_tio_tensor_free`].
+    pub data: *mut u8,
+    /// Data length in bytes.
+    pub len_bytes: usize,
+    /// Rank of the tensor shape.
+    pub rank: usize,
+    /// Native-owned shape pointer; free with [`arcadia_tio_tensor_free`].
+    pub shape: *mut u64,
+    /// Payload dtype.
+    pub dtype: ArcadiaTioDType,
+}
+
+impl Default for ArcadiaTioTensor {
+    fn default() -> Self {
+        Self {
+            data: core::ptr::null_mut(),
+            len_bytes: 0,
+            rank: 0,
+            shape: core::ptr::null_mut(),
+            dtype: ARCADIA_TIO_DTYPE_F32,
+        }
+    }
+}
+
+/// Owned dense validity mask returned by dense read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioMask {
+    /// Native-owned byte mask pointer; free with [`arcadia_tio_mask_free`].
+    pub data: *mut u8,
+    /// Number of mask elements.
+    pub len: usize,
+}
+
+/// Arrow C Data Interface array carrier returned by Arrow read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArrowArray {
+    /// Logical length.
+    pub length: i64,
+    /// Null count, or -1 if unknown.
+    pub null_count: i64,
+    /// Logical offset.
+    pub offset: i64,
+    /// Number of buffers.
+    pub n_buffers: i64,
+    /// Number of child arrays.
+    pub n_children: i64,
+    /// Pointer to buffer pointers.
+    pub buffers: *mut *const c_void,
+    /// Pointer to child array pointers.
+    pub children: *mut *mut ArrowArray,
+    /// Optional dictionary array.
+    pub dictionary: *mut ArrowArray,
+    /// Release callback; caller must invoke it when done if non-null.
+    pub release: Option<unsafe extern "C" fn(*mut ArrowArray)>,
+    /// Private native data owned by the release callback.
+    pub private_data: *mut c_void,
+}
+
+/// Arrow C Data Interface schema carrier returned by Arrow read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArrowSchema {
+    /// Format string.
+    pub format: *const c_char,
+    /// Optional field name.
+    pub name: *const c_char,
+    /// Optional metadata string.
+    pub metadata: *const c_char,
+    /// Arrow schema flags.
+    pub flags: i64,
+    /// Number of child schemas.
+    pub n_children: i64,
+    /// Pointer to child schema pointers.
+    pub children: *mut *mut ArrowSchema,
+    /// Optional dictionary schema.
+    pub dictionary: *mut ArrowSchema,
+    /// Release callback; caller must invoke it when done if non-null.
+    pub release: Option<unsafe extern "C" fn(*mut ArrowSchema)>,
+    /// Private native data owned by the release callback.
+    pub private_data: *mut c_void,
+}
+
+/// Compaction behavior selector passed to compaction APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCompactionMode {
+    /// Compaction mode tag.
+    pub kind: ArcadiaTioCompactionModeTag,
+    /// Entry block size used for reblocking modes.
+    pub reblock_entry_block_size: u32,
+}
+
+/// Shallow compatibility compaction statistics.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCompactionStats {
+    /// Bytes considered live by the native implementation.
+    pub live_bytes: u64,
+    /// Bytes considered dead by the native implementation.
+    pub dead_bytes: u64,
+    /// Dead-byte ratio reported by the native implementation.
+    pub dead_ratio: c_double,
+    /// Number of commits represented by the file.
+    pub commit_count: u32,
+}
+
+/// Reform destination layout options.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReformOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Target layout family.
+    pub target_layout: ArcadiaTioReformTargetLayout,
+    /// Borrowed RegularChunked block shape.
+    pub regular_chunked_block_shape: *const u32,
+    /// Number of block-shape entries.
+    pub regular_chunked_block_shape_len: usize,
+}
+
+/// Native-owned reform diagnostic report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReformReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Native-owned stable reason code string.
+    pub reason_code: *mut c_char,
+    /// Native-owned reason-code taxonomy string.
+    pub reason_code_taxonomy: *mut c_char,
+    /// Native-owned human-readable reason string.
+    pub reason: *mut c_char,
+}
+
+/// Precise-accounting option flags for report-producing APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4PreciseAccountingOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Zero requests every precise field relevant to the report family.
+    pub requested_fields_mask: u32,
+    /// Nonzero includes human-readable omitted-field reason strings.
+    pub include_omitted_field_reasons: u8,
+}
+
+/// Precise-accounting field intentionally omitted by a report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4OmittedPreciseAccountingField {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Omitted precise-accounting field id.
+    pub field: ArcadiaTioV4PreciseAccountingField,
+    /// Native-owned omission reason string.
+    pub reason: *mut c_char,
+}
+
+/// Precise-accounting byte values plus per-field validity metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4PreciseAccountingBytes {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Nonzero when unreachable_bytes is valid.
+    pub has_unreachable_bytes: u8,
+    /// Precise unreachable bytes.
+    pub unreachable_bytes: u64,
+    /// Nonzero when retained_history_required_bytes is valid.
+    pub has_retained_history_required_bytes: u8,
+    /// Precise bytes required by retained history.
+    pub retained_history_required_bytes: u64,
+    /// Nonzero when popped_skipped_bytes is valid.
+    pub has_popped_skipped_bytes: u8,
+    /// Precise popped/skipped bytes.
+    pub popped_skipped_bytes: u64,
+    /// Nonzero when reclaimable_bytes is valid.
+    pub has_reclaimable_bytes: u8,
+    /// Precise reclaimable bytes.
+    pub reclaimable_bytes: u64,
+    /// Native-owned omitted-field array.
+    pub omitted_fields: *mut ArcadiaTioV4OmittedPreciseAccountingField,
+    /// Number of omitted-field entries.
+    pub omitted_fields_len: usize,
+    /// Native-owned omitted-field reason-code array aligned with omitted_fields.
+    pub omitted_field_reason_codes: *mut *mut c_char,
+    /// Number of omitted-field reason-code entries.
+    pub omitted_field_reason_codes_len: usize,
+}
+
+/// Bytes currently required by the visible head.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4CurrentHeadBytes {
+    /// Payload bytes.
+    pub payload_bytes: u64,
+    /// Index bytes.
+    pub index_bytes: u64,
+    /// Epoch bytes.
+    pub epoch_bytes: u64,
+    /// Auxiliary bytes.
+    pub aux_bytes: u64,
+    /// Commit bytes.
+    pub commit_bytes: u64,
+}
+
+/// Audit bytes for the visible commit chain.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4AuditBytes {
+    /// Commit bytes.
+    pub commit_bytes: u64,
+    /// Index bytes.
+    pub index_bytes: u64,
+    /// Epoch bytes.
+    pub epoch_bytes: u64,
+    /// Auxiliary bytes.
+    pub aux_bytes: u64,
+}
+
+/// Payload reuse byte breakdown.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4PayloadReuseBytes {
+    /// Payload bytes resurrected from previous commits.
+    pub resurrected_payload_bytes: u64,
+    /// Payload bytes shared with other visible data.
+    pub shared_payload_bytes: u64,
+}
+
+/// Superseded byte breakdown.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4SupersededBytes {
+    /// Superseded payload bytes.
+    pub payload_bytes: u64,
+    /// Superseded index bytes.
+    pub index_bytes: u64,
+    /// Superseded epoch bytes.
+    pub epoch_bytes: u64,
+    /// Superseded auxiliary bytes.
+    pub aux_bytes: u64,
+}
+
+/// Non-precise V4 source-file diagnostics report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4DiagnosticsReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Current-head bytes.
+    pub current_head: ArcadiaTioV4CurrentHeadBytes,
+    /// Visible-chain audit bytes.
+    pub visible_chain_audit: ArcadiaTioV4AuditBytes,
+    /// Payload reuse bytes.
+    pub payload_reuse: ArcadiaTioV4PayloadReuseBytes,
+    /// Superseded bytes.
+    pub superseded: ArcadiaTioV4SupersededBytes,
+    /// Bytes the report cannot classify.
+    pub unknown_bytes: u64,
+    /// Nonzero when precise unreachable-byte details were intentionally omitted.
+    pub omitted_unreachable_bytes: u8,
+    /// Native-owned omission reason string.
+    pub omitted_unreachable_bytes_reason: *mut c_char,
+}
+
+/// Precise V4 source-file diagnostics report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4DiagnosticsPreciseReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Current-head bytes.
+    pub current_head: ArcadiaTioV4CurrentHeadBytes,
+    /// Visible-chain audit bytes.
+    pub visible_chain_audit: ArcadiaTioV4AuditBytes,
+    /// Payload reuse bytes.
+    pub payload_reuse: ArcadiaTioV4PayloadReuseBytes,
+    /// Superseded bytes.
+    pub superseded: ArcadiaTioV4SupersededBytes,
+    /// Bytes the report cannot classify.
+    pub unknown_bytes: u64,
+    /// Precise-accounting values and validity flags.
+    pub precise_accounting: ArcadiaTioV4PreciseAccountingBytes,
+    /// Native-owned stable reason code string.
+    pub reason_code: *mut c_char,
+}
+
+/// Non-precise V4 ordinary compaction analysis report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4CompactionAnalysisReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Compaction policy analyzed.
+    pub policy: ArcadiaTioV4CompactionAnalysisPolicy,
+    /// Source file size in bytes.
+    pub source_file_bytes: u64,
+    /// Bytes required for current-state compaction.
+    pub current_state_required_bytes: u64,
+    /// Ordinary reclaimable bytes.
+    pub ordinary_reclaimable_bytes: u64,
+    /// Bytes the report cannot classify.
+    pub unknown_bytes: u64,
+    /// Nonzero when precise unreachable-byte details were intentionally omitted.
+    pub omitted_unreachable_bytes: u8,
+    /// Native-owned omission reason string.
+    pub omitted_unreachable_bytes_reason: *mut c_char,
+}
+
+/// Precise V4 ordinary compaction analysis report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4CompactionAnalysisPreciseReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Compaction policy analyzed.
+    pub policy: ArcadiaTioV4CompactionAnalysisPolicy,
+    /// Source file size in bytes.
+    pub source_file_bytes: u64,
+    /// Bytes required for current-state compaction.
+    pub current_state_required_bytes: u64,
+    /// Ordinary reclaimable bytes.
+    pub ordinary_reclaimable_bytes: u64,
+    /// Bytes the report cannot classify.
+    pub unknown_bytes: u64,
+    /// Precise-accounting values and validity flags.
+    pub precise_accounting: ArcadiaTioV4PreciseAccountingBytes,
+    /// Native-owned stable reason code string.
+    pub reason_code: *mut c_char,
+}
+
+/// Retained-history compaction options.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4RetainedHistoryCompactionOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Retained-history policy.
+    pub policy: ArcadiaTioV4RetainedHistoryPolicy,
+    /// Number of latest commits to retain for retain-last policy.
+    pub retain_last_n: u32,
+}
+
+/// Non-precise V4 retained-history compaction report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4RetainedHistoryCompactionReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Count of retained commits.
+    pub retained_commit_count: u32,
+    /// Native-owned retained commit sequence array.
+    pub retained_commit_seqs: *mut u64,
+    /// Number of retained commit sequence entries.
+    pub retained_commit_seqs_len: usize,
+    /// Nonzero when unretained older commit count is present.
+    pub has_unretained_older_commit_count: u8,
+    /// Number of older commits not retained.
+    pub unretained_older_commit_count: u64,
+    /// Source file size in bytes.
+    pub source_file_bytes: u64,
+    /// Destination file size in bytes.
+    pub destination_file_bytes: u64,
+    /// Nonzero when precise unreachable-byte details were intentionally omitted.
+    pub omitted_unreachable_bytes: u8,
+    /// Native-owned omission reason string.
+    pub omitted_unreachable_bytes_reason: *mut c_char,
+}
+
+/// Precise V4 retained-history compaction report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioV4RetainedHistoryCompactionPreciseReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Report status.
+    pub status: ArcadiaTioV4ReportStatus,
+    /// Native-owned status reason string.
+    pub reason: *mut c_char,
+    /// Count of retained commits.
+    pub retained_commit_count: u32,
+    /// Native-owned retained commit sequence array.
+    pub retained_commit_seqs: *mut u64,
+    /// Number of retained commit sequence entries.
+    pub retained_commit_seqs_len: usize,
+    /// Nonzero when unretained older commit count is present.
+    pub has_unretained_older_commit_count: u8,
+    /// Number of older commits not retained.
+    pub unretained_older_commit_count: u64,
+    /// Source file size in bytes.
+    pub source_file_bytes: u64,
+    /// Destination file size in bytes.
+    pub destination_file_bytes: u64,
+    /// Source-file precise accounting at retained-history compaction time.
+    pub precise_source_accounting: ArcadiaTioV4PreciseAccountingBytes,
+    /// Native-owned stable reason code string.
+    pub reason_code: *mut c_char,
+}
+
+/// Sparse-intent value predicate passed inside a sparse rule.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseValuePredicate {
+    /// Predicate kind.
+    pub kind: ArcadiaTioSparseValuePredicateKind,
+    /// Comparison value for equal predicates; ignored for other predicate kinds.
+    pub value: c_double,
+}
+
+/// Sparse-intent lowering rule borrowed by sparse append APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseRule {
+    /// Detector kind.
+    pub detector_kind: ArcadiaTioSparseDetectorKind,
+    /// Borrowed sparse-axis indices.
+    pub sparse_axes: *const usize,
+    /// Number of sparse-axis indices.
+    pub sparse_axes_len: usize,
+    /// Predicate used by predicate detectors.
+    pub predicate: ArcadiaTioSparseValuePredicate,
+    /// Minimum absent fraction required for sparse lowering.
+    pub min_absent_fraction: c_double,
+    /// Minimum absent subtensor count required for sparse lowering.
+    pub min_absent_subtensors: u64,
+    /// Dense fallback policy.
+    pub fallback: ArcadiaTioSparseFallbackPolicy,
+}
+
+/// V2 sparse-intent value predicate passed inside a sparse rule.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseValuePredicateV2 {
+    /// Predicate kind.
+    pub kind: ArcadiaTioSparseValuePredicateKindV2,
+    /// Comparison value for floating equal predicates; ignored otherwise.
+    pub float_value: c_double,
+    /// Comparison value for integer equal predicates; ignored otherwise.
+    pub integer_value: i64,
+}
+
+/// V2 sparse-intent lowering rule borrowed by sparse append APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseRuleV2 {
+    /// Size of this struct in bytes.
+    pub struct_size: u32,
+    /// Detector kind.
+    pub detector_kind: ArcadiaTioSparseDetectorKind,
+    /// Borrowed sparse-axis indices.
+    pub sparse_axes: *const usize,
+    /// Number of sparse-axis indices.
+    pub sparse_axes_len: usize,
+    /// Predicate used by predicate detectors.
+    pub predicate: ArcadiaTioSparseValuePredicateV2,
+    /// Minimum absent fraction required for sparse lowering.
+    pub min_absent_fraction: c_double,
+    /// Minimum absent subtensor count required for sparse lowering.
+    pub min_absent_subtensors: u64,
+    /// Dense fallback policy.
+    pub fallback: ArcadiaTioSparseFallbackPolicy,
+}
+
+/// Sparse-append analysis report returned by sparse analysis APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSparseAppendAnalysis {
+    /// Selected append outcome.
+    pub outcome: ArcadiaTioSparseAppendOutcome,
+    /// Fraction of absent subtensors detected.
+    pub absent_fraction: c_double,
+    /// Count of absent subtensors.
+    pub absent_subtensor_count: u64,
+    /// Count of total subtensors considered.
+    pub total_subtensor_count: u64,
+    /// Native-owned reason-code array; free with [`arcadia_tio_sparse_append_analysis_free`].
+    pub reasons: *mut ArcadiaTioSparseAppendReason,
+    /// Number of reason codes.
+    pub reasons_len: usize,
+}
+
+/// Auto-compaction configuration stored in file metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAutoCompactionConfig {
+    /// Nonzero when auto-compaction is enabled.
+    pub enabled: u8,
+    /// Commit retention count for compaction.
+    pub retain_commits: u32,
+    /// Dead-byte ratio threshold.
+    pub dead_ratio_threshold: c_double,
+    /// Minimum dead bytes before compaction can trigger.
+    pub min_dead_bytes: u64,
+    /// Compaction mode.
+    pub mode: ArcadiaTioCompactionMode,
+    /// Commit interval for auto-compaction checks.
+    pub check_every_commits: u32,
+    /// Commit cooldown after compaction.
+    pub cooldown_commits: u32,
+}
+
+/// Auto-compaction state stored in file metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCompactionState {
+    /// Last compacted commit sequence.
+    pub last_compacted_commit_seq: u64,
+    /// Last compaction timestamp in Unix milliseconds.
+    pub last_compacted_at_unix_ms: u64,
+}
+
+/// Scalar return value for scalar reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioScalar {
+    /// Scalar dtype.
+    pub dtype: ArcadiaTioDType,
+    /// Scalar value represented as a C double by the current C ABI.
+    pub value: c_double,
+}
+
+/// Entry selector borrowed by selector read and mutation APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioEntrySelector {
+    /// Selector tag.
+    pub kind: ArcadiaTioEntrySelectorTag,
+    /// Range start.
+    pub start: u32,
+    /// Range end.
+    pub end: u32,
+    /// Borrowed index pointer for take selectors.
+    pub indices: *const u32,
+    /// Number of indices.
+    pub indices_len: usize,
+}
+
+/// Chunk key borrowed by clear-block mutation APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioChunkKey {
+    /// Borrowed chunk coordinate pointer.
+    pub coords: *const u32,
+    /// Number of chunk coordinates.
+    pub len: usize,
+}
+
+/// Commit metadata returned by history APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCommitInfo {
+    /// Commit sequence number.
+    pub commit_seq: u64,
+    /// Footer offset for this commit.
+    pub footer_offset: u64,
+    /// Previous footer offset.
+    pub prev_footer_offset: u64,
+}
+
+/// Native-owned commit list returned by history APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCommitList {
+    /// Native-owned commit array; free with [`arcadia_tio_commit_list_free`].
+    pub items: *mut ArcadiaTioCommitInfo,
+    /// Number of commits.
+    pub len: usize,
+}
+
+/// Explicit universe target for shape-policy reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioExplicitUniverseAxisTarget {
+    /// Axis index.
+    pub axis: u32,
+    /// Universe family UUID bytes.
+    pub family_uuid: [u8; 16],
+    /// Universe version UUID bytes.
+    pub version_uuid: [u8; 16],
+    /// Target universe length.
+    pub length: u64,
+}
+
+/// Explicit extent target for split-domain shape-policy reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioExplicitExtentAxisTarget {
+    /// Axis index.
+    pub axis: u32,
+    /// Target axis length.
+    pub length: u64,
+}
+
+/// Axis identity descriptor for universe-aware create APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAxisIdentityInput {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: u32,
+    /// Axis identity mode.
+    pub mode: ArcadiaTioAxisIdentityMode,
+}
+
+/// Universe binding for one axis in one appended slot.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioUniverseBindingInput {
+    /// Axis index.
+    pub axis: u32,
+    /// Universe family UUID bytes.
+    pub family_uuid: [u8; 16],
+    /// Universe version UUID bytes.
+    pub version_uuid: [u8; 16],
+    /// Source universe length.
+    pub length: u64,
+}
+
+/// Borrowed universe bindings for one appended slot.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSlotUniverseBindingInput {
+    /// Borrowed universe binding array.
+    pub axes: *const ArcadiaTioUniverseBindingInput,
+    /// Number of axis bindings.
+    pub axes_len: usize,
+}
+
+/// Optional universe remap for one axis in one appended slot.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioUniverseRemapInput {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: u32,
+    /// Target universe family UUID bytes.
+    pub target_family_uuid: [u8; 16],
+    /// Target universe version UUID bytes.
+    pub target_version_uuid: [u8; 16],
+    /// Target universe length.
+    pub target_length: u64,
+    /// Borrowed source-to-target index mapping.
+    pub source_to_target: *const u64,
+    /// Number of mapping entries.
+    pub source_to_target_len: usize,
+}
+
+/// Borrowed universe remaps for one appended slot.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioSlotUniverseRemapInput {
+    /// Borrowed universe remap array.
+    pub axes: *const ArcadiaTioUniverseRemapInput,
+    /// Number of axis remaps.
+    pub axes_len: usize,
+}
+
+/// Universe-aware create options.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCreateWithUniverseOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed axis identity array.
+    pub axis_identities: *const ArcadiaTioAxisIdentityInput,
+    /// Number of axis identity descriptors.
+    pub axis_identities_len: usize,
+}
+
+/// Universe-aware append options.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAppendWithUniverseOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed per-slot universe binding array.
+    pub slots: *const ArcadiaTioSlotUniverseBindingInput,
+    /// Number of appended slots.
+    pub slots_len: usize,
+    /// Borrowed per-slot universe remap array.
+    pub remap_slots: *const ArcadiaTioSlotUniverseRemapInput,
+    /// Number of remap slots.
+    pub remap_slots_len: usize,
+}
+
+/// Read shape policy options for current and historical reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadShapePolicyOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Shape policy tag.
+    pub policy: ArcadiaTioReadShapePolicyTag,
+    /// Borrowed explicit extents for all axes.
+    pub explicit_extents: *const u64,
+    /// Number of explicit extents.
+    pub explicit_extents_len: usize,
+    /// Borrowed explicit universe axis targets.
+    pub explicit_universe_axes: *const ArcadiaTioExplicitUniverseAxisTarget,
+    /// Number of explicit universe axis targets.
+    pub explicit_universe_axes_len: usize,
+    /// Borrowed explicit extent axis targets for split-domain policies.
+    pub explicit_extent_axes: *const ArcadiaTioExplicitExtentAxisTarget,
+    /// Number of explicit extent axis targets.
+    pub explicit_extent_axes_len: usize,
+}
+
+/// Current read options with execution mode only.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadWithOptionsOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
+}
+
+/// Current read options with execution mode and shape policy.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadWithShapePolicyOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
+    /// Shape policy options.
+    pub shape_policy: ArcadiaTioReadShapePolicyOptions,
+}
+
+/// Historical read options with execution mode only.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadWithOptionsOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
+}
+
+/// Historical read options with execution mode and shape policy.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadWithShapePolicyOptions {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub mode: ArcadiaTioReadExecutionMode,
+    /// Maximum thread count for parallel execution.
+    pub max_threads: usize,
+    /// Shape policy options.
+    pub shape_policy: ArcadiaTioReadShapePolicyOptions,
+}
+
+/// Current read execution report returned by option-bearing current reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadExecutionReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub requested_mode: ArcadiaTioReadExecutionMode,
+    /// Requested maximum query threads.
+    pub query_max_threads: usize,
+    /// Effective execution mode used by the query.
+    pub query_effective_mode: ArcadiaTioReadExecutionMode,
+    /// Effective thread count used by the query.
+    pub query_effective_threads: usize,
+    /// Native-owned query parallel runtime string.
+    pub query_parallel_runtime: *mut c_char,
+    /// Native-owned query parallel fallback reason string.
+    pub query_parallel_fallback_reason: *mut c_char,
+    /// Native-owned query parallel reason code string.
+    pub query_parallel_reason_code: *mut c_char,
+    /// Native-owned query parallel reason-code taxonomy string.
+    pub query_parallel_reason_code_taxonomy: *mut c_char,
+}
+
+/// Current-head Coordinate v2 lookup plus optional tensor read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCoordinateReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Current read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioReadExecutionReport,
+    /// Nonzero when `values` and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Current-head Coordinate v2 lookup plus optional dense tensor/mask read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioCoordinateDenseReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Native-owned validity mask when `has_read` is nonzero.
+    pub mask: ArcadiaTioMask,
+    /// Current read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioReadExecutionReport,
+    /// Nonzero when `values`, `mask`, and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Query trace context borrowed by attributed read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioQueryTraceContext {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Borrowed run identifier string.
+    pub run_id: *const c_char,
+    /// Borrowed row identifier string.
+    pub row_id: *const c_char,
+    /// Repeat index for benchmark-style callers.
+    pub repeat_index: u32,
+    /// Borrowed phase name string.
+    pub phase: *const c_char,
+    /// Borrowed language name string.
+    pub language: *const c_char,
+    /// Borrowed API surface name string.
+    pub api_surface: *const c_char,
+    /// Borrowed operation name string.
+    pub operation: *const c_char,
+    /// Borrowed trace-clock label string.
+    pub trace_clock: *const c_char,
+}
+
+/// Native-owned JSON trace returned by attributed read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioQueryTraceJson {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Native-owned JSON string; free with [`arcadia_tio_query_trace_json_free`].
+    pub json: *mut c_char,
+}
+
+/// Read-index item borrowed by low-level index read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadIndexItem {
+    /// Item tag.
+    pub kind: ArcadiaTioReadIndexItemTag,
+    /// Nonzero when `start` is present.
+    pub has_start: u8,
+    /// Slice start value.
+    pub start: i64,
+    /// Nonzero when `end` is present.
+    pub has_end: u8,
+    /// Slice end value.
+    pub end: i64,
+    /// Slice step value.
+    pub step: i64,
+    /// Scalar index value.
+    pub index: i64,
+}
+
+/// Read-index lowering report returned by low-level index read APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioReadIndexReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Lowering strategy selected by native code.
+    pub lowering_kind: ArcadiaTioReadIndexLoweringKind,
+    /// Nonzero when native code used a full-tensor fallback.
+    pub used_full_tensor_fallback: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+}
+
+/// Historical read execution report returned by option-bearing historical reads.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadExecutionReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub requested_mode: ArcadiaTioReadExecutionMode,
+    /// Requested maximum query threads.
+    pub query_max_threads: usize,
+    /// Effective execution mode used by the query.
+    pub query_effective_mode: ArcadiaTioReadExecutionMode,
+    /// Effective thread count used by the query.
+    pub query_effective_threads: usize,
+    /// Native-owned query parallel runtime string.
+    pub query_parallel_runtime: *mut c_char,
+    /// Native-owned query parallel fallback reason string.
+    pub query_parallel_fallback_reason: *mut c_char,
+    /// Native-owned query parallel reason code string.
+    pub query_parallel_reason_code: *mut c_char,
+    /// Native-owned query parallel reason-code taxonomy string.
+    pub query_parallel_reason_code_taxonomy: *mut c_char,
+    /// Historical query source kind.
+    pub query_source_kind: ArcadiaTioHistoricalQuerySourceKind,
+    /// Commit sequence used for the historical query.
+    pub query_commit_seq: u64,
+}
+
+/// Historical Coordinate v2 lookup plus optional tensor read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalCoordinateReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Historical read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioHistoricalReadExecutionReport,
+    /// Nonzero when `values` and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Historical Coordinate v2 lookup plus optional dense tensor/mask read result.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalCoordinateDenseReadResultV2 {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Status-rich Coordinate v2 lookup result.
+    pub lookup: ArcadiaTioCoordinateLookupResultV2,
+    /// Native-owned tensor values when `has_read` is nonzero.
+    pub values: ArcadiaTioTensor,
+    /// Native-owned validity mask when `has_read` is nonzero.
+    pub mask: ArcadiaTioMask,
+    /// Historical read execution metadata when `has_read` is nonzero.
+    pub execution: ArcadiaTioHistoricalReadExecutionReport,
+    /// Nonzero when `values`, `mask`, and `execution` contain a payload read.
+    pub has_read: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Historical read-index execution and lowering report.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioHistoricalReadIndexReport {
+    /// Structure version; set to 1.
+    pub version: u32,
+    /// Size of this struct in bytes.
+    pub struct_size: usize,
+    /// Requested execution mode.
+    pub requested_mode: ArcadiaTioReadExecutionMode,
+    /// Requested maximum query threads.
+    pub query_max_threads: usize,
+    /// Effective execution mode used by the query.
+    pub query_effective_mode: ArcadiaTioReadExecutionMode,
+    /// Effective thread count used by the query.
+    pub query_effective_threads: usize,
+    /// Native-owned query parallel runtime string.
+    pub query_parallel_runtime: *mut c_char,
+    /// Native-owned query parallel fallback reason string.
+    pub query_parallel_fallback_reason: *mut c_char,
+    /// Native-owned query parallel reason code string.
+    pub query_parallel_reason_code: *mut c_char,
+    /// Native-owned query parallel reason-code taxonomy string.
+    pub query_parallel_reason_code_taxonomy: *mut c_char,
+    /// Historical query source kind.
+    pub query_source_kind: ArcadiaTioHistoricalQuerySourceKind,
+    /// Commit sequence used for the historical query.
+    pub query_commit_seq: u64,
+    /// Lowering strategy selected by native code.
+    pub lowering_kind: ArcadiaTioReadIndexLoweringKind,
+    /// Nonzero when native code used a full-tensor fallback.
+    pub used_full_tensor_fallback: u8,
+    /// Reserved padding bytes.
+    pub reserved0: [u8; 7],
+}
+
+/// Chunk plan returned by metadata APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioChunkPlan {
+    /// Native-owned block-size array; free with [`arcadia_tio_chunk_plan_free`].
+    pub block_sizes: *mut u32,
+    /// Number of block sizes.
+    pub len: usize,
+}
+
+/// Axis label item in file metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAxisLabel {
+    /// Numeric label id.
+    pub id: u32,
+    /// Native-owned label name pointer.
+    pub name: *mut c_char,
+}
+
+/// User metadata key/value item in file metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioUserKv {
+    /// Native-owned key pointer.
+    pub key: *mut c_char,
+    /// Native-owned value pointer.
+    pub value: *mut c_char,
+}
+
+/// Dimension metadata item in file metadata.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioDimSpec {
+    /// Axis kind.
+    pub kind: ArcadiaTioAxisKind,
+    /// Current axis length.
+    pub len: u32,
+    /// Native-owned optional axis name pointer.
+    pub name: *mut c_char,
+}
+
+/// Owned file metadata returned by load-meta APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioFileMeta {
+    /// Payload dtype.
+    pub dtype: ArcadiaTioDType,
+    /// Native-owned dimension array.
+    pub dims: *mut ArcadiaTioDimSpec,
+    /// Number of dimensions.
+    pub rank: usize,
+    /// Append dimension index.
+    pub append_dim: usize,
+    /// Native-owned symbol labels.
+    pub symbols: *mut ArcadiaTioAxisLabel,
+    /// Number of symbol labels.
+    pub symbols_len: usize,
+    /// Native-owned channel labels.
+    pub channels: *mut ArcadiaTioAxisLabel,
+    /// Number of channel labels.
+    pub channels_len: usize,
+    /// Native-owned user key/value metadata.
+    pub user_kv: *mut ArcadiaTioUserKv,
+    /// Number of user key/value items.
+    pub user_kv_len: usize,
+    /// Effective header profile.
+    pub effective_profile: ArcadiaTioHeaderProfile,
+    /// Current head commit sequence.
+    pub commit_seq: u64,
+}
+
+/// Borrowed coordinate input descriptor for create APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAxisCoordinateInput {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: usize,
+    /// Borrowed coordinate name.
+    pub name: *const c_char,
+    /// Coordinate kind.
+    pub kind: ArcadiaTioCoordinateKind,
+    /// Coordinate dtype.
+    pub dtype: ArcadiaTioCoordinateDType,
+    /// Coordinate encoding.
+    pub encoding: ArcadiaTioCoordinateEncoding,
+    /// Borrowed dense no-null values pointer for inline coordinates.
+    pub values: *const c_void,
+    /// Number of coordinate values.
+    pub values_len: usize,
+    /// Sortedness declaration.
+    pub sorted: ArcadiaTioCoordinateSortedness,
+    /// Monotonicity declaration.
+    pub monotonicity: ArcadiaTioCoordinateMonotonicity,
+    /// Uniqueness declaration.
+    pub uniqueness: ArcadiaTioCoordinateUniqueness,
+    /// Storage kind.
+    pub storage_kind: ArcadiaTioCoordinateStorageKind,
+    /// External source kind.
+    pub external_source_kind: ArcadiaTioCoordinateSourceKind,
+    /// Borrowed external URI pointer.
+    pub external_uri: *const c_char,
+    /// External coordinate dtype.
+    pub external_dtype: ArcadiaTioCoordinateDType,
+    /// External coordinate length.
+    pub external_length: u64,
+    /// Nonzero when coordinate is required.
+    pub required: u8,
+}
+
+/// Owned coordinate metadata returned by metadata APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ArcadiaTioAxisCoordinateMeta {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: usize,
+    /// Native-owned axis name snapshot pointer.
+    pub axis_name_snapshot: *mut c_char,
+    /// Native-owned coordinate name pointer.
+    pub name: *mut c_char,
+    /// Coordinate kind.
+    pub kind: ArcadiaTioCoordinateKind,
+    /// Coordinate dtype.
+    pub dtype: ArcadiaTioCoordinateDType,
+    /// Coordinate encoding.
+    pub encoding: ArcadiaTioCoordinateEncoding,
+    /// Coordinate length.
+    pub length: u64,
+    /// Sortedness declaration.
+    pub sorted: ArcadiaTioCoordinateSortedness,
+    /// Monotonicity declaration.
+    pub monotonicity: ArcadiaTioCoordinateMonotonicity,
+    /// Uniqueness declaration.
+    pub uniqueness: ArcadiaTioCoordinateUniqueness,
+    /// Storage kind.
+    pub storage_kind: ArcadiaTioCoordinateStorageKind,
+    /// External source kind.
+    pub external_source_kind: ArcadiaTioCoordinateSourceKind,
+    /// Native-owned external URI pointer.
+    pub external_uri: *mut c_char,
+    /// Nonzero when coordinate is required.
+    pub required: u8,
+    /// Coordinate validation status.
+    pub validation_status: ArcadiaTioCoordinateValidationStatus,
+}
+
+/// Fixed-width text layout for Coordinate v2 descriptors and carriers.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateFixedTextLayoutV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Fixed text width in bytes.
+    pub width: usize,
+    /// Fixed text byte encoding.
+    pub encoding: ArcadiaTioCoordinateFixedTextEncodingV2,
+    /// Fixed text padding policy.
+    pub padding: ArcadiaTioCoordinateFixedTextPaddingV2,
+    /// Nonzero rejects values wider than `width`.
+    pub reject_over_width: u8,
+    /// Nonzero rejects non-ASCII bytes.
+    pub reject_non_ascii: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 6],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 dictionary identity and cardinality summary.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateDictionarySummaryV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Borrowed or library-owned dictionary identifier.
+    pub dictionary_id: *const c_char,
+    /// Dictionary revision bound to the selected root.
+    pub revision: u64,
+    /// Dictionary code integer dtype.
+    pub code_dtype: ArcadiaTioCoordinateCodeDTypeV2,
+    /// Number of dictionary entries.
+    pub entry_count: u64,
+    /// Nonzero when stable IDs are unique.
+    pub stable_ids_unique: u8,
+    /// Nonzero when display labels are unique.
+    pub display_labels_unique: u8,
+    /// Nonzero when aliases are unique.
+    pub aliases_unique: u8,
+    /// Nonzero when codes remain stable across revisions.
+    pub codes_stable_across_revisions: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 4],
+    /// Borrowed or library-owned content identifier.
+    pub content_id: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 external binding summary without arbitrary dereference semantics.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateExternalBindingV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// External source kind.
+    pub source_kind: ArcadiaTioCoordinateSourceKindV2,
+    /// Borrowed or library-owned logical identifier.
+    pub logical_id: *const c_char,
+    /// Borrowed or library-owned privacy-safe display text.
+    pub privacy_safe_display: *const c_char,
+    /// Borrowed or library-owned content identifier.
+    pub content_id: *const c_char,
+    /// External value domain.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Declared external coordinate length.
+    pub length: u64,
+    /// External binding availability.
+    pub availability: ArcadiaTioCoordinateAvailabilityV2,
+    /// External binding status category.
+    pub status_category: ArcadiaTioCoordinateStatusCategoryV2,
+    /// Nonzero when the external coordinate is required.
+    pub required: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 source binding recorded for optional index summaries.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateIndexSourceBindingV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Library-owned descriptor identifier.
+    pub descriptor_id: *const c_char,
+    /// Descriptor revision bound to the selected root.
+    pub descriptor_revision: u64,
+    /// Value domain indexed by the optional index.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Library-owned value-object identifier.
+    pub value_object_id: *const c_char,
+    /// Library-owned dictionary identifier.
+    pub dictionary_id: *const c_char,
+    /// Dictionary revision used by the index.
+    pub dictionary_revision: u64,
+    /// Library-owned dictionary content identifier.
+    pub dictionary_content_id: *const c_char,
+    /// External source kind used by the index, if any.
+    pub external_source_kind: ArcadiaTioCoordinateSourceKindV2,
+    /// Library-owned external logical identifier.
+    pub external_logical_id: *const c_char,
+    /// Library-owned external content identifier.
+    pub external_content_id: *const c_char,
+    /// Library-owned selected-root identifier.
+    pub root_id: *const c_char,
+    /// Axis index covered by the index.
+    pub axis: usize,
+    /// Root extent covered by the index.
+    pub root_extent: u64,
+    /// First append entry covered by the index.
+    pub append_start: u64,
+    /// Number of append entries covered by the index.
+    pub append_count: u64,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 optional index summary.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateIndexSummaryV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Library-owned index identifier.
+    pub index_id: *const c_char,
+    /// Optional index kind.
+    pub index_kind: ArcadiaTioCoordinateIndexKindV2,
+    /// Lookup key domain covered by the index.
+    pub key_domain: ArcadiaTioCoordinateKeyDomainV2,
+    /// Selected-root source binding for the index.
+    pub source_binding: ArcadiaTioCoordinateIndexSourceBindingV2,
+    /// Sortedness declaration.
+    pub sorted: ArcadiaTioCoordinateSortedness,
+    /// Monotonicity declaration.
+    pub monotonicity: ArcadiaTioCoordinateMonotonicity,
+    /// Uniqueness declaration.
+    pub uniqueness: ArcadiaTioCoordinateUniqueness,
+    /// Index format version.
+    pub format_version: u32,
+    /// Index build version.
+    pub build_version: u32,
+    /// Validation status for the index.
+    pub validation_status: ArcadiaTioCoordinateIndexValidationStatusV2,
+    /// Fallback policy when the index is not usable.
+    pub fallback: ArcadiaTioCoordinateIndexFallbackV2,
+    /// Selected use for the current operation.
+    pub selected_use: ArcadiaTioCoordinateIndexUseV2,
+    /// Nonzero when the index is required.
+    pub required: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 7],
+    /// Library-owned status reason.
+    pub reason: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 dictionary entry with owned strings in returned dictionaries.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateDictionaryEntryV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Dictionary code value.
+    pub code: u64,
+    /// Native-owned or borrowed stable identifier.
+    pub stable_id: *mut c_char,
+    /// Native-owned or borrowed display label.
+    pub display_label: *mut c_char,
+    /// Native-owned or borrowed alias string array.
+    pub aliases: *mut *mut c_char,
+    /// Number of alias strings.
+    pub aliases_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 dictionary result carrier.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateDictionaryV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Dictionary summary.
+    pub summary: ArcadiaTioCoordinateDictionarySummaryV2,
+    /// Native-owned dictionary entry array.
+    pub entries: *mut ArcadiaTioCoordinateDictionaryEntryV2,
+    /// Number of dictionary entries.
+    pub entries_len: usize,
+    /// Dictionary read status category.
+    pub status_category: ArcadiaTioCoordinateStatusCategoryV2,
+    /// Native-owned status reason.
+    pub reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 owned value-slice result carrier.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateValueSliceV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Value domain for the returned carrier.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Numeric dtype for inline numeric values.
+    pub numeric_dtype: ArcadiaTioCoordinateDType,
+    /// Numeric encoding for inline numeric values.
+    pub numeric_encoding: ArcadiaTioCoordinateEncoding,
+    /// Dictionary code dtype for dictionary-coded values.
+    pub code_dtype: ArcadiaTioCoordinateCodeDTypeV2,
+    /// Native-owned value buffer.
+    pub data: *mut c_void,
+    /// Number of logical values.
+    pub len: usize,
+    /// Element size in bytes.
+    pub element_size: usize,
+    /// Fixed text width in bytes.
+    pub fixed_text_width: usize,
+    /// Availability for the returned values.
+    pub availability: ArcadiaTioCoordinateAvailabilityV2,
+    /// Status category for the read.
+    pub status_category: ArcadiaTioCoordinateStatusCategoryV2,
+    /// Native-owned status reason.
+    pub reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 typed lookup key.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateLookupKeyV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Lookup key domain.
+    pub key_domain: ArcadiaTioCoordinateKeyDomainV2,
+    /// Signed 32-bit key value.
+    pub i32_value: i32,
+    /// Signed 64-bit key value.
+    pub i64_value: i64,
+    /// Dictionary code key value.
+    pub code_value: u64,
+    /// Borrowed byte key pointer.
+    pub bytes: *const u8,
+    /// Number of key bytes.
+    pub bytes_len: usize,
+    /// Fixed text width in bytes.
+    pub fixed_text_width: usize,
+    /// Borrowed text key pointer.
+    pub text: *const c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 lookup result carrier.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateLookupResultV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Lookup result status.
+    pub status: ArcadiaTioCoordinateLookupResultStatusV2,
+    /// Lookup status category.
+    pub status_category: ArcadiaTioCoordinateStatusCategoryV2,
+    /// Unique result position when status is unique.
+    pub unique_position: u32,
+    /// Half-open result range start when status is range.
+    pub range_start: u32,
+    /// Half-open result range end when status is range.
+    pub range_end: u32,
+    /// Native-owned positions array for many-result lookups.
+    pub positions: *mut u32,
+    /// Number of positions.
+    pub positions_len: usize,
+    /// Availability for the lookup result.
+    pub availability: ArcadiaTioCoordinateAvailabilityV2,
+    /// Native-owned status reason.
+    pub reason: *mut c_char,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 append-axis coordinate entry.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioAppendCoordinateEntryV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: usize,
+    /// Borrowed descriptor identifier.
+    pub descriptor_id: *const c_char,
+    /// Borrowed coordinate name.
+    pub name: *const c_char,
+    /// Coordinate value domain.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Numeric dtype for inline numeric values.
+    pub numeric_dtype: ArcadiaTioCoordinateDType,
+    /// Numeric encoding for inline numeric values.
+    pub numeric_encoding: ArcadiaTioCoordinateEncoding,
+    /// Dictionary code dtype for dictionary-coded values.
+    pub code_dtype: ArcadiaTioCoordinateCodeDTypeV2,
+    /// Borrowed append-coordinate value buffer.
+    pub values: *const c_void,
+    /// Number of coordinate values.
+    pub count: usize,
+    /// Element size in bytes.
+    pub element_size: usize,
+    /// Fixed text width in bytes.
+    pub fixed_text_width: usize,
+    /// Borrowed append-time dictionary-extension entries for dictionary-code append entries.
+    pub dictionary_entries: *const ArcadiaTioCoordinateDictionaryEntryV2,
+    /// Number of append-time dictionary-extension entries.
+    pub dictionary_entries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 2],
+}
+
+/// Coordinate v2 append-axis coordinate batch.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioAppendCoordinateBatchV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Borrowed append-coordinate entries.
+    pub entries: *const ArcadiaTioAppendCoordinateEntryV2,
+    /// Number of append-coordinate entries.
+    pub entries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Coordinate v2 operation options.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioCoordinateV2Options {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Nonzero allows authoritative scans when indexes are absent or unusable.
+    pub allow_authoritative_scan: u8,
+    /// Nonzero includes dictionary entries in dictionary reads.
+    pub include_dictionary_entries: u8,
+    /// Nonzero includes optional index summaries in metadata reads.
+    pub include_index_summaries: u8,
+    /// Nonzero allows external resolution where supported.
+    pub allow_external_resolution: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 4],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Borrowed Coordinate v2 input descriptor for create APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioAxisCoordinateInputV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: usize,
+    /// Borrowed descriptor identifier.
+    pub descriptor_id: *const c_char,
+    /// Borrowed coordinate name.
+    pub name: *const c_char,
+    /// Coordinate semantic kind.
+    pub kind: ArcadiaTioCoordinateKind,
+    /// Coordinate value domain.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Numeric dtype for inline numeric values.
+    pub numeric_dtype: ArcadiaTioCoordinateDType,
+    /// Numeric encoding for inline numeric values.
+    pub numeric_encoding: ArcadiaTioCoordinateEncoding,
+    /// Fixed-text layout for fixed-text domains.
+    pub fixed_text: ArcadiaTioCoordinateFixedTextLayoutV2,
+    /// Dictionary code dtype.
+    pub code_dtype: ArcadiaTioCoordinateCodeDTypeV2,
+    /// Borrowed value buffer.
+    pub values: *const c_void,
+    /// Number of values.
+    pub values_len: usize,
+    /// Borrowed dictionary summary.
+    pub dictionary: *const ArcadiaTioCoordinateDictionarySummaryV2,
+    /// Borrowed dictionary entries.
+    pub dictionary_entries: *const ArcadiaTioCoordinateDictionaryEntryV2,
+    /// Number of dictionary entries.
+    pub dictionary_entries_len: usize,
+    /// Borrowed external binding summary.
+    pub external_binding: *const ArcadiaTioCoordinateExternalBindingV2,
+    /// Sortedness declaration.
+    pub sorted: ArcadiaTioCoordinateSortedness,
+    /// Monotonicity declaration.
+    pub monotonicity: ArcadiaTioCoordinateMonotonicity,
+    /// Uniqueness declaration.
+    pub uniqueness: ArcadiaTioCoordinateUniqueness,
+    /// Nonzero when coordinate is required.
+    pub required: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 7],
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
+
+/// Owned Coordinate v2 metadata returned by metadata APIs.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct ArcadiaTioAxisCoordinateMetaV2 {
+    /// Structure version.
+    pub version: u32,
+    /// Structure size in bytes.
+    pub struct_size: usize,
+    /// Axis index.
+    pub axis: usize,
+    /// Native-owned axis name snapshot pointer.
+    pub axis_name_snapshot: *mut c_char,
+    /// Native-owned descriptor identifier.
+    pub descriptor_id: *mut c_char,
+    /// Descriptor revision bound to the selected root.
+    pub descriptor_revision: u64,
+    /// Native-owned coordinate name pointer.
+    pub name: *mut c_char,
+    /// Coordinate semantic kind.
+    pub kind: ArcadiaTioCoordinateKind,
+    /// Coordinate value domain.
+    pub value_domain: ArcadiaTioCoordinateValueDomainV2,
+    /// Numeric dtype for inline numeric values.
+    pub numeric_dtype: ArcadiaTioCoordinateDType,
+    /// Numeric encoding for inline numeric values.
+    pub numeric_encoding: ArcadiaTioCoordinateEncoding,
+    /// Fixed-text layout for fixed-text domains.
+    pub fixed_text: ArcadiaTioCoordinateFixedTextLayoutV2,
+    /// Dictionary code dtype.
+    pub code_dtype: ArcadiaTioCoordinateCodeDTypeV2,
+    /// Coordinate length.
+    pub length: u64,
+    /// Sortedness declaration.
+    pub sorted: ArcadiaTioCoordinateSortedness,
+    /// Monotonicity declaration.
+    pub monotonicity: ArcadiaTioCoordinateMonotonicity,
+    /// Uniqueness declaration.
+    pub uniqueness: ArcadiaTioCoordinateUniqueness,
+    /// Nonzero when coordinate is required.
+    pub required: u8,
+    /// Reserved bytes; callers set to zero.
+    pub reserved_u8: [u8; 7],
+    /// Coordinate availability.
+    pub availability: ArcadiaTioCoordinateAvailabilityV2,
+    /// Coordinate status category.
+    pub status_category: ArcadiaTioCoordinateStatusCategoryV2,
+    /// Native-owned status reason.
+    pub reason: *mut c_char,
+    /// Dictionary summary.
+    pub dictionary: ArcadiaTioCoordinateDictionarySummaryV2,
+    /// External binding summary.
+    pub external_binding: ArcadiaTioCoordinateExternalBindingV2,
+    /// Native-owned optional index summaries.
+    pub index_summaries: *mut ArcadiaTioCoordinateIndexSummaryV2,
+    /// Number of optional index summaries.
+    pub index_summaries_len: usize,
+    /// Reserved words; callers set to zero.
+    pub reserved: [u64; 4],
+}
