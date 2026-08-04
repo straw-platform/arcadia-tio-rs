@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! OCB/v2 metadata and object readers.
 
 #[cfg(test)]
@@ -7,7 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 #[cfg(not(any(unix, windows)))]
 use std::sync::Mutex;
 use std::time::Duration;
@@ -120,12 +118,11 @@ pub enum OcbOpenValidationMode {
     FullPayload,
 }
 
-/// One stable opened OCB identity plus the diagnostic pathname used to open it.
+/// One stable opened OCB identity used for every later positioned read.
 #[derive(Debug)]
 pub(crate) struct OcbReadSource {
     file: File,
     file_len: u64,
-    diagnostic_path: PathBuf,
     #[cfg(not(any(unix, windows)))]
     fallback_cursor_lock: Mutex<()>,
 }
@@ -133,15 +130,14 @@ pub(crate) struct OcbReadSource {
 impl OcbReadSource {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
-        Self::from_file(file, path.to_path_buf())
+        Self::from_file(file)
     }
 
-    pub(crate) fn from_file(file: File, diagnostic_path: PathBuf) -> Result<Self> {
+    pub(crate) fn from_file(file: File) -> Result<Self> {
         let file_len = file.metadata()?.len();
         Ok(Self {
             file,
             file_len,
-            diagnostic_path,
             #[cfg(not(any(unix, windows)))]
             fallback_cursor_lock: Mutex::new(()),
         })
@@ -149,10 +145,6 @@ impl OcbReadSource {
 
     pub(crate) const fn file_len(&self) -> u64 {
         self.file_len
-    }
-
-    pub(crate) fn diagnostic_path(&self) -> &Path {
-        &self.diagnostic_path
     }
 
     pub(crate) fn cursor(&self) -> OcbReadCursor<'_> {
@@ -672,22 +664,6 @@ fn choose_v2_metadata(
     ))
 }
 
-pub(crate) fn read_metadata_objects(
-    file: &mut (impl Read + Seek),
-    file_len: u64,
-    root: OcbRootV1,
-) -> Result<OcbMetadataV1> {
-    let resource_limits = OcbResourceLimits::policy_a();
-    let mut metadata_budget = MetadataMaterializationBudget::from_limits(resource_limits);
-    read_metadata_objects_with_resource_limits(
-        file,
-        file_len,
-        root,
-        resource_limits,
-        &mut metadata_budget,
-    )
-}
-
 fn read_metadata_objects_with_resource_limits(
     file: &mut (impl Read + Seek),
     file_len: u64,
@@ -1191,24 +1167,6 @@ std::thread_local! {
 #[cfg(test)]
 pub(crate) fn uncompressed_fixed_binary_direct_fill_count_for_test() -> u64 {
     UNCOMPRESSED_FIXED_BINARY_DIRECT_FILL_COUNT.with(std::cell::Cell::get)
-}
-
-pub(crate) fn validate_v2_root_referenced_objects(
-    file: &mut (impl Read + Seek),
-    file_len: u64,
-    root: &OcbRootV2,
-) -> Result<()> {
-    let resource_limits = OcbResourceLimits::policy_a();
-    let mut auxiliary_objects = OcbOpenAuxiliaryObjectCache::new(resource_limits);
-    validate_v2_root_referenced_objects_with_scope(
-        file,
-        file_len,
-        root,
-        OcbOpenValidationMode::FullPayload,
-        resource_limits,
-        &mut auxiliary_objects,
-    )?;
-    Ok(())
 }
 
 pub fn validate_v2_root_referenced_metadata(
@@ -2462,16 +2420,6 @@ pub(crate) fn read_object_bytes_with_resource_limits(
     )
 }
 
-pub(crate) fn read_object_bytes_with_attribution(
-    file: &mut (impl Read + Seek),
-    file_len: u64,
-    reference: OcbBodyRefV2,
-    expected_kind: OcbBodyKindV1,
-    attribution: &mut OcbReadObjectAttribution,
-) -> Result<Vec<u8>> {
-    read_object_bytes_inner(file, file_len, reference, expected_kind, Some(attribution))
-}
-
 pub(crate) fn read_object_bytes_with_attribution_and_resource_limits(
     file: &mut (impl Read + Seek),
     file_len: u64,
@@ -2591,7 +2539,6 @@ mod tests {
 
         let source = OcbReadSource::open(&path).expect("open stable read source");
         assert_eq!(source.file_len(), 8);
-        assert_eq!(source.diagnostic_path(), path);
 
         let mut first = source.cursor();
         let mut second = source.cursor();

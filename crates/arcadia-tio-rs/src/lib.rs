@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(dead_code)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 use std::ffi::{CStr, CString};
@@ -25,7 +26,6 @@ mod tensor;
 pub use tensor::*;
 
 /// Owned in-memory tensor operations over [`Tensor`] values.
-///
 /// The public wrapper's tensor-operation surface is intentionally source-visible and owned-copy:
 /// helpers accept borrowed [`Tensor`] values, validate dtype/shape/payload consistency, and return
 /// new owned [`Tensor`] values. The first-pass surface is the bounded dense-payload subset from

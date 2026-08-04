@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Finite resource limits for untrusted OCB reads.
 //!
 //! The selected-compressed limit is applied with independent counters to an

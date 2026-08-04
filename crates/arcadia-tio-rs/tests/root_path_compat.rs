@@ -5,7 +5,7 @@ use arcadia_tio_rs::{
     TensorFile, check_native_abi_compatibility,
 };
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "compile-only crate-root compatibility probe")]
 fn root_paths_remain_available(
     file: &TensorFile,
     tensor: Tensor,
@@ -17,7 +17,10 @@ fn root_paths_remain_available(
 }
 
 #[cfg(feature = "format-ocb")]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "compile-only feature-gated path compatibility probe"
+)]
 fn ocb_paths_remain_available(
     file: &arcadia_tio_rs::ocb::ColumnBundleFile,
     plan: &arcadia_tio_rs::ocb::ReadPlan<'_>,
@@ -27,7 +30,7 @@ fn ocb_paths_remain_available(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "compile-only module-path compatibility probe")]
 fn module_paths_remain_available(tensor: &Tensor) -> Result<Tensor> {
     let tensor = arcadia_tio_rs::ops::to_contiguous(tensor)?;
     arcadia_tio_rs::typed_ops::reshape(

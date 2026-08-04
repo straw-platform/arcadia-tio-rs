@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! OCB binary format primitives.
 //!
 //! OCB is the one-file Ordered Column Bundle format family. It is deliberately
@@ -3000,7 +2998,6 @@ impl OcbColumnChunkObjectV1 {
                 .ok_or(ArcadiaTioError::ocb_corrupt_file(
                     "OCB column chunk payload range overflows",
                 ))?;
-        drop(cursor);
         bytes.copy_within(payload_start..payload_end, 0);
         bytes.truncate(payload_len);
         Ok(Self {
@@ -3340,16 +3337,6 @@ fn write_bytes_u32<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<()> {
     write_u32(writer, len)?;
     writer.write_all(bytes)?;
     Ok(())
-}
-
-fn read_bytes_u32<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
-    let len = read_u32(reader)? as usize;
-    let mut bytes = allocate_zeroed_bytes_fallibly(
-        len,
-        "OCB byte-payload allocation failed within resource limit",
-    )?;
-    read_exact_ocb(reader, &mut bytes)?;
-    Ok(bytes)
 }
 
 fn write_string_u32<W: Write>(writer: &mut W, value: &str) -> Result<()> {

@@ -4145,7 +4145,6 @@ impl TensorFile {
             _not_send_or_sync: PhantomData,
         })
     }
-
 }
 
 impl Drop for TensorFile {
@@ -4238,24 +4237,23 @@ impl PreparedUserKvList {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct PreparedCreate<'a> {
     pub(crate) abi: AbiCompatible,
     pub(crate) path: CString,
     pub(crate) dim_kinds: Vec<sys::ArcadiaTioAxisKind>,
     pub(crate) dim_lens: Vec<u32>,
-    pub(crate) dim_name_strings: Vec<CString>,
+    pub(crate) _dim_name_strings: Vec<CString>,
     pub(crate) dim_name_ptrs: Vec<*const c_char>,
-    pub(crate) symbols: Vec<CString>,
+    pub(crate) _symbols: Vec<CString>,
     pub(crate) symbol_ptrs: Vec<*const c_char>,
-    pub(crate) channels: Vec<CString>,
+    pub(crate) _channels: Vec<CString>,
     pub(crate) channel_ptrs: Vec<*const c_char>,
-    pub(crate) user_keys: Vec<CString>,
-    pub(crate) user_values: Vec<CString>,
+    pub(crate) _user_keys: Vec<CString>,
+    pub(crate) _user_values: Vec<CString>,
     pub(crate) user_key_ptrs: Vec<*const c_char>,
     pub(crate) user_value_ptrs: Vec<*const c_char>,
-    pub(crate) coordinate_names: Vec<Option<CString>>,
-    pub(crate) coordinate_external_uris: Vec<Option<CString>>,
+    pub(crate) _coordinate_names: Vec<Option<CString>>,
+    pub(crate) _coordinate_external_uris: Vec<Option<CString>>,
     pub(crate) coordinate_inputs: Vec<sys::ArcadiaTioAxisCoordinateInput>,
     pub(crate) _coordinate_values: PhantomData<&'a [CoordinateSpec]>,
 }
@@ -4395,18 +4393,18 @@ impl<'a> PreparedCreate<'a> {
             path,
             dim_kinds,
             dim_lens,
-            dim_name_strings,
+            _dim_name_strings: dim_name_strings,
             dim_name_ptrs,
-            symbols,
+            _symbols: symbols,
             symbol_ptrs,
-            channels,
+            _channels: channels,
             channel_ptrs,
-            user_keys,
-            user_values,
+            _user_keys: user_keys,
+            _user_values: user_values,
             user_key_ptrs,
             user_value_ptrs,
-            coordinate_names,
-            coordinate_external_uris,
+            _coordinate_names: coordinate_names,
+            _coordinate_external_uris: coordinate_external_uris,
             coordinate_inputs,
             _coordinate_values: PhantomData,
         })

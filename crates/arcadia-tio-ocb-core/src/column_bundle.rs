@@ -1,7 +1,4 @@
-#![allow(dead_code)]
-
 //! One-file ordered column bundle facade used by the public `format-ocb` API.
-//!
 //! This module is deliberately generic. It exposes columnar batches and logical
 //! annotations, but it does not attach market-data, order, trade, or replay
 //! semantics to columns.
@@ -2711,6 +2708,7 @@ pub struct ColumnBundleFile {
     metadata: Arc<OcbMetadataV1>,
     columns: Arc<Vec<BundleColumn>>,
     resource_limits: OcbResourceLimits,
+    #[cfg(test)]
     open_metadata_materialized_bytes: u64,
 }
 
@@ -2796,6 +2794,7 @@ impl ColumnBundleFile {
         let resolved_columns_materialized_bytes =
             preflight_resolved_columns_materialized_bytes(&metadata)?;
         metadata_budget.charge(resolved_columns_materialized_bytes)?;
+        #[cfg(test)]
         let open_metadata_materialized_bytes = metadata_budget.charged_bytes();
         let columns = Arc::new(resolve_columns(&metadata)?);
         Ok(Self {
@@ -2803,6 +2802,7 @@ impl ColumnBundleFile {
             metadata,
             columns,
             resource_limits,
+            #[cfg(test)]
             open_metadata_materialized_bytes,
         })
     }

@@ -9,6 +9,7 @@ pub(super) struct SelectedResourceFootprint {
     pub(super) row_count: u64,
 }
 
+#[cfg(test)]
 pub(super) fn selected_resource_footprint_for_row_group(
     metadata: &OcbMetadataV1,
     row_group_id: u32,
@@ -106,7 +107,6 @@ pub(super) fn selected_resource_footprint_for_row_group_desc(
             .ok_or(ArcadiaTioError::ocb_corrupt_file(
                 "OCB selected decoded byte accounting overflows",
             ))?;
-
         if !chunk.validity_ref.is_null() {
             chunk
                 .validity_ref

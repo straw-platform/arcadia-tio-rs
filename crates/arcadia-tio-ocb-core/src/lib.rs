@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 //! Source-visible Rust-core Ordered Column Bundle (OCB) reader APIs.
 //!
 //! This crate exposes the generic OCB selected-snapshot reader, read planner,

@@ -538,7 +538,7 @@ impl ManifestArtifactResolver {
                     "channel-sharded OCB artifact changed during checked open",
                 ));
             }
-            OcbReadSource::from_file(file, diagnostic_path)
+            OcbReadSource::from_file(file)
         }
 
         #[cfg(windows)]
@@ -591,7 +591,7 @@ impl ManifestArtifactResolver {
                     "channel-sharded OCB artifact changed during checked open",
                 ));
             }
-            OcbReadSource::from_file(file, diagnostic_path)
+            OcbReadSource::from_file(file)
         }
 
         #[cfg(not(any(unix, windows)))]

@@ -4,7 +4,7 @@ use arcadia_tio_sys::{
     ArcadiaTioDType, ArcadiaTioHandle, arcadia_tio_abi_version, arcadia_tio_dtype,
 };
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "compile-only raw crate-root compatibility probe")]
 fn root_paths_remain_available() {
     let _abi: unsafe extern "C" fn() -> u32 = arcadia_tio_abi_version;
     let _dtype: unsafe extern "C" fn(*mut ArcadiaTioHandle, *mut ArcadiaTioDType) -> i32 =
@@ -12,7 +12,10 @@ fn root_paths_remain_available() {
 }
 
 #[cfg(feature = "format-ocb")]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "compile-only feature-gated raw path compatibility probe"
+)]
 fn ocb_root_paths_remain_available() {
     let _open = arcadia_tio_sys::arcadia_tio_ocb_open;
     let _limits = core::mem::size_of::<arcadia_tio_sys::ArcadiaTioOcbResourceLimits>();
