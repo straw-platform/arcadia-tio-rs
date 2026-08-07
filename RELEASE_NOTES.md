@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.3.7 - OCB ownership and structure hardening
+
+Tag: `0.3.7`
+
+This source-only patch release preserves the documented 0.3.x behavior while
+integrating the reviewed canonical OCB planning, execution, materialization,
+and attribution boundary. It hardens native ABI/output ownership, keeps the
+bounded-session cancellation contract, splits oversized implementation
+modules, and adds module-size and dead-code ratchets.
+
+The release includes additive C-ABI-free OCB-core and safe-wrapper coverage.
+It does not publish crates.io packages, native libraries, signed artifacts, or
+benchmark evidence, and creates no performance, storage, capacity,
+production-default, or release-readiness claim.
+
 ## 0.3.6 - repository transfer and contract documentation
 
 Tag: `0.3.6`

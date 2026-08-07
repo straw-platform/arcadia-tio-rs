@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "arcadia-tio-ocb-core"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "libc",
  "serde",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "arcadia-tio-rs"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "arcadia-tio-sys",
  "arrow-array",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "arcadia-tio-sys"
-version = "0.3.6"
+version = "0.3.7"
 
 [[package]]
 name = "arrow-array"

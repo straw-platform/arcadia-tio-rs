@@ -30,6 +30,17 @@ build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
+## 0.3.7 hardening source release
+
+The 0.3.7 source tag integrates the reviewed canonical OCB reader boundary,
+hardens ABI and owned-output handling, and adds module-size and dead-code
+ratchets after splitting the OCB core and safe-wrapper implementation modules.
+Documented 0.3.x behavior and compatibility paths remain available.
+
+This remains a source-only release: it does not publish crates.io packages,
+native libraries, signed artifacts, benchmark evidence, or a production
+default/readiness claim.
+
 ## 0.3.6 maintenance source release
 
 The 0.3.6 source tag includes the public Rust OCB tutorial, the clarified
@@ -157,11 +168,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the latest 0.3.6 public source tag:
+Or use the latest 0.3.7 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.6", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.7", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -171,11 +182,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the latest 0.3.6 public source tag:
+Or use the latest 0.3.7 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.6" }
+arcadia-tio-rs = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.7" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies

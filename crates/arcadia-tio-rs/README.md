@@ -62,6 +62,17 @@ output guards retain partially returned value, array, string, file, plan, and
 session ownership until validation succeeds, and release native allocations
 exactly once when status handling or Rust-side conversion fails.
 
+## 0.3.7 source-release posture
+
+The 0.3.7 workspace tag integrates the reviewed canonical OCB reader boundary,
+hardens ABI and owned-output handling, and adds module-size and dead-code
+ratchets after splitting implementation modules. Documented 0.3.x behavior and
+compatibility paths remain available.
+
+This source release does not publish native libraries, package-manager
+artifacts, signatures, benchmark evidence, or a default/production runtime
+readiness claim.
+
 ## 0.3.6 source-release posture
 
 The 0.3.6 workspace tag carries the 0.3.5 bounded-session API unchanged and
