@@ -96,3 +96,25 @@ the directory containing `arcadia_tio_capi.dll` to `PATH` and set
 examples, but new users should prefer `ARCADIA_TIO_CAPI_LIB_DIR`. Use
 `ARCADIA_TIO_CAPI_INCLUDE_DIR` when a consumer also needs the C headers from a
 prebuilt bundle.
+
+Public ABI constants and layout assertions are compiled with:
+
+```sh
+cargo make test-sys-public-constants
+```
+
+This public check does not claim parity with private C headers. That comparison
+is an explicit integration gate: set `ARCADIA_TIO_CAPI_INCLUDE_DIR` to an
+existing absolute checked include root in the host shell's native form (for
+example `/...` on Unix or `C:/...` on Windows) containing
+`arcadia/tio/functions.h`, `types.h`, and `arrow_c_data.h`, configure the native
+library as above, and run:
+
+```sh
+cargo make test-private-c-header-parity
+```
+
+The private gate refuses missing roots or headers, verifies that exactly one
+ignored parity test exists before executing it, and lets the Rust test confirm
+that the received root is absolute. In ordinary public test runs, the
+private-only comparison remains visibly ignored, not silently passed.

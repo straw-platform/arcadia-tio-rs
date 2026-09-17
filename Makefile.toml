@@ -27,8 +27,10 @@ echo "  cargo make test-ocb           # run OCB feature tests and examples"
 echo "  cargo make test-all-features  # run safe wrapper tests with --all-features"
 echo "  cargo make fmt                # verify rustfmt"
 echo "  cargo make module-size-check  # enforce post-split implementation ratchets"
-echo "  cargo make ci                 # fmt + size/core/no-C-ABI guards + feature test matrix"
-echo "  cargo make native-info        # print detected native library path, size, and checksum"
+echo "  cargo make ci                 # fmt + size/core/no-C-ABI/public-sys guards + feature matrix"
+echo "  cargo make native-info        # inspect native library path, size, mode, and symbols"
+echo "  cargo make test-sys-public-constants # compile public sys ABI constant/layout guards"
+echo "  cargo make test-private-c-header-parity # opt-in private C header/sys parity gate"
 echo ""
 echo "Native library:"
 echo "  Tasks use ARCADIA_TIO_CAPI_LIB_DIR when set, otherwise native/<rustc-host-triple>/lib."
@@ -81,45 +83,77 @@ if [ -z "$FOUND_LIB" ]; then
 fi
 echo "native_lib_file=$FOUND_LIB"
 echo "native_lib_size_bytes=$(wc -c < "$FOUND_LIB" | tr -d ' ')"
-if command -v sha256sum >/dev/null 2>&1; then
-  echo "native_lib_sha256=$(sha256sum "$FOUND_LIB" | awk '{ print $1 }')"
-elif command -v shasum >/dev/null 2>&1; then
-  echo "native_lib_sha256=$(shasum -a 256 "$FOUND_LIB" | awk '{ print $1 }')"
+if NATIVE_LIB_MODE="$(stat -c '%A' "$FOUND_LIB" 2>/dev/null)" \
+  && printf '%s\n' "$NATIVE_LIB_MODE" | grep -Eq '^[bcdlps-][rwxStTs-]{9}[.+]?$'; then
+  echo "native_lib_mode=$NATIVE_LIB_MODE"
+elif NATIVE_LIB_MODE="$(stat -f '%Sp' "$FOUND_LIB" 2>/dev/null)" \
+  && printf '%s\n' "$NATIVE_LIB_MODE" | grep -Eq '^[bcdlps-][rwxStTs-]{9}[.+]?$'; then
+  echo "native_lib_mode=$NATIVE_LIB_MODE"
 else
-  echo "native_lib_sha256=<sha256sum-or-shasum-not-found>"
+  echo "native_lib_mode=unknown_stat_not_supported"
 fi
-if [ "$LINK_KIND" = "dylib" ]; then
-  REQUIRED_OCB_SYMBOLS="arcadia_tio_ocb_open_with_options arcadia_tio_ocb_create arcadia_tio_ocb_append arcadia_tio_ocb_read_batches arcadia_tio_ocb_cleanup_orphan_tail"
-  if command -v nm >/dev/null 2>&1; then
-    if NM_OUTPUT="$(nm -D "$FOUND_LIB" 2>/dev/null)"; then
-      :
-    else
-      NM_OUTPUT="$(nm -g "$FOUND_LIB" 2>/dev/null || true)"
-    fi
-    MISSING_OCB_SYMBOLS=""
-    for symbol in $REQUIRED_OCB_SYMBOLS; do
-      if ! printf '%s\n' "$NM_OUTPUT" | grep -q "$symbol"; then
-        MISSING_OCB_SYMBOLS="$MISSING_OCB_SYMBOLS $symbol"
-      fi
-    done
-    if [ -z "$MISSING_OCB_SYMBOLS" ]; then
-      echo "ocb_symbols=present"
-    else
-      echo "ocb_symbols=missing:$MISSING_OCB_SYMBOLS"
-      if [ "${ARCADIA_TIO_REQUIRE_OCB_SYMBOLS:-0}" = "1" ]; then
-        echo "required OCB symbols missing from native library" >&2
-        exit 1
-      fi
-    fi
+REQUIRED_ABI_SYMBOLS="arcadia_tio_abi_version arcadia_tio_compaction_abi_version"
+REQUIRED_OCB_SYMBOLS="arcadia_tio_ocb_open_with_options arcadia_tio_ocb_create arcadia_tio_ocb_append arcadia_tio_ocb_read_batches arcadia_tio_ocb_cleanup_orphan_tail"
+if command -v nm >/dev/null 2>&1; then
+  if [ "$LINK_KIND" = "dylib" ] && NM_OUTPUT="$(nm -D -g -P "$FOUND_LIB" 2>/dev/null)"; then
+    :
   else
-    echo "ocb_symbols=unknown_nm_not_found"
+    NM_OUTPUT="$(nm -g -P "$FOUND_LIB" 2>/dev/null || true)"
+  fi
+  NM_DEFINED_SYMBOLS="$(
+    printf '%s\n' "$NM_OUTPUT" | awk '
+      {
+        for (field = 2; field <= NF; field++) {
+          if ($field ~ /^[ABCDGIRSTVW]$/) {
+            name = $(field - 1)
+            sub(/^_/, "", name)
+            sub(/@.*/, "", name)
+            print name
+            break
+          }
+        }
+      }
+    ' | LC_ALL=C sort -u
+  )"
+  MISSING_ABI_SYMBOLS=""
+  for symbol in $REQUIRED_ABI_SYMBOLS; do
+    if ! printf '%s\n' "$NM_DEFINED_SYMBOLS" | grep -Fqx "$symbol"; then
+      MISSING_ABI_SYMBOLS="$MISSING_ABI_SYMBOLS $symbol"
+    fi
+  done
+  if [ -n "$MISSING_ABI_SYMBOLS" ]; then
+    echo "abi_symbols=missing:$MISSING_ABI_SYMBOLS" >&2
+    exit 1
+  fi
+  echo "abi_symbols=present"
+  MISSING_OCB_SYMBOLS=""
+  for symbol in $REQUIRED_OCB_SYMBOLS; do
+    if ! printf '%s\n' "$NM_DEFINED_SYMBOLS" | grep -Fqx "$symbol"; then
+      MISSING_OCB_SYMBOLS="$MISSING_OCB_SYMBOLS $symbol"
+    fi
+  done
+  if [ -z "$MISSING_OCB_SYMBOLS" ]; then
+    echo "ocb_symbols=present"
+  else
+    echo "ocb_symbols=missing:$MISSING_OCB_SYMBOLS"
+    if [ "${ARCADIA_TIO_REQUIRE_OCB_SYMBOLS:-0}" = "1" ]; then
+      echo "required OCB symbols missing from native library" >&2
+      exit 1
+    fi
+  fi
+else
+  echo "abi_symbols=unknown_nm_not_found"
+  echo "ocb_symbols=unknown_nm_not_found"
+  if [ "${ARCADIA_TIO_REQUIRE_OCB_SYMBOLS:-0}" = "1" ]; then
+    echo "cannot verify required OCB symbols because nm is unavailable" >&2
+    exit 1
   fi
 fi
 if [ -d "$INCLUDE_DIR" ]; then
   echo "native_include_dir=$INCLUDE_DIR"
 fi
 echo "native_lib_listing:"
-ls -l "$LIB_DIR"
+ls -ld "$FOUND_LIB"
 '''
 
 [tasks.build]
@@ -183,6 +217,54 @@ if ! printf '%s\n' "$TREE" | grep -q "zstd v"; then
   echo "expected zstd dependency tail missing from arcadia-tio-ocb-core tree" >&2
   exit 1
 fi
+'''
+
+[tasks.test-sys-public-constants]
+clear = true
+description = "Compile public arcadia-tio-sys ABI constant and layout guards without claiming private-header parity"
+script_runner = "@shell"
+script = '''
+set -e
+unset ARCADIA_TIO_CAPI_LIB_DIR ARCADIA_TIO_NATIVE_LIB_DIR ARCADIA_TIO_CAPI_INCLUDE_DIR
+ARCADIA_TIO_CAPI_SYSTEM_FALLBACK=1 cargo check --locked --offline -p arcadia-tio-sys --all-features --test constants
+'''
+
+[tasks.test-private-c-header-parity]
+clear = true
+description = "Run the explicit private C header/sys parity integration gate"
+script_runner = "@shell"
+script = '''
+set -e
+if [ -z "${ARCADIA_TIO_CAPI_INCLUDE_DIR:-}" ]; then
+  echo "ARCADIA_TIO_CAPI_INCLUDE_DIR must name the checked private C include root" >&2
+  exit 1
+fi
+if [ ! -d "$ARCADIA_TIO_CAPI_INCLUDE_DIR" ]; then
+  echo "ARCADIA_TIO_CAPI_INCLUDE_DIR is not an existing directory: $ARCADIA_TIO_CAPI_INCLUDE_DIR" >&2
+  exit 1
+fi
+for header in functions.h types.h arrow_c_data.h; do
+  if [ ! -r "$ARCADIA_TIO_CAPI_INCLUDE_DIR/arcadia/tio/$header" ]; then
+    echo "required private C header is unreadable: $ARCADIA_TIO_CAPI_INCLUDE_DIR/arcadia/tio/$header" >&2
+    exit 1
+  fi
+done
+ROOT_DIR="${CARGO_MAKE_WORKING_DIRECTORY:-$(pwd)}"
+TEST_NAME="deferred_c_abi_gap_matches_expected_inventory"
+TEST_LIST="$(
+  "$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" \
+    cargo test --locked --offline -p arcadia-tio-sys --test constants \
+    -- --ignored --list
+)"
+MATCH_COUNT="$(printf '%s\n' "$TEST_LIST" | awk -F': ' -v name="$TEST_NAME" '$1 == name && $2 == "test" { count++ } END { print count + 0 }')"
+if [ "$MATCH_COUNT" -ne 1 ]; then
+  printf '%s\n' "$TEST_LIST" >&2
+  echo "private C header parity gate expected exactly one ignored test named $TEST_NAME; found $MATCH_COUNT" >&2
+  exit 1
+fi
+"$ROOT_DIR/examples/tutorials/run/with_native_lib.sh" \
+  cargo test --locked --offline -p arcadia-tio-sys --test constants \
+  "$TEST_NAME" -- --ignored --exact
 '''
 
 [tasks.test-default]
@@ -265,5 +347,5 @@ command = "python3"
 args = ["scripts/check_module_size_budgets.py"]
 
 [tasks.ci]
-description = "Run fmt, size/core/no-C-ABI guards, all-feature check, and the feature test matrix"
-dependencies = ["fmt", "module-size-check", "test-core-reader", "test-core-reader-no-cabi", "check", "test-matrix"]
+description = "Run fmt, size/core/no-C-ABI/public-sys guards, all-feature check, and the feature test matrix"
+dependencies = ["fmt", "module-size-check", "test-core-reader", "test-core-reader-no-cabi", "test-sys-public-constants", "check", "test-matrix"]

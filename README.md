@@ -294,17 +294,30 @@ cargo make test-csv-parquet
 ```
 
 `cargo make native-info` validates that an expected local native library file is
-present and prints its resolved path, size, SHA-256 checksum, and whether the
-common OCB C ABI symbols are visible when `nm` is available. Set
+present and prints its resolved path, size, file mode, and whether the base ABI
+and common OCB C ABI symbols are visible when `nm` is available. It does not
+compute or print a library checksum. Set
 `ARCADIA_TIO_REQUIRE_OCB_SYMBOLS=1` with `cargo make native-info` when you want
 to fail fast on a stale native library before running `format-ocb` builds.
+
+`cargo make test-sys-public-constants` compiles the public sys constants and
+layout assertions without claiming parity with private C headers. Private-header
+parity is a separate opt-in integration gate: supply the checked private include
+root through `ARCADIA_TIO_CAPI_INCLUDE_DIR`, configure the native library as
+usual, and run `cargo make test-private-c-header-parity`. The gate refuses to run
+when the include root or any required header is absent; ordinary public tests
+report that private-only comparison as ignored rather than passed.
+Use an absolute path in the host shell's native form (for example `/...` on
+Unix or `C:/...` on Windows); the Rust gate independently verifies that the
+received path is absolute and readable.
 
 The public cargo-make matrix runs `test-default`, explicit `test-no-default`,
 `test-arrow-ndarray`, `test-csv-parquet`, explicit `test-ocb`, and
 `test-all-features`; OCB can also be exercised directly with
 `--features format-ocb`; `ci` runs
 `fmt`, the exact post-split `module-size-check`, C-ABI-free `test-core-reader`,
-the no-C-ABI dependency guard,
+the no-C-ABI dependency guard, the all-feature public sys ABI constant/layout
+compile gate,
 all-feature `check`, and that matrix. The feature-gated tensor
 ops/conversions tutorial uses owned tensor ops, typed wrappers, owned Arrow
 RecordBatch/IPC, ndarray, and CSV/Parquet companion conversions with tiny

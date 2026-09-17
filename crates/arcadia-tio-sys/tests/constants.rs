@@ -136,13 +136,11 @@ const _: () = {
 };
 
 #[test]
+#[ignore = "private integration gate; run cargo make test-private-c-header-parity with ARCADIA_TIO_CAPI_INCLUDE_DIR"]
 fn deferred_c_abi_gap_matches_expected_inventory() {
-    let Some(headers) = load_private_c_headers() else {
-        eprintln!(
-            "private C headers not present in this source-visible checkout; skipping header/sys inventory comparison"
-        );
-        return;
-    };
+    let headers = load_private_c_headers().expect(
+        "private C header/sys parity was requested, but the checked header root is unavailable",
+    );
 
     let source = sys_source();
     let header_functions = collect_c_functions(&headers.functions);
@@ -170,25 +168,34 @@ struct PrivateCHeaders {
     arrow: String,
 }
 
-fn load_private_c_headers() -> Option<PrivateCHeaders> {
-    let root = private_repo_root()?;
-    Some(PrivateCHeaders {
-        functions: fs::read_to_string(
-            root.join("crates/arcadia-tio-capi/include/arcadia/tio/functions.h"),
-        )
-        .ok()?,
-        types: fs::read_to_string(root.join("crates/arcadia-tio-capi/include/arcadia/tio/types.h"))
-            .ok()?,
-        arrow: fs::read_to_string(
-            root.join("crates/arcadia-tio-capi/include/arcadia/tio/arrow_c_data.h"),
-        )
-        .ok()?,
+fn load_private_c_headers() -> Result<PrivateCHeaders, String> {
+    let include_root = std::env::var_os("ARCADIA_TIO_CAPI_INCLUDE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            "set ARCADIA_TIO_CAPI_INCLUDE_DIR to the checked private C include root".to_owned()
+        })?;
+    if !include_root.is_absolute() || !include_root.is_dir() {
+        return Err(format!(
+            "ARCADIA_TIO_CAPI_INCLUDE_DIR must be an existing absolute directory: {}",
+            include_root.display()
+        ));
+    }
+    let header_root = include_root.join("arcadia/tio");
+    Ok(PrivateCHeaders {
+        functions: read_required_private_header(&header_root.join("functions.h"))?,
+        types: read_required_private_header(&header_root.join("types.h"))?,
+        arrow: read_required_private_header(&header_root.join("arrow_c_data.h"))?,
     })
 }
 
-fn private_repo_root() -> Option<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.ancestors().nth(3).map(Path::to_path_buf)
+fn read_required_private_header(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|error| {
+        format!(
+            "required private C header {} is unreadable: {error}",
+            path.display()
+        )
+    })
 }
 
 fn collect_c_functions(header: &str) -> std::collections::BTreeSet<String> {

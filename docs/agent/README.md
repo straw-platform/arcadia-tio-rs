@@ -66,8 +66,15 @@ Validate with:
 
 ```sh
 cargo make native-info
+cargo make test-sys-public-constants
 cargo make test-all-features
 ```
+
+Private C header/sys parity is not part of the public check. Run
+`cargo make test-private-c-header-parity` only with an explicitly supplied
+checked `ARCADIA_TIO_CAPI_INCLUDE_DIR` and configured native library; absence is
+a refusal, never a pass. Supply the absolute path in the host shell's native
+form (`/...` on Unix or `C:/...` on Windows); the Rust gate checks it again.
 
 ### Structure, routing, and docs-only changes
 
