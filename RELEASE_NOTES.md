@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.3.8 - single-tensor daily artifact workflow
+
+Tag: `0.3.8`
+
+This source-only release documents and covers the bounded single-tensor daily
+artifact workflow: one logical tensor per `.tio` file, append axis 0 = trading
+day, one whole dense entry appended per day with explicit `NaN` sentinels, a
+cheap duplicate-day check that reads only the last appended entry, middle-day
+revision through the narrow rewrite envelope, and a caller-owned
+`analyze_compaction` / `analyze_v4_compaction` + `compact_to` + durable rename
+swap that leaves exactly one artifact. It adds focused integration coverage in
+`tests/daily_artifact_override.rs` and does not change the public Rust API or
+C ABI.
+
+Automatic in-place/source-replacing compaction remains unsupported; the
+documented separate-destination flow and caller obligations are the sanctioned
+equivalent for this envelope.
+
+This tag does not publish crates.io packages, native libraries, signed
+artifacts, or benchmark evidence, and creates no performance, storage,
+capacity, production-default, or release-readiness claim.
+
 ## 0.3.7 - OCB ownership and structure hardening
 
 Tag: `0.3.7`

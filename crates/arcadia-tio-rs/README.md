@@ -62,6 +62,18 @@ output guards retain partially returned value, array, string, file, plan, and
 session ownership until validation succeeds, and release native allocations
 exactly once when status handling or Rust-side conversion fails.
 
+## 0.3.8 source-release posture
+
+The 0.3.8 workspace tag documents the bounded single-tensor daily artifact
+append/override workflow and adds focused integration coverage for multi-run
+append, last-entry duplicate checks, middle-day rewrite, compact-to-destination,
+and the caller-owned durable swap. It does not change the public Rust API or
+C ABI.
+
+This source release does not publish native libraries, package-manager
+artifacts, signatures, benchmark evidence, or a default/production runtime
+readiness claim.
+
 ## 0.3.7 source-release posture
 
 The 0.3.7 workspace tag integrates the reviewed canonical OCB reader boundary,
@@ -686,6 +698,78 @@ predicate carriers. Analysis outcomes are diagnostics for the current native
 lowering decision, and append helpers preserve native semantics only: they are
 not storage-efficiency, compression-ratio, physical-layout, capacity, or release
 readiness claims.
+
+## Single-tensor daily artifact append and override workflow
+
+This bounded workflow covers day-partitioned artifacts: one logical tensor per
+`.tio` file, append axis 0 = trading day, one whole dense entry appended per
+day, and explicit `NaN` sentinels for invalid cells. The executable reference
+is `tests/daily_artifact_override.rs`. The exact sequence and its limits are:
+
+1. **Create.** Use `CreateOptions::streaming(dtype, dims, 0)` with a
+   zero-length `Time` axis first; the current root model assumes
+   `append_dim == 0`. One day entry spans the full row width of the remaining
+   axes, so `append_f64(&entry, &[1, width])` appends exactly one day. Put
+   file-level identity (for example a mapping identity) in `user_kv`.
+2. **Multi-run append.** Reopen an existing artifact with `TensorFile::open`
+   and append the next day's whole entry with `append_f64`. Each successful
+   append publishes one coherent commit; a failed append publishes nothing.
+3. **Snapshot binding.** Data and dimension reads on an open handle use the
+   snapshot bound at open, even after another handle appends. `head_commit` /
+   `list_commits` re-read the file per call and can observe later commits.
+   Reopen with `TensorFile::open` to observe later writes for data reads; there
+   is no in-place refresh method. `read_at_commit` reads a retained historical
+   snapshot. Retained commit visibility and the adjacent `<artifact>.lock`
+   writer coordination path are TIO-managed.
+4. **Duplicate-day check.** TIO does not interpret day values. Before an
+   append, read only the last entry with `dim_lens()` +
+   `read_entry_range(n - 1, n)` and compare the day label carried by that entry
+   in the application; this costs one entry read, not a whole-file read. Refuse
+   duplicate and non-increasing days in the application. (The reference test
+   keeps the day in a trailing entry cell.)
+5. **Override one day.** Open the artifact and replace whole entries inside the
+   narrow rewrite envelope: `rewrite_f64` takes a non-empty, sorted, unique
+   `EntrySelector::Take` on the append axis (non-append axes are implicitly
+   `All`), the replacement dtype must match the file, and its shape must match
+   the current extents with the append axis set to the selected entry count;
+   `rewrite_slice_f64` takes exactly one selector per axis and also accepts a
+   contiguous append-axis range. Read back to confirm. `analyze_compaction`
+   remains the shallow retained compatibility analysis (live bytes = file size,
+   no dead-state accounting) and `maybe_compact` evaluates that same shallow
+   report, so it fires only for a threshold at or below zero and a zero
+   minimum; use `analyze_v4_compaction` / `v4_diagnostics` for the status-aware
+   pressure report and call `compact_to` explicitly for pressure-driven
+   compaction.
+6. **Compact to a separate destination.** `compact_to(dst, options)` re-reads
+   the source from disk and writes the current on-disk visible state to a new
+   destination file — not just this handle's open-time snapshot — so quiesce
+   writers first. Use `CompactionOptions::default()`; other `retain_commits` or
+   `mode` combinations are rejected. The source is untouched until the caller
+   swaps. Automatic in-place/source-replacing compaction is **not supported**:
+   `set_auto_compaction_config`, `maybe_compact_auto`, `clear_auto_compaction`,
+   and the other auto-compaction mutators fail with `Unimplemented`, while the
+   `auto_compaction_config` / `compaction_state` readers return `Ok(None)`.
+7. **Caller-owned durable swap.** Stop and close writers first, then:
+   `compact_to` a sibling staging path on the same filesystem, fsync the
+   staging file, atomically rename it over the artifact path, fsync the parent
+   directory, and reopen long-lived handles. A pre-swap writer handle keeps the
+   replaced inode, so an append through it is written to the replaced file and
+   is not visible at the artifact path. This leaves exactly one artifact (the
+   staging path must not remain); if the rename fails, the source artifact is
+   still present.
+8. **Why separate-destination is sufficient.** The swap is the documented
+   first-class equivalent of an in-place revision for this envelope: the
+   compacted destination is a standalone, appendable artifact with the current
+   visible values, and callers already own the artifact path. The caller must
+   serialize the swap against writers and replace long-lived reader handles
+   (they keep the pre-swap snapshot until reopened). Compaction preserves
+   dtype, dimension descriptors/names, symbols/channels, user key/value
+   metadata (including the mapping identity), current visible values, and
+   appendability; ordinary compaction preserves current reader-visible
+   semantics, not every old physical body or retained commit detail. Swap
+   reasoning, staged failure paths, and post-swap appendability are covered by
+   the reference test and are not benchmark, storage-efficiency, or
+   release-readiness evidence.
 
 ## Parity caveats
 

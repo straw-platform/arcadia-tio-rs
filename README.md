@@ -30,6 +30,20 @@ build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
+## 0.3.8 daily artifact workflow source release
+
+The 0.3.8 source tag documents the bounded single-tensor daily artifact
+workflow (one logical tensor per `.tio` file, append axis 0 = trading day, one
+whole dense entry per day, a last-entry duplicate-day check, middle-day
+rewrite, and a caller-owned compact-to-destination plus durable rename swap)
+and adds focused integration coverage for it. Automatic in-place compaction
+remains unsupported; the documented separate-destination flow is the sanctioned
+equivalent.
+
+This remains a source-only release: it does not publish crates.io packages,
+native libraries, signed artifacts, benchmark evidence, or a production
+default/readiness claim.
+
 ## 0.3.7 hardening source release
 
 The 0.3.7 source tag integrates the reviewed canonical OCB reader boundary,
@@ -168,11 +182,11 @@ core reader crate:
 arcadia-tio-ocb-core = { path = "arcadia-tio-rs/crates/arcadia-tio-ocb-core" }
 ```
 
-Or use the latest 0.3.7 public source tag:
+Or use the latest 0.3.8 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-ocb-core = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.7", package = "arcadia-tio-ocb-core" }
+arcadia-tio-ocb-core = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.8", package = "arcadia-tio-ocb-core" }
 ```
 
 For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when working from a local checkout:
@@ -182,11 +196,11 @@ For the C-ABI-backed safe wrapper, add the wrapper as a path dependency when wor
 arcadia-tio-rs = { path = "arcadia-tio-rs/crates/arcadia-tio-rs" }
 ```
 
-Or use the latest 0.3.7 public source tag:
+Or use the latest 0.3.8 public source tag:
 
 ```toml
 [dependencies]
-arcadia-tio-rs = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.7" }
+arcadia-tio-rs = { git = "https://github.com/straw-platform/arcadia-tio-rs.git", tag = "0.3.8" }
 ```
 
 Default wrapper features are empty. Enable optional public Rust conversion dependencies
