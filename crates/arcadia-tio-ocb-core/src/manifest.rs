@@ -210,8 +210,13 @@ impl ChannelShardedManifestV1 {
             self.selection_scope.as_deref(),
             Some("full-day" | "contiguous-prefix")
         );
+        // `declared-subset` declares that a channel carries only the in-scope subset of the
+        // exchange sequence: the absent keys are declared out-of-scope events rather than
+        // lost rows, so a channel may hold fewer rows than its key span. It never holds
+        // more, and it never starts at key 1 by requirement (that stays a prefix-scope rule).
+        let declared_subset_scope = self.selection_scope.as_deref() == Some("declared-subset");
         for channel in &self.channels {
-            channel.validate_manifest_only(prefix_scope)?;
+            channel.validate_manifest_only(prefix_scope, declared_subset_scope)?;
             if !seen_channels.insert(channel.channel_id) {
                 return invalid_manifest("channel-sharded OCB manifest has duplicate ChannelID");
             }
@@ -281,7 +286,7 @@ impl ChannelShardedManifestV1 {
 }
 
 impl ChannelArtifactEntryV1 {
-    fn validate_manifest_only(&self, prefix_scope: bool) -> Result<()> {
+    fn validate_manifest_only(&self, prefix_scope: bool, declared_subset_scope: bool) -> Result<()> {
         if self.channel_id == 0 {
             return invalid_manifest("channel-sharded OCB manifest has invalid ChannelID");
         }
@@ -307,7 +312,15 @@ impl ChannelArtifactEntryV1 {
                     "channel-sharded OCB manifest BizIndex range overflows",
                 )
             })?;
-        if expected_rows != self.row_count {
+        // A dense scope must use every key of the span. A declared subset may leave keys
+        // absent, but can never claim more rows than the span holds.
+        if declared_subset_scope {
+            if self.row_count > expected_rows {
+                return invalid_manifest(
+                    "channel-sharded OCB manifest BizIndex range row mismatch",
+                );
+            }
+        } else if expected_rows != self.row_count {
             return invalid_manifest("channel-sharded OCB manifest BizIndex range row mismatch");
         }
         if let (Some(order), Some(trade)) = (self.order_record_count, self.trade_record_count) {
@@ -1020,6 +1033,83 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+
+    fn channel(
+        channel_id: u32,
+        row_count: u64,
+        first_biz_index: u64,
+        last_biz_index: u64,
+    ) -> ChannelArtifactEntryV1 {
+        ChannelArtifactEntryV1 {
+            channel_id,
+            relative_path: format!("channels/{channel_id}/artifact.ocb"),
+            row_count,
+            row_group_count: 0,
+            first_biz_index,
+            last_biz_index,
+            min_receive_nano: None,
+            max_receive_nano: None,
+            order_record_count: Some(row_count),
+            trade_record_count: Some(0),
+            payload_sha256: None,
+            fingerprint: None,
+        }
+    }
+
+    fn manifest(
+        scope: Option<&str>,
+        channels: Vec<ChannelArtifactEntryV1>,
+    ) -> ChannelShardedManifestV1 {
+        let rows = channels.iter().map(|channel| channel.row_count).sum();
+        ChannelShardedManifestV1 {
+            schema_version: 1,
+            trading_day: 20260901,
+            artifact_format: "compact-l2-physical-v2".to_owned(),
+            root_hash: None,
+            payload_width_bytes: None,
+            selection_scope: scope.map(ToOwned::to_owned),
+            channel_indivisible: Some(true),
+            counts: ChannelShardedManifestCountsV1 {
+                channels: Some(channels.len()),
+                row_count: Some(rows),
+                order_records: Some(rows),
+                trade_records: Some(0),
+            },
+            channels,
+            claims: ChannelShardedManifestClaimsV1::default(),
+        }
+    }
+
+    #[test]
+    fn a_declared_subset_channel_may_leave_keys_absent_but_never_exceed_its_span() {
+        // The scoped contract: keys 1..=8 with five absent (three present) is admissible.
+        manifest(Some("declared-subset"), vec![channel(1, 3, 1, 8)])
+            .validate()
+            .expect("a declared subset channel with absent keys is admissible");
+        // A late start is equally admissible, because the prefix rule belongs to full-day.
+        manifest(Some("declared-subset"), vec![channel(1, 3, 663, 665)])
+            .validate()
+            .expect("a declared subset channel may start after key 1");
+        // More rows than the span can hold is never admissible, in any scope.
+        let error = manifest(Some("declared-subset"), vec![channel(1, 9, 1, 8)])
+            .validate()
+            .expect_err("more rows than keys must refuse");
+        assert_eq!(
+            OcbErrorKind::from_error(&error),
+            Some(OcbErrorKind::InvalidManifest)
+        );
+    }
+
+    #[test]
+    fn a_dense_scope_still_requires_every_key_of_the_span() {
+        // The historic scopes are unchanged: a hole refuses, and the prefix rule still applies.
+        assert!(manifest(Some("full-day"), vec![channel(1, 3, 1, 8)]).validate().is_err());
+        assert!(manifest(None, vec![channel(1, 3, 1, 8)]).validate().is_err());
+        assert!(manifest(Some("full-day"), vec![channel(1, 3, 3, 5)]).validate().is_err());
+        manifest(Some("full-day"), vec![channel(1, 3, 1, 3)])
+            .validate()
+            .expect("a dense full-day channel remains valid");
+    }
 
     #[test]
     fn manifest_relative_path_validation_rejects_lexical_escape_forms() {
