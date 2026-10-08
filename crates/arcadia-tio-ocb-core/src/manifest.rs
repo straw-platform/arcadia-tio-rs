@@ -286,7 +286,11 @@ impl ChannelShardedManifestV1 {
 }
 
 impl ChannelArtifactEntryV1 {
-    fn validate_manifest_only(&self, prefix_scope: bool, declared_subset_scope: bool) -> Result<()> {
+    fn validate_manifest_only(
+        &self,
+        prefix_scope: bool,
+        declared_subset_scope: bool,
+    ) -> Result<()> {
         if self.channel_id == 0 {
             return invalid_manifest("channel-sharded OCB manifest has invalid ChannelID");
         }
@@ -1103,9 +1107,21 @@ mod tests {
     #[test]
     fn a_dense_scope_still_requires_every_key_of_the_span() {
         // The historic scopes are unchanged: a hole refuses, and the prefix rule still applies.
-        assert!(manifest(Some("full-day"), vec![channel(1, 3, 1, 8)]).validate().is_err());
-        assert!(manifest(None, vec![channel(1, 3, 1, 8)]).validate().is_err());
-        assert!(manifest(Some("full-day"), vec![channel(1, 3, 3, 5)]).validate().is_err());
+        assert!(
+            manifest(Some("full-day"), vec![channel(1, 3, 1, 8)])
+                .validate()
+                .is_err()
+        );
+        assert!(
+            manifest(None, vec![channel(1, 3, 1, 8)])
+                .validate()
+                .is_err()
+        );
+        assert!(
+            manifest(Some("full-day"), vec![channel(1, 3, 3, 5)])
+                .validate()
+                .is_err()
+        );
         manifest(Some("full-day"), vec![channel(1, 3, 1, 3)])
             .validate()
             .expect("a dense full-day channel remains valid");
