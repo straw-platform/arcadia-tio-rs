@@ -30,77 +30,23 @@ build scripts. See
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current public source-release
 notes.
 
-## 0.3.8 daily artifact workflow source release
+## Capabilities and boundaries
 
-The 0.3.8 source tag documents the bounded single-tensor daily artifact
-workflow (one logical tensor per `.tio` file, append axis 0 = trading day, one
-whole dense entry per day, a last-entry duplicate-day check, middle-day
-rewrite, and a caller-owned compact-to-destination plus durable rename swap)
-and adds focused integration coverage for it. Automatic in-place compaction
-remains unsupported; the documented separate-destination flow is the sanctioned
-equivalent.
+Release history and version-specific changes live in
+[`RELEASE_NOTES.md`](RELEASE_NOTES.md). This is a source-only checkout; it does
+not publish crates.io packages, native libraries, signed artifacts, benchmark
+evidence, or performance/storage/capacity or production-readiness claims.
 
-This remains a source-only release: it does not publish crates.io packages,
-native libraries, signed artifacts, benchmark evidence, or a production
-default/readiness claim.
+The safe wrapper provides an opt-in poll-based parallel OCB read session with
+owned ordered batches. Rust owns worker threads; cancellation is idempotent
+and can race completion. Callers inspect terminal status and its report;
+active drop cancels, drains, joins, and frees native state. The cap bounds
+in-flight row-group slots, not bytes retained by callers.
 
-## 0.3.7 hardening source release
-
-The 0.3.7 source tag integrates the reviewed canonical OCB reader boundary,
-hardens ABI and owned-output handling, and adds module-size and dead-code
-ratchets after splitting the OCB core and safe-wrapper implementation modules.
-Documented 0.3.x behavior and compatibility paths remain available.
-
-This remains a source-only release: it does not publish crates.io packages,
-native libraries, signed artifacts, benchmark evidence, or a production
-default/readiness claim.
-
-## 0.3.6 maintenance source release
-
-The 0.3.6 source tag includes the public Rust OCB tutorial, the clarified
-bounded-session cancellation race contract, and the canonical
-`straw-platform/arcadia-tio-rs` repository metadata added after 0.3.5. It does
-not intentionally change the public Rust API or C ABI from 0.3.5.
-
-This remains a source-only release: it does not publish crates.io packages,
-native libraries, signed artifacts, benchmark evidence, or a production
-default/readiness claim.
-
-## 0.3.5 bounded parallel read session
-
-The 0.3.5 source tag promotes the core bounded preparation semantics
-through the native C ABI and safe wrapper as an opt-in poll-based session.
-`ColumnBundleFile::parallel_read_session` returns a move-owned RAII value with
-explicit terminal polling and an `Iterator` facade over owned ordered batches.
-Rust owns every worker thread; no foreign callback crosses the ABI. Cancellation
-is idempotent and may race successful completion; callers inspect the observed
-terminal status and matching report. Reports are terminal-only, and active drop
-cancels, drains, joins, and frees native state. The cap bounds in-flight
-row-group slots, not bytes in caller-retained batches. The separate C-ABI-free
-OCB-core count and contract remain unchanged.
-
-This source release does not create package publication, native artifacts,
-benchmark, speedup, storage, capacity, production-default, or release-readiness
-claims.
-
-## 0.3.4 bounded parallel preparation release
-
-The 0.3.4 public Rust workspace tag adds opt-in bounded parallel row-group
-preparation with deterministic caller-thread ordered commit to the C-ABI-free
-OCB core reader. Existing read paths and the C-ABI-backed wrapper surface remain
-compatible. This source-only release does not publish crates.io packages,
-native libraries, signed artifacts, benchmark evidence, storage/capacity/
-performance claims, or production/default runtime readiness.
-
-## 0.3.2 release boundary
-
-The 0.3.2 public Rust workspace tag is a source release for the OCB Rust-core
-reader boundary plus the existing C-ABI-backed wrapper source. It adds
-compact-L2 `compact-l2-physical-v2` support as an explicit additive physical
-layout candidate while preserving the no-native-C-ABI core boundary. It does
-not replace `compact-fixed-binary-l2-v1`, publish crates.io packages, native
-libraries, signed artifacts, benchmark evidence, storage/capacity/performance
-claims, or production/default runtime readiness.
+The documented daily artifact workflow uses one tensor per file and trading
+day on append axis 0, with a last-entry duplicate-day check and middle-day
+rewrite. Compaction writes a separate destination followed by a caller-owned
+durable rename swap; automatic in-place compaction remains unsupported.
 
 The OCB core owns only physical facts for physical-v2: stable column names,
 the v1 fixed-binary lane mapping, exact in-memory reconstruction of the legacy
@@ -110,16 +56,6 @@ business schema; `record_kind` tells downstream code how to interpret shared
 body lanes. Replay scheduling, owner assignment, order-book mutation,
 factor/KOB logic, shm-ring transport, LIVE orchestration, rollout/fallback
 policy, and production-readiness claims remain downstream.
-
-## 0.3.0 release boundary
-
-The 0.3.0 public Rust workspace tag is a source release for the OCB Rust-core
-reader boundary plus the existing C-ABI-backed wrapper source. It extends the
-C-ABI-free core reader with channel-sharded compact-L2 source-format
-manifest/header/certification helpers while preserving the no-native-C-ABI
-boundary. It does not publish crates.io packages, native libraries, signed
-artifacts, benchmark evidence, storage/capacity/performance claims, or
-production/default runtime readiness.
 
 For OCB-core runtime gates, `ocb.generic.crc32c.v1` fingerprints are
 deterministic compatibility identifiers, not cryptographic digests. Downstream
