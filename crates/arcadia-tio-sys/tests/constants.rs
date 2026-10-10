@@ -35,6 +35,14 @@ const INTENTIONALLY_EXCLUDED_C_ABI_TYPES: &[&str] = &[
 ];
 
 const _: () = {
+    let _: unsafe extern "C" fn() -> u32 = arcadia_tio_abi_version;
+    let _: unsafe extern "C" fn(*mut ArcadiaTioHandle, *mut ArcadiaTioDType) -> i32 =
+        arcadia_tio_dtype;
+    #[cfg(feature = "format-ocb")]
+    {
+        let _ = arcadia_tio_ocb_open;
+        let _ = size_of::<ArcadiaTioOcbResourceLimits>();
+    }
     assert!(ARCADIA_TIO_ABI_VERSION == 3);
     assert!(ARCADIA_TIO_COMPACTION_ABI_VERSION == 1);
     assert!(size_of::<ArcadiaTioDType>() == size_of::<c_int>());

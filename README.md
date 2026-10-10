@@ -244,11 +244,10 @@ cargo make test-csv-parquet
 ```
 
 `cargo make native-info` validates that an expected local native library file is
-present and prints its resolved path, size, file mode, and whether the base ABI
-and common OCB C ABI symbols are visible when `nm` is available. It does not
-compute or print a library checksum. Set
-`ARCADIA_TIO_REQUIRE_OCB_SYMBOLS=1` with `cargo make native-info` when you want
-to fail fast on a stale native library before running `format-ocb` builds.
+present, prints its path, byte size, and mode, and checks exact defined ABI and
+OCB symbol names when `nm` is available. The required ABI symbols fail closed;
+set `ARCADIA_TIO_REQUIRE_OCB_SYMBOLS=1` when the OCB symbol set must also be
+present before running `format-ocb` builds.
 
 `cargo make test-sys-public-constants` compiles the public sys constants and
 layout assertions without claiming parity with private C headers. Private-header

@@ -15,6 +15,12 @@ use arcadia_tio_rs::ocb::{
     WriteColumnChunk, WriteDictionary, WriteOptions, WriteOrderingKey, WriteRowGroup, WriteSpec,
 };
 
+// This target already requires format-ocb; keep its public path probes here.
+const _: fn(&ColumnBundleFile, &ocb::ReadPlan<'_>) -> ocb::OcbResult<()> = |_, _| {
+    let _open = |path: &std::path::Path| ocb::open(path);
+    Ok(())
+};
+
 #[test]
 fn ocb_resource_limits_defaults_open_boundaries_and_clone_retention_are_stable() {
     let policy_a = ResourceLimits::policy_a();

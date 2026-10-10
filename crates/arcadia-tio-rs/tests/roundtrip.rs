@@ -24,6 +24,22 @@ use arcadia_tio_rs::{
     V4ReportStatus, V4RetainedHistoryCompactionOptions, typed_ops,
 };
 
+// Keep public aliases and module paths checked in the existing integration target.
+const _: fn(&Tensor) -> arcadia_tio_rs::Result<Tensor> = |tensor| {
+    let _: fn() -> arcadia_tio_rs::Result<u32> = arcadia_tio_rs::check_native_abi_compatibility;
+    let _ = std::mem::size_of::<(
+        arcadia_tio_rs::AxisCoordinateInputV2,
+        arcadia_tio_rs::CoordinateValueDomainV2,
+        arcadia_tio_rs::DenseTensor,
+    )>();
+    let tensor = arcadia_tio_rs::ops::to_contiguous(tensor)?;
+    typed_ops::reshape(
+        &arcadia_tio_rs::TypedTensor::<f32>::try_from_tensor(tensor)?,
+        vec![1],
+    )
+    .map(Into::into)
+};
+
 fn i32_bytes(values: &[i32]) -> Vec<u8> {
     values
         .iter()

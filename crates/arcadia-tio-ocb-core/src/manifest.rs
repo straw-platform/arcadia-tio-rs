@@ -1106,25 +1106,31 @@ mod tests {
 
     #[test]
     fn a_dense_scope_still_requires_every_key_of_the_span() {
-        // The historic scopes are unchanged: a hole refuses, and the prefix rule still applies.
-        assert!(
-            manifest(Some("full-day"), vec![channel(1, 3, 1, 8)])
+        for scope in [
+            None,
+            Some("full-day"),
+            Some("contiguous-prefix"),
+            Some("unknown"),
+        ] {
+            for rows in [3, 9] {
+                assert!(
+                    manifest(scope, vec![channel(1, rows, 1, 8)])
+                        .validate()
+                        .is_err(),
+                    "dense scope {scope:?} must require exactly one row per key"
+                );
+            }
+        }
+        for scope in ["full-day", "contiguous-prefix"] {
+            assert!(
+                manifest(Some(scope), vec![channel(1, 3, 3, 5)])
+                    .validate()
+                    .is_err()
+            );
+            manifest(Some(scope), vec![channel(1, 3, 1, 3)])
                 .validate()
-                .is_err()
-        );
-        assert!(
-            manifest(None, vec![channel(1, 3, 1, 8)])
-                .validate()
-                .is_err()
-        );
-        assert!(
-            manifest(Some("full-day"), vec![channel(1, 3, 3, 5)])
-                .validate()
-                .is_err()
-        );
-        manifest(Some("full-day"), vec![channel(1, 3, 1, 3)])
-            .validate()
-            .expect("a dense full-day channel remains valid");
+                .expect("a dense prefix channel remains valid");
+        }
     }
 
     #[test]

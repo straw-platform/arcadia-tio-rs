@@ -23,30 +23,15 @@ export TEMP="$process_tmp"
 export TMP="$process_tmp"
 export TIO_TUTORIAL_TMPDIR="$data_tmp"
 
-embedded_public_manifest="arcadia-tio-rs/Cargo.toml"
-public_manifest="crates/arcadia-tio-rs/Cargo.toml"
-if [[ -f "$embedded_public_manifest" && -f "crates/arcadia-tio-capi/Cargo.toml" ]]; then
-  crate_manifest="$embedded_public_manifest"
-  source_glob="arcadia-tio-rs/crates/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
-  private_workspace=1
-elif [[ -f "$public_manifest" ]]; then
-  crate_manifest="$public_manifest"
-  source_glob="crates/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
-  private_workspace=0
-else
+crate_manifest="crates/arcadia-tio-rs/Cargo.toml"
+source_glob="crates/arcadia-tio-rs/examples/tutorials/[0-9][0-9]_*.rs"
+if [[ ! -f "$crate_manifest" ]]; then
   echo "Could not find an exported arcadia-tio-rs workspace" >&2
   exit 1
 fi
 
-if [[ "$private_workspace" == "1" && "${TIO_TUTORIAL_RUST_SKIP_NATIVE_BUILD:-0}" != "1" ]]; then
-  cargo build --package arcadia-tio-capi --release
-fi
-
 if [[ -n "${ARCADIA_TIO_CAPI_LIB_DIR:-}" ]]; then
   lib_dir="$ARCADIA_TIO_CAPI_LIB_DIR"
-elif [[ "$private_workspace" == "1" ]]; then
-  target_root="${CARGO_TARGET_DIR:-$repo_root/target}"
-  lib_dir="$target_root/release"
 else
   rustc_version_verbose="$(rustc -vV)"
   host="$(awk '/^host:/ { print $2; exit }' <<<"$rustc_version_verbose")"
@@ -66,7 +51,6 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     ;;
 esac
 
-# Expand after selecting the private or public source layout.
 # shellcheck disable=SC2206 # Intentional glob expansion into an array.
 sources=($source_glob)
 if [[ ! -e "${sources[0]}" ]]; then
