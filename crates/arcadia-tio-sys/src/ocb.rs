@@ -1,5 +1,8 @@
 use super::*;
 
+mod write;
+pub use write::*;
+
 unsafe extern "C" {
     /// Returns machine-readable OCB error kind for the current thread.
     #[cfg(feature = "format-ocb")]
@@ -378,48 +381,6 @@ unsafe extern "C" {
     pub fn arcadia_tio_ocb_column_array_fixed_binary_width(
         column: *const ArcadiaTioOcbColumnArray,
     ) -> u32;
-    /// Creates an appendable OCB file.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_create(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-    ) -> ArcadiaTioErrorCode;
-    /// Creates an appendable OCB file with explicit writer options.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_create_with_options(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-        options: *const ArcadiaTioOcbWriteOptions,
-    ) -> ArcadiaTioErrorCode;
-    /// Creates an appendable OCB file and returns diagnostic counters.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_create_with_options_and_report(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-        options: *const ArcadiaTioOcbWriteOptions,
-        out_report: *mut ArcadiaTioOcbWriteReport,
-    ) -> ArcadiaTioErrorCode;
-    /// Appends one sorted suffix commit to an existing appendable OCB file.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_append(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-    ) -> ArcadiaTioErrorCode;
-    /// Appends to an OCB file with explicit writer options.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_append_with_options(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-        options: *const ArcadiaTioOcbWriteOptions,
-    ) -> ArcadiaTioErrorCode;
-    /// Appends to an OCB file and returns diagnostic counters.
-    #[cfg(feature = "format-ocb")]
-    pub fn arcadia_tio_ocb_append_with_options_and_report(
-        path: *const c_char,
-        spec: *const ArcadiaTioOcbWriteSpec,
-        options: *const ArcadiaTioOcbWriteOptions,
-        out_report: *mut ArcadiaTioOcbWriteReport,
-    ) -> ArcadiaTioErrorCode;
     /// Truncates orphan tail bytes after the latest valid OCB root.
     #[cfg(feature = "format-ocb")]
     pub fn arcadia_tio_ocb_cleanup_orphan_tail(

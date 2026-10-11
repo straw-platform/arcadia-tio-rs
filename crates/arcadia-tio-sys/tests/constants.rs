@@ -10,6 +10,7 @@ const SYS_SOURCES: &[&str] = &[
     include_str!("../src/types.rs"),
     include_str!("../src/common.rs"),
     include_str!("../src/ocb.rs"),
+    include_str!("../src/ocb/write.rs"),
     include_str!("../src/lifecycle_coordinates.rs"),
     include_str!("../src/tensor.rs"),
     include_str!("../src/mutation.rs"),

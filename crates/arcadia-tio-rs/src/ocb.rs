@@ -15,18 +15,12 @@ use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 use std::time::Instant;
 
-mod model;
-pub use model::*;
-
+mod append_session;
 mod conversion;
 use conversion::*;
-
+mod maintenance;
+mod model;
 mod read;
-pub use read::*;
-
 mod session;
 mod write;
-pub use write::*;
-
-mod maintenance;
-pub use maintenance::*;
+pub use {append_session::*, maintenance::*, model::*, read::*, write::*};
